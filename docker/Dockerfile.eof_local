@@ -1,0 +1,14 @@
+FROM eoflibrary/eof_elmer84_of6:latest
+
+WORKDIR /home/openfoam
+
+# Remove the EOF-Library that ships inside the base image
+RUN rm -rf EOF-Library
+
+# This assumes you run `docker build` from your EOF fork root,
+COPY . EOF-Library
+
+WORKDIR /home/openfoam/EOF-Library
+
+
+
