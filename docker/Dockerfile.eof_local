@@ -9,6 +9,3 @@ RUN rm -rf EOF-Library
 COPY . EOF-Library
 
 WORKDIR /home/openfoam/EOF-Library
-
-
-
