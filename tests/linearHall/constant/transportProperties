@@ -18,7 +18,7 @@ FoamFile
 transportModel Newtonian;
 
 rho  1000;     // density (kg/m3) — pick water for now
-nu   1e-6;     // kinematic viscosity (m2/s)
+nu   1e-4;     // kinematic viscosity (m2/s) - increased to get Re=1000 for visible profile
 
 
 // ************************************************************************* //
