@@ -36,13 +36,13 @@ FoamFile
         inlet
         {
             type patch;
-            faces ((0 3 2 1));
+            faces ((0 3 4 7));
         }
 
         outlet
         {
             type patch;
-            faces ((4 5 6 7));
+            faces ((1 2 5 6));
         }
 
         walls
@@ -50,10 +50,10 @@ FoamFile
             type wall;
             faces
             (
-                (0 4 7 3)
-                (1 2 6 5)
                 (0 1 5 4)
-                (3 7 6 2)
+                (0 1 2 3)
+                (3 2 6 7)
+                (4 5 6 7)
             );
         }
     );
