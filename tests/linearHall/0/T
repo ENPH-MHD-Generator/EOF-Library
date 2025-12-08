@@ -9,26 +9,36 @@ FoamFile
 {
     version     2.0;
     format      ascii;
-    class       dictionary;
-    location    "constant";
-    object      transportProperties;
+    class       volScalarField;
+    location    "0";
+    object      T;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-transportModel Newtonian;
+dimensions      [0 0 0 1 0 0 0];   // Temperature in Kelvin
+internalField   uniform 2500;
 
-// Argon gas properties at 2500 K and 1 atm
-rho  0.195;    // density (kg/m3) - from ideal gas law: P*M/(R*T)
-nu   3.85e-4;  // kinematic viscosity (m2/s) - for argon at 2500 K
-               // Dynamic viscosity mu ≈ 7.5e-5 Pa·s at 2500 K
+boundaryField
+{
+    inlet
+    {
+        type fixedValue;
+        value uniform 2500;   // 2500 K argon inlet
+    }
 
-// Thermal properties (for future thermal solver implementation)
-cp   520.0;    // Specific heat capacity (J/kg/K) for argon
-kappa 0.0866;  // Thermal conductivity (W/m/K) at 2500 K
+    outlet
+    {
+        type zeroGradient;
+    }
 
-// Electrical conductivity (S/m) - for argon plasma at 2500 K, 1 atm
-// At this temperature, argon is partially ionized with σ ≈ 100-1000 S/m
-elcond_melt  500.0;  // Representative value for weakly ionized argon plasma
+    walls
+    {
+        type fixedValue;
+        value uniform 2500;   // Isothermal walls at 2500 K
+    }
+}
 
 
 // ************************************************************************* //
+
+
