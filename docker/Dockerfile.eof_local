@@ -9,3 +9,6 @@ RUN rm -rf EOF-Library
 COPY . EOF-Library
 
 WORKDIR /home/openfoam/EOF-Library
+
+# Add alias for initializing and building the project
+RUN echo 'alias init="eofCompile && cd EOF-Library && wmake solvers/mhdInterFoam6 && cp -r tests/linearHall runs && cd runs/linearHall"' >> ~/.bashrc
