@@ -15,7 +15,7 @@ FoamFile
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 solvers
 {
-    p
+    p_rgh
     {
         solver          GAMG;
         tolerance       1e-7;
@@ -47,7 +47,7 @@ SIMPLE
 
     residualControl
     {
-        p               1e-3;
+        p_rgh           1e-3;
         U               1e-4;
     }
 }
@@ -60,7 +60,7 @@ relaxationFactors
     }
     fields
     {
-        p               0.3;
+        p_rgh           0.3;
     }
 }
 

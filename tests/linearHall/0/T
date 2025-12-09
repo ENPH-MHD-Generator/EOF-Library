@@ -1,10 +1,7 @@
 /*--------------------------------*- C++ -*----------------------------------*\
-| =========                 |                                                 |
-| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\    /   O peration     | Version:  dev                                   |
-|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
-|    \\/     M anipulation  |                                                 |
+  Temperature field for mhdThermoInterFoam5 (argon plasma)
 \*---------------------------------------------------------------------------*/
+
 FoamFile
 {
     version     2.0;
@@ -13,32 +10,34 @@ FoamFile
     location    "0";
     object      T;
 }
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-dimensions      [0 0 0 1 0 0 0];   // Temperature in Kelvin
+// Temperature [K]
+dimensions      [0 0 0 1 0 0 0];
+
 internalField   uniform 2500;
 
 boundaryField
 {
     inlet
     {
-        type fixedValue;
-        value uniform 2500;   // 2500 K argon inlet
+        type            fixedValue;
+        value           uniform 2500;
     }
 
     outlet
     {
-        type zeroGradient;
+        type            zeroGradient;
     }
 
     walls
     {
-        type fixedValue;
-        value uniform 2500;   // Isothermal walls at 2500 K
+        type            zeroGradient;     // or fixedValue if cooled/heated
+        // type            fixedValue;
+        // value           uniform 300;   // Example cooled walls
+    }
+
+    defaultFaces
+    {
+        type empty;   // only if 2D axisymmetric or 2D planar mesh (adjust as needed)
     }
 }
-
-
-// ************************************************************************* //
-
-

@@ -9,7 +9,7 @@ $frequency = 5000.0
 
 Simulation
   Max Output Level = 3
-  Coordinate System = Axi Symmetric
+  Coordinate System = Cartesian
   Angular Frequency = $2*pi*frequency
 
   Simulation Type = Steady
@@ -45,7 +45,6 @@ Solver 1
   Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
 
   Target Variable 1 = String "OF conductivity"
-  Target Variable 2 = String "OF temperature"
 End
 
 Solver 2
@@ -69,8 +68,6 @@ Solver 2
 
   Exported Variable 1 = -dg "OF conductivity"
   Exported Variable 1 Mask = String "material: mapping"
-  Exported Variable 2 = -dg "OF temperature"
-  Exported Variable 2 Mask = String "material: mapping"
 End
 
 Solver 3
@@ -110,9 +107,9 @@ Equation 1
 End
 
 Material 2
-  Name = "Steel Walls"
-  ! Approximate structural steel conductivity [S/m]
-  Electric Conductivity = 1.0e6
+  Name = "Insulating Walls"
+  ! Ideal electrical insulator: no conduction currents in walls
+  Electric Conductivity = 0.0
   Relative Permittivity = 1
   Relative Permeability = 1
 End
