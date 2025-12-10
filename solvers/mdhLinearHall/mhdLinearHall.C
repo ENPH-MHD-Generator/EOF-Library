@@ -22,7 +22,7 @@ License
     along with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 
 Application
-    mhdThermoInterFoam = Elmer (EM) + interFoam + TEqn + TableVisc
+    mdhLinearHall = Elmer (EM) + interFoam + TEqn + TableVisc
 
 Description
     Solver for 2 incompressible, non-isothermal immiscible fluids using a VOF
@@ -195,3 +195,5 @@ int main(int argc, char *argv[])
 
 
 // ************************************************************************* //
+
+

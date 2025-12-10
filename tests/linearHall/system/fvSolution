@@ -31,6 +31,20 @@ solvers
         mergeLevels     1;
     }
 
+    pcorr
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-7;
+        relTol          0;
+    }
+
+    pcorrFinal
+    {
+        $pcorr;
+        relTol          0;
+    }
+
     U
     {
         solver          smoothSolver;
@@ -41,8 +55,11 @@ solvers
     }
 }
 
-SIMPLE
+PIMPLE
 {
+    momentumPredictor yes;
+    nOuterCorrectors    1;
+    nCorrectors         2;
     nNonOrthogonalCorrectors 0;
 
     residualControl
