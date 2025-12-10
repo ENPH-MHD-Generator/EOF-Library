@@ -26,15 +26,15 @@ Constants
   Permeability of Vacuum = 1.257e-6
 End
 
-Body 3
+Body 1
   Target Bodies(1) = 1
   Name = "melt"
   Equation = 1
-  Material = 3
+  Material = 1
   Body Force = 1
 End
 
-Body 4
+Body 2
   Target Bodies(1) = 2
   Name = "air"
   Equation = 1
@@ -108,15 +108,7 @@ Equation 1
   Active Solvers(4) = 1 2 3 4
 End
 
-Material 2
-  Name = "Insulating Walls"
-  ! Ideal electrical insulator: no conduction currents in walls
-  Electric Conductivity = 0.0
-  Relative Permittivity = 1
-  Relative Permeability = 1
-End
-
-Material 3
+Material 1
   Name = "Heated Argon"
   ! Conductivity field comes from OpenFOAM coupling
   Electric Conductivity = Equals "OF conductivity"
@@ -125,12 +117,20 @@ Material 3
   mapping = Logical True
 End
 
+Material 2
+  Name = "Insulating Walls"
+  ! Ideal electrical insulator: no conduction currents in walls
+  Electric Conductivity = 0.0
+  Relative Permittivity = 1
+  Relative Permeability = 1
+End
+
 Body Force 1
   Name = "ExternalBz"
   ! Uniform external magnetic flux density: B = (0, 0, 3 T)
-  Magnetic Flux Density 1 = 0.0
-  Magnetic Flux Density 2 = 0.0
-  Magnetic Flux Density 3 = 3.0
+  Magnetic Flux Density 1 = Real 0.0
+  Magnetic Flux Density 2 = Real 0.0
+  Magnetic Flux Density 3 = Real 3.0
 End
 
 Boundary Condition 1
