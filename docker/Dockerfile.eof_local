@@ -11,10 +11,10 @@ COPY . EOF-Library
 WORKDIR /home/openfoam/EOF-Library
 
 # Add alias for initializing and building the project
-RUN echo 'alias init="cd ~ && eofCompile && cd EOF-Library && wmake solvers/mhdThermoInterFoam5 && cp -r tests/linearHall runs && cd runs/linearHall "' >> ~/.bashrc
-RUN echo 'alias generate_mesh="cd ~/EOF-Library/runs/linearHall && blockMesh && setFields && decomposePar"' >> ~/.bashrc
+RUN echo 'alias init="cd ~ && eofCompile && cd EOF-Library && wmake solvers/mdhLinearHall && cp -r tests/linearHall runs && cd runs/linearHall "' >> ~/.bashrc
+RUN echo 'alias generate_mesh="cd ~/EOF-Library/runs/linearHall && blockMesh"' >> ~/.bashrc
 RUN echo 'alias init_elmer="cd ~/EOF-Library/runs/linearHall && ElmerGrid 14 2 . -out meshElmer && ElmerGrid 2 2 meshElmer -metis 2"' >> ~/.bashrc
-RUN echo "case.sif" > ELMERSOLVER_STARTINFO
-RUN echo 'alias run_sim="cd ~/EOF-Library/runs/linearHall && mpirun -n 2 mhdThermoInterFoam5 -parallel : -n 2 ElmerSolver_mpi case.sif"' >> ~/.bashrc
+RUN echo 'alias configure_elmer="cd ~/EOF-Library/runs/linearHall && echo "case.sif" > ELMERSOLVER_STARTINFO"' >> ~/.bashrc
+RUN echo 'alias run_sim="cd ~/EOF-Library/runs/linearHall && mpirun -n 2 mdhLinearHall -parallel : -n 2 ElmerSolver_mpi case.sif"' >> ~/.bashrc
 
-RUN echo "alias run_all='init && generate_mesh && init_elmer && run_sim'" >> ~/.bashrc
+RUN echo 'alias run_all="init && generate_mesh && init_elmer && configure_elmer && run_sim"' >> ~/.bashrc

@@ -31,6 +31,7 @@ Body 3
   Name = "melt"
   Equation = 1
   Material = 3
+  Body Force = 1
 End
 
 Body 4
@@ -38,6 +39,7 @@ Body 4
   Name = "air"
   Equation = 1
   Material = 2
+  Body Force = 1
 End
 
 Solver 1
@@ -121,6 +123,14 @@ Material 3
   Relative Permittivity = 1
   Relative Permeability = 1
   mapping = Logical True
+End
+
+Body Force 1
+  Name = "ExternalBz"
+  ! Uniform external magnetic flux density: B = (0, 0, 3 T)
+  Magnetic Flux Density 1 = 0.0
+  Magnetic Flux Density 2 = 0.0
+  Magnetic Flux Density 3 = 3.0
 End
 
 Boundary Condition 1
