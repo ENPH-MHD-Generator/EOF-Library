@@ -154,7 +154,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
   INTEGER, POINTER :: Blist(:)
 
   TYPE(Mesh_t), POINTER :: Mesh
-  LOGICAL :: Visited = .FALSE., UserDefinedCoordinates
+  LOGICAL :: Visited = .FALSE., UserDefinedCoordinates, ContinueOnElementsNotFound
 
   SAVE Visited, Mesh
   
@@ -169,6 +169,9 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
   Mesh => GetMesh()
 
   IF(.NOT. Visited ) THEN
+    ContinueOnElementsNotFound = ListGetLogical( Params,'Continue On Elements Not Found',Found)
+        IF ( .NOT. Found ) ContinueOnElementsNotFound = .FALSE.
+
     nVars = 0
     DO i=1,100
       VarName = ListGetString( Params, 'Target Variable '//TRIM(I2S(i)), Found )
@@ -422,8 +425,13 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
     END DO ! nBodiesToComm
 
     IF (totElementsFound < nElements) THEN
-      CALL Fatal('OpenFOAM2ElmerSolver','Elmer #'//TRIM(I2S(myLocalRank))//' has ' &
-                 //TRIM(I2S(nElements))//' elements, OpenFOAM found '//TRIM(I2S(totElementsFound)))
+      IF (ContinueOnElementsNotFound) THEN
+        CALL Info('OpenFOAM2ElmerSolver','Elmer #'//TRIM(I2S(myLocalRank))//' has ' &
+                  //TRIM(I2S(nElements))//' elements, OpenFOAM found '//TRIM(I2S(totElementsFound)), Level=3 )
+      ELSE
+        CALL Fatal('OpenFOAM2ElmerSolver','Elmer #'//TRIM(I2S(myLocalRank))//' has ' &
+                  //TRIM(I2S(nElements))//' elements, OpenFOAM found '//TRIM(I2S(totElementsFound)))
+      END IF
     END IF
 
   END IF ! Visited
