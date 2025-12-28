@@ -1,4 +1,6 @@
-#include "createRDeltaT.H"
+// -------------------------------------------------------------------------
+// Primary flow fields
+// -------------------------------------------------------------------------
 
 Info<< "Reading field p_rgh\n" << endl;
 volScalarField p_rgh
@@ -42,6 +44,10 @@ volVectorField U_old
     U
 );
 
+// -------------------------------------------------------------------------
+// MHD coupling fields
+// -------------------------------------------------------------------------
+
 Info<< "Initializing field JxB\n" << endl;
 volVectorField JxB
 (
@@ -82,7 +88,12 @@ volScalarField elcond
         IOobject::NO_WRITE
     ),
     mesh,
-    dimensionedScalar("zero", dimensionSet(-1, -3, 3, 0, 0, 2, 0), 0)
+    dimensionedScalar
+    (
+        "zero",
+        dimensionSet(-1, -3, 3, 0, 0, 2, 0),
+        0.0
+    )
 );
 
 Info<< "Initializing field T\n" << endl;
@@ -98,7 +109,6 @@ volScalarField T
     ),
     mesh
 );
-
 
 Info<< "Initializing field JH\n" << endl;
 volScalarField JH
@@ -128,19 +138,21 @@ volScalarField JH_recv
     JH
 );
 
+// -------------------------------------------------------------------------
+// Fluxes and transport
+// -------------------------------------------------------------------------
+
 #include "createPhi.H"
 
-
 Info<< "Reading transportProperties\n" << endl;
-
 singlePhaseTransportModel laminarTransport(U, phi);
 
-// Constant fluid properties from transportProperties
+// Constant fluid properties
 dimensionedScalar rhoConst("rho", dimDensity, laminarTransport);
 dimensionedScalar cp("cp", dimSpecificHeatCapacity, laminarTransport);
 dimensionedScalar kappa("kappa", dimPower/dimLength/dimTemperature, laminarTransport);
 
-// Need to store rho for ddt(rho, U) and for hydrostatic pressure
+// Density field
 volScalarField rho
 (
     IOobject
@@ -170,17 +182,19 @@ surfaceScalarField rhoPhi
     fvc::interpolate(rho)*phi
 );
 
-// Construct incompressible turbulence model
+// Turbulence model
 autoPtr<incompressible::turbulenceModel> turbulence
 (
     incompressible::turbulenceModel::New(U, phi, laminarTransport)
 );
 
+// -------------------------------------------------------------------------
+// Gravity and pressure
+// -------------------------------------------------------------------------
 
 #include "readGravitationalAcceleration.H"
 #include "readhRef.H"
 #include "gh.H"
-
 
 volScalarField p
 (
@@ -197,6 +211,7 @@ volScalarField p
 
 label pRefCell = 0;
 scalar pRefValue = 0.0;
+
 setRefCell
 (
     p,
@@ -219,9 +234,16 @@ if (p_rgh.needReference())
 
 mesh.setFluxRequired(p_rgh.name());
 
+// -------------------------------------------------------------------------
+// MRF (after mesh & transport are ready)
+// -------------------------------------------------------------------------
+
 #include "createMRF.H"
 
-// Reference conductivity (electrical) for the melt
+// -------------------------------------------------------------------------
+// Electrical conductivity (single-body enforced)
+// -------------------------------------------------------------------------
+
 dimensionedScalar elcond_melt
 (
     "elcond_melt",
@@ -229,10 +251,14 @@ dimensionedScalar elcond_melt
     laminarTransport
 );
 
-// Maximum allowable relative field difference in any cell comparing
-// to last Elmer update. This option controls frequency Elmer is called.
-//     1     - once
-//     (0,1) - when relative difference in any cell exceeds given value
-//     0     - every iteration
+// Force single, nonzero conductivity everywhere
+elcond = elcond_melt;
 
-scalar maxRelDiff(readScalar(laminarTransport.lookup("maxRelDiff")));
+// -------------------------------------------------------------------------
+// Elmer update control
+// -------------------------------------------------------------------------
+
+scalar maxRelDiff
+(
+    readScalar(laminarTransport.lookup("maxRelDiff"))
+);
