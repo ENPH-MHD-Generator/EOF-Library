@@ -79,8 +79,10 @@ Solver 4
   Exec Solver = Always
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
-  Target Variable 1 = Volume Current
-  Target Variable 2 = Joule Heating
+  Target Variable 1 = Volume Current 1
+  Target Variable 2 = Volume Current 2
+  Target Variable 3 = Volume Current 3
+  Target Variable 4 = Joule Heating
 
 End
 

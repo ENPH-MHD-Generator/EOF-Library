@@ -47,8 +47,73 @@ volVectorField U_old
 // -------------------------------------------------------------------------
 // MHD coupling fields
 // -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// MHD coupling fields (Elmer -> OpenFOAM)
+// Elmer exports Volume Current as components: Jx, Jy, Jz
+// We reconstruct JxB (or J for now) as a volVectorField
+// -------------------------------------------------------------------------
 
-Info<< "Initializing field JxB\n" << endl;
+Info<< "Initializing current density components (Jx, Jy, Jz)\n" << endl;
+
+volScalarField Jx
+(
+    IOobject
+    (
+        "Jx",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        dimCurrent/dimArea,   // A/m^2
+        0.0
+    )
+);
+
+volScalarField Jy
+(
+    IOobject
+    (
+        "Jy",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        dimCurrent/dimArea,
+        0.0
+    )
+);
+
+volScalarField Jz
+(
+    IOobject
+    (
+        "Jz",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        dimCurrent/dimArea,
+        0.0
+    )
+);
+
+Info<< "Initializing reconstructed current vector JxB (from components)\n" << endl;
+
 volVectorField JxB
 (
     IOobject
@@ -56,25 +121,18 @@ volVectorField JxB
         "JxB",
         runTime.timeName(),
         mesh,
-        IOobject::MUST_READ,
+        IOobject::NO_READ,
         IOobject::AUTO_WRITE
     ),
-    mesh
+    mesh,
+    dimensionedVector
+    (
+        "zero",
+        dimCurrent/dimArea,
+        vector::zero
+    )
 );
 
-Info<< "Initializing field JxB_recv\n" << endl;
-volVectorField JxB_recv
-(
-    IOobject
-    (
-        "JxB_recv",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    JxB
-);
 
 Info<< "Initializing field elcond\n" << endl;
 volScalarField elcond

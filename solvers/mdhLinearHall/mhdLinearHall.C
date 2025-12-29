@@ -9,13 +9,22 @@ Application
     mdhLinearHall
 
 Description
-    EOF coupled OpenFOAM/Elmer solver.
+    EOF coupled OpenFOAM/Elmer solver (Hall MHD channel).
 
-    IMPORTANT:
-      - Disable LTS (local time stepping) to avoid createRDeltaT/localEulerDdt
-        compile issues in your current OF6 build setup.
-      - Fix EOF coupling deadlock by deferring receiver initialization
-        (init=false) and NEVER doing blocking recv() before the time loop.
+    Pattern intentionally mirrors the EOF reference solvers:
+      - Construct Elmer sender/receiver normally (constructor does handshake).
+      - Do ONE initial send/recv before the OF time loop.
+      - During the time loop, couple every step (robust) using sendStatus(runTime.run()).
+      - No manual .initialize() calls.
+
+    Notes:
+      - This assumes your Elmer SIF exports:
+          Target Variable 1 = (vector) JxB
+          Target Variable 2 = (scalar) Joule Heating
+        i.e., the receive order below matches the SIF target order.
+
+      - If your Elmer side actually exports "Volume Current" (J) rather than JxB,
+        then you should rename fields accordingly OR compute JxB = J ^ B in OpenFOAM.
 \*---------------------------------------------------------------------------*/
 
 #include "fvCFD.H"
@@ -25,7 +34,6 @@ Description
 #include "fvOptions.H"
 #include "CorrectPhi.H"
 #include "Elmer.H"
-
 
 int main(int argc, char *argv[])
 {
@@ -43,11 +51,9 @@ int main(int argc, char *argv[])
 
     turbulence->validate();
 
-    // ------------------------------------------------------------
-    // Disable local time stepping (LTS) explicitly.
-    // This avoids createRDeltaT.H / localEulerDdt / fvc::smooth issues.
-    // ------------------------------------------------------------
+    // Explicitly disable LTS in this solver (keep compilation simple for OF6 setups)
     const bool LTS = false;
+    (void)LTS; // silence unused warning if your includes don’t reference it
 
     #include "readTimeControls.H"
     #include "CourantNo.H"
@@ -55,27 +61,60 @@ int main(int argc, char *argv[])
 
     Info<< "\nStarting time loop\n" << endl;
 
-    // ------------------------------------------------------------
-    // EOF coupling objects
-    //
-    // sending: init immediately is OK (Elmer starts in OpenFOAM2Elmer stage)
-    // receiving: MUST NOT init immediately (would deadlock in initialize()).
-    // ------------------------------------------------------------
-    Elmer<fvMesh> sending(mesh,  1, true);     // mode=+1, init now
-    Elmer<fvMesh> receiving(mesh, -1, false);  // mode=-1, init later
-    bool receivingInitialized = false;
+    // ---------------------------------------------------------------------
+    // Initial coupling (mirrors EOF test solver style)
+    // ---------------------------------------------------------------------
 
-    // If you have JxB_recv/JH_recv in createFields.H, keep them.
-    // Otherwise, receive directly into JxB/JH.
-    // Here I assume your createFields.H defines: JxB_recv, JH_recv, JxB, JH.
-    // If not, adjust names accordingly.
+    // Send fields to Elmer
+    Elmer<fvMesh> sending(mesh, 1);     //  1 = send
+    sending.sendStatus(1);              //  1 = ok / continue
+    elcond = elcond_melt;
+    sending.sendScalar(elcond);
 
-    // Optional: if you want to always couple every time step, keep as-is.
-    // If you want a trigger, base it on U change (as you started doing).
+    // Receive fields from Elmer
+    Elmer<fvMesh> receiving(mesh, -1);  // -1 = receive
+    receiving.sendStatus(1);
 
+    // Receive in the SAME order Elmer exports "Target Variable i"
+    receiving.recvScalar(Jx);
+    receiving.recvScalar(Jy);
+    receiving.recvScalar(Jz);
+    receiving.recvScalar(JH_recv);
+    // Reconstruct JxB from component fields
+    // Brackets define a local scope in OF6
+    {
+        vectorField& JxBif = JxB.primitiveFieldRef();
+        const scalarField& Jxif = Jx.internalField();
+        const scalarField& Jyif = Jy.internalField();
+        const scalarField& Jzif = Jz.internalField();
+
+        forAll(JxBif, celli)
+        {
+            JxBif[celli] = vector(Jxif[celli], Jyif[celli], Jzif[celli]);
+        }
+
+        forAll(JxB.boundaryField(), patchi)
+        {
+            vectorField& JxBp = JxB.boundaryFieldRef()[patchi];
+            const scalarField& Jxp = Jx.boundaryField()[patchi];
+            const scalarField& Jyp = Jy.boundaryField()[patchi];
+            const scalarField& Jzp = Jz.boundaryField()[patchi];
+
+            forAll(JxBp, facei)
+            {
+                JxBp[facei] = vector(Jxp[facei], Jyp[facei], Jzp[facei]);
+            }
+        }
+    }
+
+    receiving.recvScalar(JH_recv);      // only if Elmer exports Joule Heating
+    JH  = JH_recv;
+
+    // ---------------------------------------------------------------------
+    // OpenFOAM time loop
+    // ---------------------------------------------------------------------
     while (runTime.run())
     {
-        // No LTS branch at all (keeps compilation simple)
         #include "readTimeControls.H"
         #include "CourantNo.H"
         #include "setDeltaT.H"
@@ -84,41 +123,55 @@ int main(int argc, char *argv[])
 
         Info<< "Time = " << runTime.timeName() << nl << endl;
 
-        // ------------------------------------------------------------
+        // -----------------------------------------------------------------
         // Coupling step EVERY time step (robust)
-        // ------------------------------------------------------------
-        sending.sendStatus(1);
+        // IMPORTANT: use sendStatus(runTime.run()) to match EOF semantics.
+        // -----------------------------------------------------------------
+        sending.sendStatus(runTime.run());
 
-        // Your choice: either use the existing elcond field directly
-        // or set it each step. Keep it simple:
         elcond = elcond_melt;
         Info<< "elcond min/max = " << gMin(elcond) << " " << gMax(elcond) << nl << endl;
         sending.sendScalar(elcond);
 
-        // Init reverse mapping ONCE, but only after the first sendScalar()
-        if (!receivingInitialized)
-        {
-            receiving.initialize();
-            receivingInitialized = true;
-        }
+        receiving.sendStatus(runTime.run());
 
-        receiving.sendStatus(1);
-        Info<< "BEFORE recvVector" << endl;
-        receiving.recvVector(JxB_recv);
-        Info<< "AFTER recvVector" << endl;
-
-        Info<< "BEFORE recvScalar" << endl;
+        receiving.recvScalar(Jx);
+        receiving.recvScalar(Jy);
+        receiving.recvScalar(Jz);
         receiving.recvScalar(JH_recv);
-        Info<< "AFTER recvScalar" << endl;
 
+        // Reconstruct JxB from component fields
+        // Brackets define a local scope in OF6
+        {
+            vectorField& JxBif = JxB.primitiveFieldRef();
+            const scalarField& Jxif = Jx.internalField();
+            const scalarField& Jyif = Jy.internalField();
+            const scalarField& Jzif = Jz.internalField();
 
-        // Apply received fields
-        JxB = JxB_recv;
+            forAll(JxBif, celli)
+            {
+                JxBif[celli] = vector(Jxif[celli], Jyif[celli], Jzif[celli]);
+            }
+
+            // If you care about boundaries too, set them similarly:
+            forAll(JxB.boundaryField(), patchi)
+            {
+                vectorField& JxBp = JxB.boundaryFieldRef()[patchi];
+                const scalarField& Jxp = Jx.boundaryField()[patchi];
+                const scalarField& Jyp = Jy.boundaryField()[patchi];
+                const scalarField& Jzp = Jz.boundaryField()[patchi];
+
+                forAll(JxBp, facei)
+                {
+                    JxBp[facei] = vector(Jxp[facei], Jyp[facei], Jzp[facei]);
+                }
+            }
+        }
         JH  = JH_recv;
 
-        // ------------------------------------------------------------
+        // -----------------------------------------------------------------
         // PIMPLE loop
-        // ------------------------------------------------------------
+        // -----------------------------------------------------------------
         while (pimple.loop())
         {
             laminarTransport.correct();
@@ -144,12 +197,11 @@ int main(int argc, char *argv[])
             << nl << endl;
     }
 
-    // Clean shutdown
+    // ---------------------------------------------------------------------
+    // Clean shutdown (match EOF convention)
+    // ---------------------------------------------------------------------
     sending.sendStatus(0);
-    if (receivingInitialized)
-    {
-        receiving.sendStatus(0);
-    }
+    receiving.sendStatus(0);
 
     Info<< "End\n" << endl;
     return 0;
