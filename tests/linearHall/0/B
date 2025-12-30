@@ -1,26 +1,27 @@
 /*--------------------------------*- C++ -*----------------------------------*\
 | =========                 |                                                 |
 | \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\    /   O peration     | Version:  dev                                   |
-|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|  \\    /   O peration     | Version:  6                                     |
+|   \\  /    A nd           |                                                 |
 |    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
+
 FoamFile
 {
     version     2.0;
     format      ascii;
     class       volVectorField;
     location    "0";
-    object      JxB;
+    object      B;
 }
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Lorentz force density J x B [N/m^3]
-dimensions      [1 -2 -2 0 0 0 0];
+// Magnetic flux density [Tesla]
+dimensions      [1 0 -2 0 0 -1 0];
 
-// Start from zero; Elmer overwrites this during coupling
-internalField   uniform (0 0 0);
+// Uniform magnetic field in +z direction
+internalField   uniform (0 0 1);
 
+// Boundary conditions, zero at boundaries
 boundaryField
 {
     inlet
@@ -40,11 +41,6 @@ boundaryField
 
     defaultFaces
     {
-        type            empty;
+        type            zeroGradient;
     }
 }
-
-
-// ************************************************************************* //
-
-

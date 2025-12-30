@@ -7,7 +7,7 @@
       + turbulence->divDevRhoReff(rho, U)
      ==
         fvOptions(rho, U)
-      + JxB
+      + fLorentz
     );
 
     UEqn.relax();

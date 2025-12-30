@@ -53,7 +53,35 @@ solvers
         tolerance       1e-6;
         relTol          0.1;
     }
+
+    UFinal
+    {
+        $U;
+        relTol          0;
+    }
+
+    T
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        nSweeps         2;
+        tolerance       1e-7;
+        relTol          0.1;
+    }
+
+    TFinal
+    {
+        $T;
+        relTol          0;
+    }
+
+    p_rghFinal
+    {
+        $p_rgh;
+        relTol 0;
+    }
 }
+
 
 PIMPLE
 {
@@ -64,22 +92,26 @@ PIMPLE
 
     residualControl
     {
-        p_rgh           1e-3;
-        U               1e-4;
+        p_rgh   1e-6;
+        U       1e-7;
+        T       1e-7;
     }
 }
 
+// very aggressive for testing solver convergence
 relaxationFactors
 {
-    equations
-    {
-        U               0.7;
-    }
     fields
     {
-        p_rgh           0.3;
+        p_rgh 0.3;
+    }
+    equations
+    {
+        U 0.5;
+        T 0.5;
     }
 }
+
 
 
 // ************************************************************************* //

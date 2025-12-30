@@ -9,33 +9,42 @@ FoamFile
 {
     version     2.0;
     format      ascii;
-    class       dictionary;
-    location    "system";
-    object      controlDict;
+    class       volVectorField;
+    location    "0";
+    object      J_dens;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-application     mdhLinearHall;
+// Volume current desnity, J / m^2
+dimensions [0 -2 0 0 0 1 0];
 
-startFrom       startTime;
-startTime       0;
+// Start from zero; Elmer overwrites this during coupling
+internalField   uniform (0 0 0);
 
-stopAt          endTime;
-endTime         100;        // number of pseudo-iterations
+boundaryField
+{
+    inlet
+    {
+        type            zeroGradient;
+    }
 
-deltaT          1;          // artificial iteration counter
+    outlet
+    {
+        type            zeroGradient;
+    }
 
-writeControl    timeStep;
-writeInterval   50;
+    walls
+    {
+        type            zeroGradient;
+    }
 
-purgeWrite      0;
-
-// Turn OFF physical time control
-adjustTimeStep  no;
-maxCo           1000;       // irrelevant now
-maxDeltaT       1;
-
-functions { }
+    defaultFaces
+    {
+        type            empty;
+    }
+}
 
 
 // ************************************************************************* //
+
+

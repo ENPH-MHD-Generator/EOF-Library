@@ -5,12 +5,16 @@ End
 
 Simulation
   Coordinate System = String "Cartesian 3D"
-  Simulation Type   = Steady State
-  Steady State Max Iterations = 1
-  Steady State Min Iterations = 1
+  Simulation Type = Steady
+
+  Steady State Max Iterations = 1000000
+  Steady State Min Iterations = 1000000
+
   Output Intervals = 1
   Post File = case.ep
 End
+
+
 
 ! -------------------------
 ! Bodies / Equation
@@ -87,19 +91,6 @@ Solver 4
 End
 
 
-
-! -------------------------
-! Material: Hall conductivity tensor for B || z
-! Σ = [[σP,  σH, 0],
-!      [-σH, σP, 0],
-!      [0,    0, σ||]]
-!
-! σ|| = σ0
-! σP  = σ0/(1+β^2)
-! σH  = σ0*β/(1+β^2)
-!
-! σ0 comes from OpenFOAM via OF Conductivity.
-! -------------------------
 Material 1
   Name = "Conducting Fluid"
 

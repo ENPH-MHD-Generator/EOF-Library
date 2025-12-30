@@ -50,8 +50,23 @@ volVectorField U_old
 // -------------------------------------------------------------------------
 // MHD coupling fields (Elmer -> OpenFOAM)
 // Elmer exports Volume Current as components: Jx, Jy, Jz
-// We reconstruct JxB (or J for now) as a volVectorField
+// We reconstruct J as a volVectorField
 // -------------------------------------------------------------------------
+
+Info<< "Reading magnetic field B\n" << endl;
+
+volVectorField B
+(
+    IOobject
+    (
+        "B",
+        runTime.timeName(),
+        mesh,
+        IOobject::MUST_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh
+);
 
 Info<< "Initializing current density components (Jx, Jy, Jz)\n" << endl;
 
@@ -69,7 +84,7 @@ volScalarField Jx
     dimensionedScalar
     (
         "zero",
-        dimCurrent/dimArea,   // A/m^2
+        dimCurrent/dimArea,   
         0.0
     )
 );
@@ -112,13 +127,13 @@ volScalarField Jz
     )
 );
 
-Info<< "Initializing reconstructed current vector JxB (from components)\n" << endl;
+Info<< "Initializing reconstructed current vector J (from components)\n" << endl;
 
-volVectorField JxB
+volVectorField J_dens
 (
     IOobject
     (
-        "JxB",
+        "J",
         runTime.timeName(),
         mesh,
         IOobject::NO_READ,
@@ -132,6 +147,22 @@ volVectorField JxB
         vector::zero
     )
 );
+
+Info<< "Initializing Lorentz force field fLorentz\n" << endl;
+
+volVectorField fLorentz
+(
+    IOobject
+    (
+        "fLorentz",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    J_dens ^ B // This is cross product for openFOAM
+);
+
 
 
 Info<< "Initializing field elcond\n" << endl;

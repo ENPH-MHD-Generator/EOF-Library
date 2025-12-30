@@ -15,16 +15,12 @@ Description
       - Construct Elmer sender/receiver normally (constructor does handshake).
       - Do ONE initial send/recv before the OF time loop.
       - During the time loop, couple every step (robust) using sendStatus(runTime.run()).
-      - No manual .initialize() calls.
 
     Notes:
       - This assumes your Elmer SIF exports:
-          Target Variable 1 = (vector) JxB
+          Target Variable 1 = (vector) J_dens
           Target Variable 2 = (scalar) Joule Heating
         i.e., the receive order below matches the SIF target order.
-
-      - If your Elmer side actually exports "Volume Current" (J) rather than JxB,
-        then you should rename fields accordingly OR compute JxB = J ^ B in OpenFOAM.
 \*---------------------------------------------------------------------------*/
 
 #include "fvCFD.H"
@@ -55,9 +51,15 @@ int main(int argc, char *argv[])
     const bool LTS = false;
     (void)LTS; // silence unused warning if your includes don’t reference it
 
-    #include "readTimeControls.H"
-    #include "CourantNo.H"
-    #include "setInitialDeltaT.H"
+
+    // For coupling stabilization.
+    // TODO: Move this to a centralized config
+    const scalar alphaLorentz = 0.2;   
+
+
+    // #include "readTimeControls.H"
+    // #include "CourantNo.H"
+    // #include "setInitialDeltaT.H"
 
     Info<< "\nStarting time loop\n" << endl;
 
@@ -75,99 +77,106 @@ int main(int argc, char *argv[])
     Elmer<fvMesh> receiving(mesh, -1);  // -1 = receive
     receiving.sendStatus(1);
 
-    // Receive in the SAME order Elmer exports "Target Variable i"
     receiving.recvScalar(Jx);
     receiving.recvScalar(Jy);
     receiving.recvScalar(Jz);
     receiving.recvScalar(JH_recv);
-    // Reconstruct JxB from component fields
+    JH  = JH_recv;
+
+    // Reconstruct J_dens from component fields
     // Brackets define a local scope in OF6
     {
-        vectorField& JxBif = JxB.primitiveFieldRef();
-        const scalarField& Jxif = Jx.internalField();
-        const scalarField& Jyif = Jy.internalField();
-        const scalarField& Jzif = Jz.internalField();
+        vectorField& J_dens_in = J_dens.primitiveFieldRef();
+        const scalarField & Jx_in = Jx.internalField();
+        const scalarField & Jy_in = Jy.internalField();
+        const scalarField & Jz_in = Jz.internalField();
 
-        forAll(JxBif, celli)
+        forAll(J_dens_in, celli)
         {
-            JxBif[celli] = vector(Jxif[celli], Jyif[celli], Jzif[celli]);
+            J_dens_in[celli] = vector(Jx_in[celli], Jy_in[celli], Jz_in[celli]);
         }
 
-        forAll(JxB.boundaryField(), patchi)
+        forAll(J_dens.boundaryField(), patchi)
         {
-            vectorField& JxBp = JxB.boundaryFieldRef()[patchi];
-            const scalarField& Jxp = Jx.boundaryField()[patchi];
-            const scalarField& Jyp = Jy.boundaryField()[patchi];
-            const scalarField& Jzp = Jz.boundaryField()[patchi];
+            vectorField& J_dens_p = J_dens.boundaryFieldRef()[patchi];
+            const scalarField & Jx_p = Jx.boundaryField()[patchi];
+            const scalarField & Jy_p = Jy.boundaryField()[patchi];
+            const scalarField & Jz_p = Jz.boundaryField()[patchi];
 
-            forAll(JxBp, facei)
+            forAll(J_dens_p, facei)
             {
-                JxBp[facei] = vector(Jxp[facei], Jyp[facei], Jzp[facei]);
+                J_dens_p[facei] = vector(Jx_p[facei], Jy_p[facei], Jz_p[facei]);
             }
         }
     }
-
-    receiving.recvScalar(JH_recv);      // only if Elmer exports Joule Heating
-    JH  = JH_recv;
+    const volVectorField fNew(J_dens ^ B);
+    fLorentz = alphaLorentz*fNew + (1.0 - alphaLorentz)*fLorentz;
 
     // ---------------------------------------------------------------------
     // OpenFOAM time loop
     // ---------------------------------------------------------------------
     while (runTime.run())
     {
-        #include "readTimeControls.H"
-        #include "CourantNo.H"
-        #include "setDeltaT.H"
+        // #include "readTimeControls.H"
+        // #include "CourantNo.H"
+        // #include "setDeltaT.H"
 
         runTime++;
-
         Info<< "Time = " << runTime.timeName() << nl << endl;
+        Info<< "deltaT(fixed?) = " << runTime.deltaTValue() << nl << endl;
+
+        const int status = runTime.run() ? 1 : 0;
+
+        Info<< "Coupling status = " << status
+            << "  time=" << runTime.timeName()
+            << "  runTime.run()=" << runTime.run()
+            << nl << endl;
+
+        receiving.sendStatus(status);
+        sending.sendStatus(status);
 
         // -----------------------------------------------------------------
         // Coupling step EVERY time step (robust)
-        // IMPORTANT: use sendStatus(runTime.run()) to match EOF semantics.
         // -----------------------------------------------------------------
-        sending.sendStatus(runTime.run());
 
         elcond = elcond_melt;
         Info<< "elcond min/max = " << gMin(elcond) << " " << gMax(elcond) << nl << endl;
         sending.sendScalar(elcond);
 
-        receiving.sendStatus(runTime.run());
-
         receiving.recvScalar(Jx);
         receiving.recvScalar(Jy);
         receiving.recvScalar(Jz);
         receiving.recvScalar(JH_recv);
+        JH  = JH_recv;
 
-        // Reconstruct JxB from component fields
+        // Reconstruct J_dens from component fields
         // Brackets define a local scope in OF6
         {
-            vectorField& JxBif = JxB.primitiveFieldRef();
-            const scalarField& Jxif = Jx.internalField();
-            const scalarField& Jyif = Jy.internalField();
-            const scalarField& Jzif = Jz.internalField();
+            vectorField& J_dens_in = J_dens.primitiveFieldRef();
+            const scalarField & Jx_in = Jx.internalField();
+            const scalarField & Jy_in = Jy.internalField();
+            const scalarField & Jz_in = Jz.internalField();
 
-            forAll(JxBif, celli)
+            forAll(J_dens_in, celli)
             {
-                JxBif[celli] = vector(Jxif[celli], Jyif[celli], Jzif[celli]);
+                J_dens_in[celli] = vector(Jx_in[celli], Jy_in[celli], Jz_in[celli]);
             }
 
-            // If you care about boundaries too, set them similarly:
-            forAll(JxB.boundaryField(), patchi)
+            forAll(J_dens.boundaryField(), patchi)
             {
-                vectorField& JxBp = JxB.boundaryFieldRef()[patchi];
-                const scalarField& Jxp = Jx.boundaryField()[patchi];
-                const scalarField& Jyp = Jy.boundaryField()[patchi];
-                const scalarField& Jzp = Jz.boundaryField()[patchi];
+                vectorField& J_dens_p = J_dens.boundaryFieldRef()[patchi];
+                const scalarField & Jx_p = Jx.boundaryField()[patchi];
+                const scalarField & Jy_p = Jy.boundaryField()[patchi];
+                const scalarField & Jz_p = Jz.boundaryField()[patchi];
 
-                forAll(JxBp, facei)
+                forAll(J_dens_p, facei)
                 {
-                    JxBp[facei] = vector(Jxp[facei], Jyp[facei], Jzp[facei]);
+                    J_dens_p[facei] = vector(Jx_p[facei], Jy_p[facei], Jz_p[facei]);
                 }
             }
         }
-        JH  = JH_recv;
+        const volVectorField fNew(J_dens ^ B);
+        fLorentz = alphaLorentz*fNew + (1.0 - alphaLorentz)*fLorentz;
 
         // -----------------------------------------------------------------
         // PIMPLE loop
@@ -196,12 +205,6 @@ int main(int argc, char *argv[])
             << "  ClockTime = " << runTime.elapsedClockTime() << " s"
             << nl << endl;
     }
-
-    // ---------------------------------------------------------------------
-    // Clean shutdown (match EOF convention)
-    // ---------------------------------------------------------------------
-    sending.sendStatus(0);
-    receiving.sendStatus(0);
 
     Info<< "End\n" << endl;
     return 0;

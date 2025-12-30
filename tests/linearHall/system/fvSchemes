@@ -27,8 +27,10 @@ gradSchemes
 
 divSchemes
 {
-    div(phi,U)      Gauss linearUpwind grad(U);
-    div((nuEff*dev2(T(grad(U))))) Gauss linear;
+    div(phi,U)                          Gauss linearUpwind grad(U);
+    div(rhoPhi,U)                       Gauss linearUpwind grad(U);
+    div(rhoPhi,T)                       Gauss linearUpwind grad(T);
+    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;
 }
 
 laplacianSchemes
