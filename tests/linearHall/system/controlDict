@@ -20,19 +20,17 @@ application     mdhLinearHall;
 startFrom       startTime;
 startTime       0;
 
-stopAt          endTime;
-endTime         100;        // number of pseudo-iterations
-
-deltaT          1;          // artificial iteration counter
+stopAt          writeNow;
+deltaT          1;
 
 writeControl    timeStep;
-writeInterval   50;
+writeInterval   1;
+
+adjustTimeStep  yes; 
 
 purgeWrite      0;
 
-// Turn OFF physical time control
-adjustTimeStep  no;
-maxCo           1000;       // irrelevant now
+maxCo           0.002;
 maxDeltaT       1;
 
 functions { }

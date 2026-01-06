@@ -19,7 +19,7 @@ FoamFile
 dimensions      [1 0 -2 0 0 -1 0];
 
 // Uniform magnetic field in +z direction
-internalField   uniform (0 0 1);
+internalField   uniform (0 0 0);
 
 // Boundary conditions, zero at boundaries
 boundaryField

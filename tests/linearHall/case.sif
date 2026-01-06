@@ -107,16 +107,18 @@ Body Force 1
 End
 
 Boundary Condition 1
-  ! FaradayMinusY
+  ! FaradayMinusY (reference / ground)
   Target Boundaries(1) = 1
   Potential = Real 0.0
 End
 
 Boundary Condition 2
-  ! FaradayPlusY
+  ! FaradayPlusY (floating electrode)
   Target Boundaries(1) = 2
-  Potential = Real 1.0
+  Current Density BC = Logical True
+  Current Density = Real 0.0
 End
+
 
 Boundary Condition 3
   ! SideWallsZ

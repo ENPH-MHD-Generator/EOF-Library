@@ -57,9 +57,9 @@ int main(int argc, char *argv[])
     const scalar alphaLorentz = 0.2;   
 
 
-    // #include "readTimeControls.H"
-    // #include "CourantNo.H"
-    // #include "setInitialDeltaT.H"
+    #include "readTimeControls.H"
+    #include "CourantNo.H"
+    #include "setInitialDeltaT.H"
 
     Info<< "\nStarting time loop\n" << endl;
 
@@ -115,17 +115,19 @@ int main(int argc, char *argv[])
     // ---------------------------------------------------------------------
     // OpenFOAM time loop
     // ---------------------------------------------------------------------
-    while (runTime.run())
+
+    const int numIter = 5000;
+    for (int iter = 0; iter < numIter; ++iter)
     {
-        // #include "readTimeControls.H"
-        // #include "CourantNo.H"
-        // #include "setDeltaT.H"
+        #include "readTimeControls.H"
+        #include "CourantNo.H"
+        #include "setDeltaT.H"
 
         runTime++;
         Info<< "Time = " << runTime.timeName() << nl << endl;
         Info<< "deltaT(fixed?) = " << runTime.deltaTValue() << nl << endl;
 
-        const int status = runTime.run() ? 1 : 0;
+        const int status = (iter < numIter-1) ? 1 : 0;
 
         Info<< "Coupling status = " << status
             << "  time=" << runTime.timeName()
