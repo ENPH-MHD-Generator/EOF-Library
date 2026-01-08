@@ -116,7 +116,7 @@ Boundary Condition 2
   ! FaradayPlusY (floating electrode)
   Target Boundaries(1) = 2
   Current Density BC = Logical True
-  Current Density = Real 0.0
+  Current Density = Real 10.0
 End
 
 

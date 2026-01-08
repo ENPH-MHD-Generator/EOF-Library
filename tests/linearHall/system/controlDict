@@ -20,11 +20,13 @@ application     mdhLinearHall;
 startFrom       startTime;
 startTime       0;
 
-stopAt          writeNow;
-deltaT          1;
+stopAt          endTime;
+endTime         0.005;
+
+deltaT          0.1;
 
 writeControl    timeStep;
-writeInterval   1;
+writeInterval   20;
 
 adjustTimeStep  yes; 
 

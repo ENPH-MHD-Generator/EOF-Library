@@ -15,12 +15,6 @@ Description
       - Construct Elmer sender/receiver normally (constructor does handshake).
       - Do ONE initial send/recv before the OF time loop.
       - During the time loop, couple every step (robust) using sendStatus(runTime.run()).
-
-    Notes:
-      - This assumes your Elmer SIF exports:
-          Target Variable 1 = (vector) J_dens
-          Target Variable 2 = (scalar) Joule Heating
-        i.e., the receive order below matches the SIF target order.
 \*---------------------------------------------------------------------------*/
 
 #include "fvCFD.H"
@@ -127,8 +121,7 @@ int main(int argc, char *argv[])
     // OpenFOAM time loop
     // ---------------------------------------------------------------------
 
-    const int numIter = 300; // TODO make a config
-    for (int iter = 0; iter < numIter; ++iter)
+    while (runTime.run())
     {
         #include "readTimeControls.H"
         #include "CourantNo.H"
@@ -138,7 +131,7 @@ int main(int argc, char *argv[])
         Info<< "Time = " << runTime.timeName() << nl << endl;
         Info<< "deltaT(fixed?) = " << runTime.deltaTValue() << nl << endl;
 
-        const int status = (iter < numIter-1) ? 1 : 0;
+        const int status = runTime.run();
 
         Info<< "Coupling status = " << status
             << "  time=" << runTime.timeName()
@@ -240,5 +233,3 @@ int main(int argc, char *argv[])
     Info<< "End\n" << endl;
     return 0;
 }
-
-// ************************************************************************* //
