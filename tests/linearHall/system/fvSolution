@@ -62,12 +62,12 @@ solvers
 
     T
     {
-        solver          smoothSolver;
-        smoother        symGaussSeidel;
-        nSweeps         2;
-        tolerance       1e-7;
-        relTol          0.1;
+        solver          PBiCGStab;
+        preconditioner  DILU;
+        tolerance       1e-8;
+        relTol          0.01;
     }
+
 
     TFinal
     {

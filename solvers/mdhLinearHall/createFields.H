@@ -346,8 +346,3 @@ elcond = elcond_melt;
 // -------------------------------------------------------------------------
 // Elmer update control
 // -------------------------------------------------------------------------
-
-scalar maxRelDiff
-(
-    readScalar(laminarTransport.lookup("maxRelDiff"))
-);

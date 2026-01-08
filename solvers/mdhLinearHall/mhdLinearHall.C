@@ -51,13 +51,7 @@ int main(int argc, char *argv[])
     const bool LTS = false;
     (void)LTS; // silence unused warning if your includes don’t reference it
 
-
-    // For coupling stabilization.
-    // TODO: Move this to a centralized config
-    const scalar alphaLorentz = 0.2;   
-
-
-    #include "readTimeControls.H"
+    #include "readTimeControls.H" // reads time controls from the control dict
     #include "CourantNo.H"
     #include "setInitialDeltaT.H"
 
@@ -109,14 +103,31 @@ int main(int argc, char *argv[])
             }
         }
     }
-    const volVectorField fNew(J_dens ^ B);
-    fLorentz = alphaLorentz*fNew + (1.0 - alphaLorentz)*fLorentz;
+
+    fLorentz = J_dens ^ B;
+    {
+        scalar fMax = 0.0;
+
+        const vectorField& fI = fLorentz.internalField();
+
+        forAll(fI, celli)
+        {
+            const scalar magFi = mag(fI[celli]);
+            if (magFi > fMax)
+            {
+                fMax = magFi;
+            }
+        }
+
+        Info<< "DEBUG fLorentz max |F| = " << fMax << nl << endl;
+    }
+
 
     // ---------------------------------------------------------------------
     // OpenFOAM time loop
     // ---------------------------------------------------------------------
 
-    const int numIter = 5000;
+    const int numIter = 300; // TODO make a config
     for (int iter = 0; iter < numIter; ++iter)
     {
         #include "readTimeControls.H"
@@ -177,8 +188,26 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        const volVectorField fNew(J_dens ^ B);
-        fLorentz = alphaLorentz*fNew + (1.0 - alphaLorentz)*fLorentz;
+        fLorentz = J_dens ^ B;
+        {
+            scalar fMax = 0.0;
+
+            const vectorField& fI = fLorentz.internalField();
+
+            forAll(fI, celli)
+            {
+                const scalar magFi = mag(fI[celli]);
+                if (magFi > fMax)
+                {
+                    fMax = magFi;
+                }
+            }
+
+            Info<< "DEBUG fLorentz max |F| = " << fMax << nl << endl;
+        }
+
+
+
 
         // -----------------------------------------------------------------
         // PIMPLE loop
