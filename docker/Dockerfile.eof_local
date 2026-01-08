@@ -4,63 +4,9 @@ FROM eoflibrary/eof_elmer84_of6:latest
 # The block below will rebuild Elmer from source. It works and can be used for testing things.
 
 USER root
+
+# install nano for in-container text editing
 RUN apt-get update && apt-get install -y --no-install-recommends nano
-
-# USER root
-
-# # --------------------------------------------------
-# # Build dependencies for Elmer
-# # --------------------------------------------------
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-#     git cmake g++ gfortran make \
-#     libopenmpi-dev openmpi-bin \
-#     libblas-dev liblapack-dev \
-#     libmumps-dev \
-#     libsuitesparse-dev \
-#     libmetis-dev \
-#     libhdf5-openmpi-dev \
-#     python3 \
-#     nano \
-#     && rm -rf /var/lib/apt/lists/*
-
-# # --------------------------------------------------
-# # Rebuild Elmer FEM (source already present in base image)
-# # --------------------------------------------------
-# WORKDIR /opt/elmerfem
-
-# # Make sure we're on a compatible version
-# RUN git fetch --all && git checkout release-8.4
-
-# # Clean any previous broken build
-# RUN rm -rf build
-
-# RUN mkdir build
-# WORKDIR /opt/elmerfem/build
-
-# RUN mkdir -p build
-# WORKDIR /opt/elmerfem/build
-
-# RUN cmake .. \
-#   -DCMAKE_INSTALL_PREFIX=/usr/local \
-#   -DWITH_MPI=ON \
-#   -DWITH_MUMPS=ON \
-#   -DWITH_HDF5=ON \
-#   -DWITH_UMFPACK=ON \
-#   -DWITH_ELECTROMAGNETICS=ON \
-#   -DWITH_ELMERGUI=OFF \
-#   -DWITH_ELMERICE=OFF \
-#   -DWITH_LUA=ON
-
-# RUN make -j$(nproc)
-# RUN make install
-
-# # --------------------------------------------------
-# # Runtime environment
-# # --------------------------------------------------
-# ENV ELMER_HOME=/usr/local
-# ENV ELMER_SOLVER_HOME=/usr/local
-# ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-# ENV PATH=/usr/local/bin:$PATH
 
 WORKDIR /home/openfoam
 
