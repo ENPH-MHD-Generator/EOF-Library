@@ -8,6 +8,13 @@ USER root
 # install nano for in-container text editing
 RUN apt-get update && apt-get install -y --no-install-recommends nano
 
+# Install sudo
+RUN apt-get update && apt-get install -y sudo
+
+# Allow openfoam user to sudo without password
+RUN echo "openfoam ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/openfoam \
+    && chmod 0440 /etc/sudoers.d/openfoam
+
 WORKDIR /home/openfoam
 
 # Remove the EOF-Library that ships inside the base image
