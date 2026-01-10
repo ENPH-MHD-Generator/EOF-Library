@@ -55,11 +55,26 @@ int main(int argc, char *argv[])
     // Initial coupling (mirrors EOF test solver style)
     // ---------------------------------------------------------------------
 
+    // Construct scalar component fields from vectors
+    volScalarField Ux("Ux", U.component(vector::X));
+    volScalarField Uy("Uy", U.component(vector::Y));
+    volScalarField Uz("Uz", U.component(vector::Z));
+    volScalarField Bx("Bx", B.component(vector::X));
+    volScalarField By("By", B.component(vector::Y));
+    volScalarField Bz("Bz", B.component(vector::Z));
+
+
     // Send fields to Elmer
     Elmer<fvMesh> sending(mesh, 1);     //  1 = send
     sending.sendStatus(1);              //  1 = ok / continue
     elcond = elcond_melt;
     sending.sendScalar(elcond);
+    sending.sendScalar(Ux);
+    sending.sendScalar(Uy);
+    sending.sendScalar(Uz);
+    sending.sendScalar(Bx);
+    sending.sendScalar(By);
+    sending.sendScalar(Bz);
 
     // Receive fields from Elmer
     Elmer<fvMesh> receiving(mesh, -1);  // -1 = receive
@@ -145,9 +160,23 @@ int main(int argc, char *argv[])
         // Coupling step EVERY time step (robust)
         // -----------------------------------------------------------------
 
+        // Construct scalar component fields from vectors
+        volScalarField Ux("Ux", U.component(vector::X));
+        volScalarField Uy("Uy", U.component(vector::Y));
+        volScalarField Uz("Uz", U.component(vector::Z));
+        volScalarField Bx("Bx", B.component(vector::X));
+        volScalarField By("By", B.component(vector::Y));
+        volScalarField Bz("Bz", B.component(vector::Z));
+
         elcond = elcond_melt;
         Info<< "elcond min/max = " << gMin(elcond) << " " << gMax(elcond) << nl << endl;
         sending.sendScalar(elcond);
+        sending.sendScalar(Ux);
+        sending.sendScalar(Uy);
+        sending.sendScalar(Uz);
+        sending.sendScalar(Bx);
+        sending.sendScalar(By);
+        sending.sendScalar(Bz);
 
         receiving.recvScalar(Jx);
         receiving.recvScalar(Jy);

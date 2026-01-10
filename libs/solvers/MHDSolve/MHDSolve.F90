@@ -47,7 +47,7 @@
 
 !------------------------------------------------------------------------------
 !> Initialization of the primary solver, i.e. StatCurrentSolver.
-!> \ingroup Solvers
+!> ingroup Solvers
 !------------------------------------------------------------------------------
 SUBROUTINE StatCurrentSolver_Init( Model,Solver,dt,TransientSimulation)
 !------------------------------------------------------------------------------
@@ -56,17 +56,47 @@ SUBROUTINE StatCurrentSolver_Init( Model,Solver,dt,TransientSimulation)
 !------------------------------------------------------------------------------
     TYPE(Model_t)  :: Model
     TYPE(Solver_t), TARGET :: Solver
-    LOGICAL ::  TransientSimulation
+    LOGICAL :: TransientSimulation
     REAL(KIND=dp) :: dt
 !------------------------------------------------------------------------------
     LOGICAL :: Found, Calculate
     TYPE(ValueList_t), POINTER :: Params
-    CHARACTER(LEN=MAX_NAME_LEN) :: VariableName
-    INTEGER :: dim
+    INTEGER :: Dim
+
+    TYPE(Variable_t), POINTER :: PotVar
+    TYPE(Equation_t), POINTER :: Eq
+    CHARACTER(LEN=MAX_NAME_LEN) :: EqName
+!------------------------------------------------------------------------------
 
     Params => GetSolverParams()
-    dim = CoordinateSystemDimension()
+    Dim = CoordinateSystemDimension()
 
+    !------------------------------------------------------------
+    ! Bind Potential variable to this solver's equation
+    !------------------------------------------------------------
+    PotVar => VariableGet( Model % Variables, 'Potential' )
+    IF ( .NOT. ASSOCIATED(PotVar) ) THEN
+      CALL Fatal('StatCurrentSolver_Init', &
+                 'Primary variable Potential not found')
+    END IF
+
+    EqName = ListGetString( Params, 'Equation', Found )
+    IF ( .NOT. Found ) THEN
+      CALL Fatal('StatCurrentSolver_Init', &
+                 'Solver has no Equation keyword')
+    END IF
+
+    Eq => GetEquation( Model, EqName )
+    IF ( .NOT. ASSOCIATED(Eq) ) THEN
+      CALL Fatal('StatCurrentSolver_Init', &
+                 'Equation not found: '//TRIM(EqName))
+    END IF
+
+    CALL SetEquation( PotVar, Eq )
+
+    !------------------------------------------------------------
+    ! Exported variables
+    !------------------------------------------------------------
     IF (ListGetLogical(Params,'Calculate Joule Heating',Found)) &
         CALL ListAddString( Params,NextFreeKeyword('Exported Variable ',Params), &
         'Joule Heating' )
@@ -74,10 +104,10 @@ SUBROUTINE StatCurrentSolver_Init( Model,Solver,dt,TransientSimulation)
     IF (ListGetLogical(Params,'Calculate Nodal Heating',Found)) &
         CALL ListAddString( Params,NextFreeKeyword('Exported Variable ',Params), &
         'Nodal Joule Heating' )
-    
+
     Calculate = ListGetLogical(Params,'Calculate Volume Current',Found)
-    IF( Calculate ) THEN
-      IF( Dim == 2 ) THEN
+    IF ( Calculate ) THEN
+      IF ( Dim == 2 ) THEN
         CALL ListAddString( Params,NextFreeKeyword('Exported Variable ',Params), &
             'Volume Current[Volume Current:2]' )
       ELSE
@@ -85,10 +115,10 @@ SUBROUTINE StatCurrentSolver_Init( Model,Solver,dt,TransientSimulation)
             'Volume Current[Volume Current:3]' )
       END IF
     END IF
-   
 !------------------------------------------------------------------------------
 END SUBROUTINE StatCurrentSolver_Init
 !------------------------------------------------------------------------------
+
     
 !------------------------------------------------------------------------------
 !>  Solve the Poisson equation for the electric potential and compute the 
@@ -144,6 +174,18 @@ END SUBROUTINE StatCurrentSolver_Init
      LOGICAL :: GetCondAtIp
      TYPE(ValueHandle_t) :: CondAtIp_h
      REAL(KIND=dp) :: CondAtIp
+
+    !  REAL(KIND=dp), POINTER :: Uvals(:), Bvals(:)
+    !  INTEGER, POINTER :: Uperm(:), Bperm(:)
+    !  CHARACTER(LEN=MAX_NAME_LEN) :: UName, BName
+    !  TYPE(Variable_t), POINTER :: UVar, BVar
+     REAL(KIND=dp), POINTER :: UxVals(:), UyVals(:), UzVals(:)
+     REAL(KIND=dp), POINTER :: BxVals(:), ByVals(:), BzVals(:)
+     INTEGER, POINTER :: UxPerm(:), UyPerm(:), UzPerm(:)
+     INTEGER, POINTER :: BxPerm(:), ByPerm(:), BzPerm(:)
+     TYPE(Variable_t), POINTER :: UxVar, UyVar, UzVar, BxVar, ByVar, BzVar
+
+
      
      SAVE LocalStiffMatrix, Load, LocalForce, &
           ElementNodes, CalculateCurrent, CalculateHeating, &
@@ -217,6 +259,31 @@ END SUBROUTINE StatCurrentSolver_Init
        END IF
 
        NULLIFY( Cwrk )
+
+      UxVar => VariableGet( Solver % Mesh % Variables, 'Ux' )
+      UyVar => VariableGet( Solver % Mesh % Variables, 'Uy' )
+      UzVar => VariableGet( Solver % Mesh % Variables, 'Uz' )
+
+      BxVar => VariableGet( Solver % Mesh % Variables, 'Bx' )
+      ByVar => VariableGet( Solver % Mesh % Variables, 'By' )
+      BzVar => VariableGet( Solver % Mesh % Variables, 'Bz' )
+
+      IF (.NOT.ASSOCIATED(UxVar)) CALL Fatal('StatCurrentSolver','Ux not found')
+      IF (.NOT.ASSOCIATED(UyVar)) CALL Fatal('StatCurrentSolver','Uy not found')
+      IF (.NOT.ASSOCIATED(UzVar)) CALL Fatal('StatCurrentSolver','Uz not found')
+
+      IF (.NOT.ASSOCIATED(BxVar)) CALL Fatal('StatCurrentSolver','Bx not found')
+      IF (.NOT.ASSOCIATED(ByVar)) CALL Fatal('StatCurrentSolver','By not found')
+      IF (.NOT.ASSOCIATED(BzVar)) CALL Fatal('StatCurrentSolver','Bz not found')
+
+      UxVals => UxVar % Values ; UxPerm => UxVar % Perm
+      UyVals => UyVar % Values ; UyPerm => UyVar % Perm
+      UzVals => UzVar % Values ; UzPerm => UzVar % Perm
+
+      BxVals => BxVar % Values ; BxPerm => BxVar % Perm
+      ByVals => ByVar % Values ; ByPerm => ByVar % Perm
+      BzVals => BzVar % Values ; BzPerm => BzVar % Perm
+
  
        CalculateCurrent = ListGetLogical( Params, &
            'Calculate Volume Current', GotIt )
@@ -594,6 +661,11 @@ END SUBROUTINE StatCurrentSolver_Init
     INTEGER :: N_Integ, t, tg, i, j, k
     LOGICAL :: Stat
 
+    REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3), SigmaUxBgp(3)
+    INTEGER :: ip
+    REAL(KIND=dp) :: Cgp(3,3)
+
+
 !------------------------------------------------------------------------------
 
     ALLOCATE( Nodes % x( Model % MaxElementNodes ) )
@@ -731,6 +803,52 @@ END SUBROUTINE StatCurrentSolver_Init
             END DO
           END IF
 
+          Ugp = 0.0_dp
+          Bgp = 0.0_dp
+
+          DO i = 1, n
+            ip = UxPerm( NodeIndexes(i) )
+            IF (ip > 0) THEN
+              Ugp(1) = Ugp(1) + Basis(i) * UxVals(ip)
+              Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
+              IF (DIM == 3) THEN 
+                Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
+              END IF
+            END IF
+
+            ip = BxPerm( NodeIndexes(i) )
+            IF (ip > 0) THEN
+              Bgp(1) = Bgp(1) + Basis(i) * BxVals(ip)
+              Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
+              IF (DIM == 3) THEN 
+                Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
+              END IF
+            END IF
+          END DO
+
+          ! Cross product U x B
+          UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
+          UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
+          UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
+
+
+          Cgp = 0.0_dp
+          DO i = 1, dim
+            DO j = 1, dim
+              Cgp(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
+            END DO
+          END DO
+
+
+          ! SigmaUxB = C * (U x B)
+          SigmaUxBgp = 0.0_dp
+          DO i=1,dim
+            DO j=1,dim
+              SigmaUxBgp(i) = SigmaUxBgp(i) + Cgp(i,j) * UxBgp(j)
+            END DO
+          END DO
+
+
             
           VolTot = VolTot + s
 
@@ -739,13 +857,15 @@ END SUBROUTINE StatCurrentSolver_Init
 
           IF( CalculateHeating .OR. CalculateCurrent .OR. CalculateNodalHeating ) THEN
             HeatingDensity = HeatingDensity + &
-                s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) ) 
-            DO j = 1,DIM
-              Current(j) = Current(j) - EpsGrad(j) * s
+                s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
+
+            DO j = 1, DIM
+              Current(j) = Current(j) + SigmaUxBgp(j) * s
             END DO
-            
+
             ElemVol = ElemVol + s
           END IF
+
 
        END DO! of the Gauss integration points
 
@@ -842,6 +962,11 @@ END SUBROUTINE StatCurrentSolver_Init
        INTEGER :: i,p,q,t,DIM
  
        TYPE(GaussIntegrationPoints_t) :: IntegStuff
+
+       REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3), SigmaUxBgp(3)
+       INTEGER, POINTER :: NodeIndexes(:)
+       INTEGER :: ip
+
  
 !------------------------------------------------------------------------------
        DIM = CoordinateSystemDimension()
@@ -849,6 +974,8 @@ END SUBROUTINE StatCurrentSolver_Init
        Force = 0.0d0
        StiffMatrix = 0.0d0
 !------------------------------------------------------------------------------
+
+       NodeIndexes => Element % NodeIndexes
  
 !------------------------------------------------------------------------------
 !      Numerical integration
@@ -893,6 +1020,50 @@ END SUBROUTINE StatCurrentSolver_Init
              END DO
            END DO
          END IF
+
+        
+        ! Reset Gauss-point velocity and magnetic field
+        Ugp = 0.0_dp
+        Bgp = 0.0_dp
+
+        ! Interpolate U and B from nodal scalar components
+        DO i = 1, n
+
+          ip = UxPerm( NodeIndexes(i) )
+          IF (ip > 0) THEN
+            Ugp(1) = Ugp(1) + Basis(i) * UxVals(ip)
+            Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
+            IF (DIM == 3) THEN 
+              Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip) 
+            END IF
+          END IF
+
+          ip = BxPerm( NodeIndexes(i) )
+          IF (ip > 0) THEN
+            Bgp(1) = Bgp(1) + Basis(i) * BxVals(ip)
+            Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
+            IF (DIM == 3) THEN 
+              Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip) 
+            END IF
+          END IF
+
+        END DO
+
+
+        ! Cross product UxB = U x B
+        UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
+        UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
+        UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
+
+
+        ! SigmaUxB = C * UxB (use only 1:dim)
+        SigmaUxBgp = 0.0_dp
+        DO i=1,dim
+          DO j=1,dim
+            SigmaUxBgp(i) = SigmaUxBgp(i) + C(i,j) * UxBgp(j)
+          END DO
+        END DO
+
          
 !------------------------------------------------------------------------------
 !        The Poisson equation
@@ -908,6 +1079,11 @@ END SUBROUTINE StatCurrentSolver_Init
              StiffMatrix(p,q) = StiffMatrix(p,q) + S*A
            END DO
            Force(p) = Force(p) + S*L*Basis(p)
+           ! Add + ∫ (∇N_p · (σ (u×B))) dV
+           DO i=1,dim
+             Force(p) = Force(p) + S * dBasisdx(p,i) * SigmaUxBgp(i)
+           END DO
+ 
          END DO
 !------------------------------------------------------------------------------
        END DO
