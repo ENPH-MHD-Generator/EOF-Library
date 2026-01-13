@@ -28,16 +28,7 @@ End
 
 Equation 1
   Name = "EOF_HallChannel"
-  Active Solvers = 1 2 3 4
-End
-
-Solver 1
-  Exec Solver = Always
-  Equation = "PreAllocatePotential"
-  Procedure = "AllocateSolver" "AllocateSolver"
-
-  Variable = Potential
-  Variable DOFs = 1
+  Active Solvers = 1 2 3
 End
 
 
@@ -45,7 +36,7 @@ End
 ! OpenFOAM -> Elmer: populate scalar fields
 ! --------------------------------------------------
 
-Solver 2
+Solver 1
   Exec Solver = Always
   Equation = "OpenFOAM2Elmer"
   Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
@@ -63,12 +54,12 @@ End
 ! --------------------------------------------------
 ! Static current solve (UxB handled internally)
 ! --------------------------------------------------
-Solver 3
+Solver 2
   Exec Solver = Always
   Equation = "Static Current Solver"
   Procedure = "MHDSolve" "StatCurrentSolver"
 
-  Variable = Potential
+  Variable = String "PhiTestingTest"
   Variable DOFs = 1
 
   ! IncludeUxB = Logical True
@@ -95,7 +86,7 @@ End
 ! --------------------------------------------------
 ! Elmer -> OpenFOAM: export results
 ! --------------------------------------------------
-Solver 4
+Solver 3
   Exec Solver = Always
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"

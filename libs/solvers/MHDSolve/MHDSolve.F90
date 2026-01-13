@@ -69,18 +69,7 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   Params => GetSolverParams()
   Dim    = CoordinateSystemDimension()
 
-  CALL Info('StatCurrentSolver_Init', &
-            '*** MHDSolve build: 2026-01-11 A ***', Level=1)
-
-  !------------------------------------------------------------
-  ! Ensure solver variable name is provided by SIF
-  ! (creation & equation association handled by AddEquationBasics)
-  !------------------------------------------------------------
-  VarName = ListGetString( Params, 'Variable', Found )
-  IF (.NOT. Found) THEN
-    CALL Fatal('StatCurrentSolver_Init', &
-               'Solver parameter "Variable" must be defined in SIF')
-  END IF
+  CALL ListPrint( GetSolverParams() )
 
   !------------------------------------------------------------
   ! Exported variables
