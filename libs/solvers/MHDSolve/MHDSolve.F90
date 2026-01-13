@@ -943,7 +943,7 @@ END SUBROUTINE StatCurrentSolver_Init
        REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,C(3,3),x,y,z
        LOGICAL :: Stat
 
-       INTEGER :: i,p,q,t,DIM
+       INTEGER :: i,j,p,q,t,DIM
  
        TYPE(GaussIntegrationPoints_t) :: IntegStuff
 
@@ -1020,7 +1020,7 @@ END SUBROUTINE StatCurrentSolver_Init
         ! Interpolate U and B from nodal scalar components
         DO i = 1, n
 
-          ip = UxPerm( NodeIndexes(i) )
+          ip = UxVar % Perm( NodeIndexes(i) )
           IF (ip > 0) THEN
             Ugp(1) = Ugp(1) + Basis(i) * UxVals(ip)
             Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
@@ -1029,7 +1029,7 @@ END SUBROUTINE StatCurrentSolver_Init
             END IF
           END IF
 
-          ip = BxPerm( NodeIndexes(i) )
+          ip = BxVar % Perm( NodeIndexes(i) )
           IF (ip > 0) THEN
             Bgp(1) = Bgp(1) + Basis(i) * BxVals(ip)
             Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
@@ -1059,8 +1059,8 @@ END SUBROUTINE StatCurrentSolver_Init
 !------------------------------------------------------------------------------
 !        The Poisson equation
 !------------------------------------------------------------------------------
-         DO p=1,N
-           DO q=1,N
+         DO p=1,n
+           DO q=1,n
              A = 0.d0
              DO i=1,DIM
                DO J=1,DIM

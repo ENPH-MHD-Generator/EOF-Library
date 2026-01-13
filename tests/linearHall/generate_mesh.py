@@ -31,10 +31,11 @@ def main(out_msh: str):
     s0 = gmsh.model.geo.addPlaneSurface([cl])
 
     # Ensure correct number of x y elements
-    gmsh.model.geo.mesh.setTransfiniteCurve(l1, Ny)
-    gmsh.model.geo.mesh.setTransfiniteCurve(l3, Ny)
-    gmsh.model.geo.mesh.setTransfiniteCurve(l2, Nz)
-    gmsh.model.geo.mesh.setTransfiniteCurve(l4, Nz)
+    gmsh.model.geo.mesh.setTransfiniteCurve(l1, Ny+1)
+    gmsh.model.geo.mesh.setTransfiniteCurve(l3, Ny+1)
+    gmsh.model.geo.mesh.setTransfiniteCurve(l2, Nz+1)
+    gmsh.model.geo.mesh.setTransfiniteCurve(l4, Nz+1)
+
 
     gmsh.model.geo.mesh.setTransfiniteSurface(s0)
     gmsh.model.geo.mesh.setRecombine(2, s0)
