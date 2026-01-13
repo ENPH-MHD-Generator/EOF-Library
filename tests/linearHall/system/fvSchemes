@@ -42,6 +42,13 @@ interpolationSchemes
 {
     default         linear;
     elcond          cellPoint;
+    Ux              cellPoint;
+    Uy              cellPoint;
+    Uz              cellPoint;
+
+    Bx              cellPoint;
+    By              cellPoint;
+    Bz              cellPoint;
 }
 
 snGradSchemes

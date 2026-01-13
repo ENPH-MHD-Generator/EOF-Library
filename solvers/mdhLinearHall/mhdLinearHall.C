@@ -56,12 +56,13 @@ int main(int argc, char *argv[])
     // ---------------------------------------------------------------------
 
     // Construct scalar component fields from vectors
-    volScalarField Ux("Ux", U.component(vector::X));
-    volScalarField Uy("Uy", U.component(vector::Y));
-    volScalarField Uz("Uz", U.component(vector::Z));
-    volScalarField Bx("Bx", B.component(vector::X));
-    volScalarField By("By", B.component(vector::Y));
-    volScalarField Bz("Bz", B.component(vector::Z));
+    Ux = U.component(vector::X);
+    Uy = U.component(vector::Y);
+    Uz = U.component(vector::Z);
+
+    Bx = B.component(vector::X);
+    By = B.component(vector::Y);
+    Bz = B.component(vector::Z);
 
 
     // Send fields to Elmer
@@ -161,12 +162,13 @@ int main(int argc, char *argv[])
         // -----------------------------------------------------------------
 
         // Construct scalar component fields from vectors
-        volScalarField Ux("Ux", U.component(vector::X));
-        volScalarField Uy("Uy", U.component(vector::Y));
-        volScalarField Uz("Uz", U.component(vector::Z));
-        volScalarField Bx("Bx", B.component(vector::X));
-        volScalarField By("By", B.component(vector::Y));
-        volScalarField Bz("Bz", B.component(vector::Z));
+        Ux = U.component(vector::X);
+        Uy = U.component(vector::Y);
+        Uz = U.component(vector::Z);
+
+        Bx = B.component(vector::X);
+        By = B.component(vector::Y);
+        Bz = B.component(vector::Z);
 
         elcond = elcond_melt;
         Info<< "elcond min/max = " << gMin(elcond) << " " << gMax(elcond) << nl << endl;

@@ -346,3 +346,141 @@ elcond = elcond_melt;
 // -------------------------------------------------------------------------
 // Elmer update control
 // -------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------
+// Scalar velocity components for Elmer coupling
+// -------------------------------------------------------------------------
+
+Info<< "Initializing velocity components (Ux, Uy, Uz)\n" << endl;
+
+volScalarField Ux
+(
+    IOobject
+    (
+        "Ux",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        dimVelocity,
+        0.0
+    )
+);
+
+volScalarField Uy
+(
+    IOobject
+    (
+        "Uy",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        dimVelocity,
+        0.0
+    )
+);
+
+volScalarField Uz
+(
+    IOobject
+    (
+        "Uz",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        dimVelocity,
+        0.0
+    )
+);
+
+// Initialize once
+Ux = U.component(vector::X);
+Uy = U.component(vector::Y);
+Uz = U.component(vector::Z);
+
+
+// -------------------------------------------------------------------------
+// Scalar magnetic field components for Elmer coupling
+// -------------------------------------------------------------------------
+
+Info<< "Initializing magnetic field components (Bx, By, Bz)\n" << endl;
+
+volScalarField Bx
+(
+    IOobject
+    (
+        "Bx",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        B.dimensions(),
+        0.0
+    )
+);
+
+volScalarField By
+(
+    IOobject
+    (
+        "By",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        B.dimensions(),
+        0.0
+    )
+);
+
+volScalarField Bz
+(
+    IOobject
+    (
+        "Bz",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar
+    (
+        "zero",
+        B.dimensions(),
+        0.0
+    )
+);
+
+// Initialize once
+Bx = B.component(vector::X);
+By = B.component(vector::Y);
+Bz = B.component(vector::Z);
+

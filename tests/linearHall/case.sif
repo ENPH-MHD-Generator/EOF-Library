@@ -18,27 +18,123 @@ End
 ! -------------------------
 ! Bodies / Equation
 ! -------------------------
-Body 1
-  Name = "fluid"
-  Target Bodies(1) = 1
-  Equation = 1
-  Material = 1
-  Body Force = 1
-End
-
 Equation 1
-  Name = "EOF_HallChannel"
-  Active Solvers = 1 2 3
+  Name = "Alloc_sigma"
+  Active Solvers = 1
 End
 
+Equation 2
+  Name = "Alloc_Ux"
+  Active Solvers = 2
+End
+
+Equation 3
+  Name = "Alloc_Uy"
+  Active Solvers = 3
+End
+
+Equation 4
+  Name = "Alloc_Uz"
+  Active Solvers = 4
+End
+
+Equation 5
+  Name = "Alloc_Bx"
+  Active Solvers = 5
+End
+
+Equation 6
+  Name = "Alloc_By"
+  Active Solvers = 6
+End
+
+Equation 7
+  Name = "Alloc_Bz"
+  Active Solvers = 7
+End
+
+Equation 8
+  Name = "OF_to_Elmer"
+  Active Solvers = 8
+End
+
+Equation 9
+  Name = "StaticCurrent"
+  Active Solvers = 9
+End
+
+Equation 10
+  Name = "Elmer_to_OF"
+  Active Solvers = 10
+End
+
+! --------------------------------------------------
+! Define Scalar Fields
+! --------------------------------------------------
+
+Solver 1
+  Exec Solver = Before Simulation
+  Equation = "Alloc_sigma"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Electric Conductivity"
+  Variable DOFs = 1
+End
+
+Solver 2
+  Exec Solver = Before Simulation
+  Equation = "Alloc_Ux"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Ux"
+  Variable DOFs = 1
+End
+
+Solver 3
+  Exec Solver = Before Simulation
+  Equation = "Alloc_Uy"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Uy"
+  Variable DOFs = 1
+End
+
+Solver 4
+  Exec Solver = Before Simulation
+  Equation = "Alloc_Uz"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Uz"
+  Variable DOFs = 1
+End
+
+Solver 5
+  Exec Solver = Before Simulation
+  Equation = "Alloc_Bx"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Bx"
+  Variable DOFs = 1
+End
+
+Solver 6
+  Exec Solver = Before Simulation
+  Equation = "Alloc_By"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "By"
+  Variable DOFs = 1
+End
+
+Solver 7
+  Exec Solver = Before Simulation
+  Equation = "Alloc_Bz"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Bz"
+  Variable DOFs = 1
+End
 
 ! --------------------------------------------------
 ! OpenFOAM -> Elmer: populate scalar fields
 ! --------------------------------------------------
 
-Solver 1
+Solver 8
   Exec Solver = Always
-  Equation = "OpenFOAM2Elmer"
+  Equation = "OF_to_Elmer"
   Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
 
   Target Variable 1 = String "Electric Conductivity"
@@ -50,27 +146,18 @@ Solver 1
   Target Variable 7 = String "Bz"
 End
 
-
 ! --------------------------------------------------
 ! Static current solve (UxB handled internally)
 ! --------------------------------------------------
-Solver 2
+Solver 9
   Exec Solver = Always
-  Equation = "Static Current Solver"
+  Equation = "StaticCurrent"
   Procedure = "MHDSolve" "StatCurrentSolver"
 
-  Variable = String "PhiTestingTest"
+  Variable = Potential
   Variable DOFs = 1
 
   ! IncludeUxB = Logical True
-
-  ! Imported fields (owned by MHDSolve)
-  Exported Variable 1 = Ux
-  Exported Variable 2 = Uy
-  Exported Variable 3 = Uz
-  Exported Variable 4 = Bx
-  Exported Variable 5 = By
-  Exported Variable 6 = Bz
 
   Calculate Volume Current = Logical True
   Calculate Joule Heating  = Logical True
@@ -86,9 +173,9 @@ End
 ! --------------------------------------------------
 ! Elmer -> OpenFOAM: export results
 ! --------------------------------------------------
-Solver 3
+Solver 10
   Exec Solver = Always
-  Equation = "Elmer2OpenFOAM"
+  Equation = "Elmer_to_OF"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
 
   Target Variable 1 = String "Volume Current 1"
@@ -96,6 +183,9 @@ Solver 3
   Target Variable 3 = String "Volume Current 3"
 
   Target Variable 4 = String "Joule Heating"
+
+  ! TODO export potential back to OF:
+  ! Target Variable 5 = String "PhiHall"
 End
 
 ! -------------------------
@@ -112,8 +202,12 @@ End
 ! -------------------------
 ! Body Force
 ! -------------------------
-Body Force 1
-  Name = "NoSource"
+Body 1
+  Name = "fluid"
+  Target Bodies(1) = 1
+  Equation = 9      ! electrostatics equation
+  Material = 1
+  Body Force = 1
 End
 
 

@@ -69,8 +69,6 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   Params => GetSolverParams()
   Dim    = CoordinateSystemDimension()
 
-  CALL ListPrint( GetSolverParams() )
-
   !------------------------------------------------------------
   ! Exported variables
   !------------------------------------------------------------
@@ -952,6 +950,13 @@ END SUBROUTINE StatCurrentSolver_Init
        REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3), SigmaUxBgp(3)
        INTEGER, POINTER :: NodeIndexes(:)
        INTEGER :: ip
+
+       IF ( Element % PartIndex /= ParEnv % MyPE ) THEN
+         Force = 0.0_dp
+         StiffMatrix = 0.0_dp
+         RETURN
+       END IF
+
 
  
 !------------------------------------------------------------------------------
