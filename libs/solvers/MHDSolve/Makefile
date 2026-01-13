@@ -1,10 +1,10 @@
-SOLVER = MHDSolve
-SRC    = MHDSolve.F90
-LIBDIR = /usr/local/lib/elmersolver
+SOLVER  = MHDSolve
+SRC     = MHDSolve.F90
+LIBDIR  = /usr/local/share/elmersolver/lib
 
 all:
 	elmerf90 -shared $(SRC) -o lib$(SOLVER).so
-	cp lib$(SOLVER).so $(LIBDIR)
+	sudo cp lib$(SOLVER).so $(LIBDIR)/$(SOLVER).so
 
 clean:
 	rm -f lib$(SOLVER).so

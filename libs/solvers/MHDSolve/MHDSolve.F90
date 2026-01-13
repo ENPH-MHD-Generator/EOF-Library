@@ -49,75 +49,71 @@
 !> Initialization of the primary solver, i.e. StatCurrentSolver.
 !> ingroup Solvers
 !------------------------------------------------------------------------------
-SUBROUTINE StatCurrentSolver_Init( Model,Solver,dt,TransientSimulation)
+SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 !------------------------------------------------------------------------------
-    USE DefUtils
-    IMPLICIT NONE
+  USE DefUtils
+  IMPLICIT NONE
 !------------------------------------------------------------------------------
-    TYPE(Model_t)  :: Model
-    TYPE(Solver_t), TARGET :: Solver
-    LOGICAL :: TransientSimulation
-    REAL(KIND=dp) :: dt
+  TYPE(Model_t)            :: Model
+  TYPE(Solver_t), TARGET  :: Solver
+  LOGICAL                 :: TransientSimulation
+  REAL(KIND=dp)           :: dt
 !------------------------------------------------------------------------------
-    LOGICAL :: Found, Calculate
-    TYPE(ValueList_t), POINTER :: Params
-    INTEGER :: Dim
-
-    TYPE(Variable_t), POINTER :: PotVar
-    TYPE(Equation_t), POINTER :: Eq
-    CHARACTER(LEN=MAX_NAME_LEN) :: EqName
+  LOGICAL                 :: Found, Calculate
+  TYPE(ValueList_t), POINTER :: Params
+  INTEGER                 :: Dim
+!------------------------------------------------------------------------------
+  CHARACTER(LEN=MAX_NAME_LEN) :: VarName
 !------------------------------------------------------------------------------
 
-    Params => GetSolverParams()
-    Dim = CoordinateSystemDimension()
+  Params => GetSolverParams()
+  Dim    = CoordinateSystemDimension()
 
-    !------------------------------------------------------------
-    ! Bind Potential variable to this solver's equation
-    !------------------------------------------------------------
-    PotVar => VariableGet( Model % Variables, 'Potential' )
-    IF ( .NOT. ASSOCIATED(PotVar) ) THEN
-      CALL Fatal('StatCurrentSolver_Init', &
-                 'Primary variable Potential not found')
+  CALL Info('StatCurrentSolver_Init', &
+            '*** MHDSolve build: 2026-01-11 A ***', Level=1)
+
+  !------------------------------------------------------------
+  ! Ensure solver variable name is provided by SIF
+  ! (creation & equation association handled by AddEquationBasics)
+  !------------------------------------------------------------
+  VarName = ListGetString( Params, 'Variable', Found )
+  IF (.NOT. Found) THEN
+    CALL Fatal('StatCurrentSolver_Init', &
+               'Solver parameter "Variable" must be defined in SIF')
+  END IF
+
+  !------------------------------------------------------------
+  ! Exported variables
+  !------------------------------------------------------------
+  IF ( ListGetLogical( Params, 'Calculate Joule Heating', Found ) ) THEN
+    CALL ListAddString( Params, &
+         NextFreeKeyword('Exported Variable ', Params), &
+         'Joule Heating' )
+  END IF
+
+  IF ( ListGetLogical( Params, 'Calculate Nodal Heating', Found ) ) THEN
+    CALL ListAddString( Params, &
+         NextFreeKeyword('Exported Variable ', Params), &
+         'Nodal Joule Heating' )
+  END IF
+
+  Calculate = ListGetLogical( Params, 'Calculate Volume Current', Found )
+  IF ( Calculate ) THEN
+    IF ( Dim == 2 ) THEN
+      CALL ListAddString( Params, &
+           NextFreeKeyword('Exported Variable ', Params), &
+           'Volume Current[Volume Current:2]' )
+    ELSE
+      CALL ListAddString( Params, &
+           NextFreeKeyword('Exported Variable ', Params), &
+           'Volume Current[Volume Current:3]' )
     END IF
+  END IF
 
-    EqName = ListGetString( Params, 'Equation', Found )
-    IF ( .NOT. Found ) THEN
-      CALL Fatal('StatCurrentSolver_Init', &
-                 'Solver has no Equation keyword')
-    END IF
-
-    Eq => GetEquation( Model, EqName )
-    IF ( .NOT. ASSOCIATED(Eq) ) THEN
-      CALL Fatal('StatCurrentSolver_Init', &
-                 'Equation not found: '//TRIM(EqName))
-    END IF
-
-    CALL SetEquation( PotVar, Eq )
-
-    !------------------------------------------------------------
-    ! Exported variables
-    !------------------------------------------------------------
-    IF (ListGetLogical(Params,'Calculate Joule Heating',Found)) &
-        CALL ListAddString( Params,NextFreeKeyword('Exported Variable ',Params), &
-        'Joule Heating' )
-
-    IF (ListGetLogical(Params,'Calculate Nodal Heating',Found)) &
-        CALL ListAddString( Params,NextFreeKeyword('Exported Variable ',Params), &
-        'Nodal Joule Heating' )
-
-    Calculate = ListGetLogical(Params,'Calculate Volume Current',Found)
-    IF ( Calculate ) THEN
-      IF ( Dim == 2 ) THEN
-        CALL ListAddString( Params,NextFreeKeyword('Exported Variable ',Params), &
-            'Volume Current[Volume Current:2]' )
-      ELSE
-        CALL ListAddString( Params,NextFreeKeyword('Exported Variable ',Params), &
-            'Volume Current[Volume Current:3]' )
-      END IF
-    END IF
 !------------------------------------------------------------------------------
 END SUBROUTINE StatCurrentSolver_Init
 !------------------------------------------------------------------------------
+
 
     
 !------------------------------------------------------------------------------
@@ -336,7 +332,8 @@ END SUBROUTINE StatCurrentSolver_Init
 !------------------------------------------------------------------------------
 !      Add electric field to the variable list (disabled)
 !------------------------------------------------------------------------------
-       IF ( CalculateField ) THEN         
+       IF ( CalculateField ) THEN
+          CALL Info('StatCurrentSolver_bulk', '*** ABOUT TO ADD VARIABLE ***', Level=1)
           CALL VariableAddVector( Solver % Mesh % Variables, Solver % Mesh, &
                Solver, 'Electric Field', dim, ElField, PotentialPerm)
        END IF
@@ -1170,3 +1167,4 @@ END SUBROUTINE StatCurrentSolver_Init
 !------------------------------------------------------------------------------
  END SUBROUTINE StatCurrentSolver
 !------------------------------------------------------------------------------
+

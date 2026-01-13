@@ -31,23 +31,20 @@ Equation 1
   Active Solvers = 1 2 3 4
 End
 
-
-! --------------------------------------------------
-! Declare scalar fields (Ux, Uy, Uz, Bx, By, Bz, sigma)
-! --------------------------------------------------
 Solver 1
   Exec Solver = Always
-  Equation = "DeclareConductivity"
+  Equation = "PreAllocatePotential"
   Procedure = "AllocateSolver" "AllocateSolver"
-  Variable = "Electric Conductivity"
+
+  Variable = Potential
   Variable DOFs = 1
 End
-
 
 
 ! --------------------------------------------------
 ! OpenFOAM -> Elmer: populate scalar fields
 ! --------------------------------------------------
+
 Solver 2
   Exec Solver = Always
   Equation = "OpenFOAM2Elmer"
@@ -141,8 +138,7 @@ End
 Boundary Condition 2
   ! FaradayPlusY (current injection)
   Target Boundaries(1) = 2
-  Current Density BC = Logical True
-  Current Density = Real 10.0
+  Potential = Real 10.0
 End
 
 Boundary Condition 3
