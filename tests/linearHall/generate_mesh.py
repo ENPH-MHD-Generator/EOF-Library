@@ -12,7 +12,9 @@ def main(out_msh: str):
     W = 0.1    # z
 
     lc_yz = 0.01
-    Nx = 1
+    Nx = 40
+    Ny = 10
+    Nz = 10
 
     # ---- YZ rectangle at x=0 ----
     p1 = gmsh.model.geo.addPoint(0, 0, 0, lc_yz)
@@ -28,18 +30,30 @@ def main(out_msh: str):
     cl = gmsh.model.geo.addCurveLoop([l1, l2, l3, l4])
     s0 = gmsh.model.geo.addPlaneSurface([cl])
 
+    # Ensure correct number of x y elements
+    gmsh.model.geo.mesh.setTransfiniteCurve(l1, Ny)
+    gmsh.model.geo.mesh.setTransfiniteCurve(l3, Ny)
+    gmsh.model.geo.mesh.setTransfiniteCurve(l2, Nz)
+    gmsh.model.geo.mesh.setTransfiniteCurve(l4, Nz)
+
+    gmsh.model.geo.mesh.setTransfiniteSurface(s0)
+    gmsh.model.geo.mesh.setRecombine(2, s0)
+
     gmsh.model.geo.synchronize()
 
-    # ---- Extrude along X ----
+    # ---- Extrude along X (STRUCTURED HEX, deterministic) ----
     ext = gmsh.model.geo.extrude(
-        [(2, s0)], L, 0, 0,
+        [(2, s0)],
+        L, 0, 0,
         numElements=[Nx],
-        recombine=False
+        recombine=True
     )
+
     gmsh.model.geo.synchronize()
 
-    # Extract volume
+    # Enforce transfinite volume (critical for structured hex)
     vol = [tag for dim, tag in ext if dim == 3][0]
+    gmsh.model.geo.mesh.setTransfiniteVolume(vol)
 
     # Extract surfaces by location
     surfaces = gmsh.model.getEntities(2)
@@ -78,22 +92,22 @@ def main(out_msh: str):
     gmsh.model.setPhysicalName(3, 1, "fluid")
 
     # Faraday electrodes
-    gmsh.model.addPhysicalGroup(2, y0, tag=10)
-    gmsh.model.setPhysicalName(2, 10, "FaradayMinusY")
+    gmsh.model.addPhysicalGroup(2, y0, tag=1)
+    gmsh.model.setPhysicalName(2, 1, "FaradayMinusY")
 
-    gmsh.model.addPhysicalGroup(2, yH, tag=11)
-    gmsh.model.setPhysicalName(2, 11, "FaradayPlusY")
+    gmsh.model.addPhysicalGroup(2, yH, tag=2)
+    gmsh.model.setPhysicalName(2, 2, "FaradayPlusY")
 
     # Inlet / outlet (Hall electrodes later if desired)
-    gmsh.model.addPhysicalGroup(2, inlet, tag=20)
-    gmsh.model.setPhysicalName(2, 20, "InletX")
+    gmsh.model.addPhysicalGroup(2, inlet, tag=3)
+    gmsh.model.setPhysicalName(2, 3, "InletX")
 
-    gmsh.model.addPhysicalGroup(2, outlet, tag=21)
-    gmsh.model.setPhysicalName(2, 21, "OutletX")
+    gmsh.model.addPhysicalGroup(2, outlet, tag=4)
+    gmsh.model.setPhysicalName(2, 4, "OutletX")
 
     # Insulating side walls
-    gmsh.model.addPhysicalGroup(2, z0 + zW, tag=30)
-    gmsh.model.setPhysicalName(2, 30, "SideWallsZ")
+    gmsh.model.addPhysicalGroup(2, z0 + zW, tag=5)
+    gmsh.model.setPhysicalName(2, 5, "SideWallsZ")
 
     # ---- Mesh ----
     gmsh.model.mesh.generate(3)
