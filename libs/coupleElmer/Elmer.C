@@ -52,6 +52,11 @@ myBoundBox(mesh.points(),false)
     if(init) initialize();
 }
 
+template <class meshT>
+void Foam::Elmer<meshT>::setContinueOnElementsNotFound(bool continueOn)
+{
+    continueOnElementsNotFound_ = continueOn;
+}
 
 template <class meshT>
 void Foam::Elmer<meshT>::initialize()
@@ -148,8 +153,14 @@ void Foam::Elmer<meshT>::initialize()
         }
 
         if (totCellsFound < nCells) {
+            if (continueOnElementsNotFound_) {
+                WarningInFunction << "OpenFOAM #" << myLocalRank << " has " << nCells
+                                 << " cells, Elmer found " << totCellsFound << endl;
+            }
+            else {
             FatalErrorInFunction << "OpenFOAM #" << myLocalRank << " has " << nCells
-                                 << " cells, Elmer found " << totCellsFound << Foam::abort(FatalError); 
+                                 << " cells, Elmer found " << totCellsFound << Foam::abort(FatalError);
+            }
         }
 
         for ( i=0; i<totElmerRanks; i++ ) {

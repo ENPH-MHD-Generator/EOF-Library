@@ -81,6 +81,9 @@ public:
         //- Initialize
         void initialize();
 
+        //- Set whether to continue if not all elements are found
+        void setContinueOnElementsNotFound(bool continueOn);
+
         //- Send interpolated scalar field at element centres to Elmer
         void sendScalar(volScalarField& field);
 
@@ -149,6 +152,9 @@ private:
 
         //- Multiregion OF mesh
         bool multiregion_;
+
+        //- Default = call fatal error if not all elements are found
+        bool continueOnElementsNotFound_ = false;
 
         //- Number of cells for this OpenFOAM MPI rank
         int nCells;
