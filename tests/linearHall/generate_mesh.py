@@ -1,117 +1,156 @@
 import gmsh
 import sys
 
+
 def main(out_msh: str):
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", 1)
-    gmsh.model.add("elmer_em_3d_quasi2d")
+    gmsh.model.add("elmer_em_3d_quasi2d_safe")
 
-    # Geometry
-    L = 1.0    # x
-    H = 0.1    # y
-    W = 0.1    # z
+    # ----------------------------
+    # Geometry parameters
+    # ----------------------------
+    L, H, W = 1.0, 0.1, 0.1
+    Nx, Ny, Nz = 40, 10, 10
 
-    lc_yz = 0.01
-    Nx = 40
-    Ny = 10
-    Nz = 10
+    dom = max(L, H, W)
+    # Be a bit generous; OCC bbox values can be slightly fuzzy
+    tol = 1e-6 * dom
 
-    # ---- YZ rectangle at x=0 ----
-    p1 = gmsh.model.geo.addPoint(0, 0, 0, lc_yz)
-    p2 = gmsh.model.geo.addPoint(0, H, 0, lc_yz)
-    p3 = gmsh.model.geo.addPoint(0, H, W, lc_yz)
-    p4 = gmsh.model.geo.addPoint(0, 0, W, lc_yz)
+    occ = gmsh.model.occ
 
-    l1 = gmsh.model.geo.addLine(p1, p2)  # y
-    l2 = gmsh.model.geo.addLine(p2, p3)  # z
-    l3 = gmsh.model.geo.addLine(p3, p4)
-    l4 = gmsh.model.geo.addLine(p4, p1)
+    # ----------------------------
+    # Base YZ surface at x = 0
+    # ----------------------------
+    p1 = occ.addPoint(0.0, 0.0, 0.0)
+    p2 = occ.addPoint(0.0, H,   0.0)
+    p3 = occ.addPoint(0.0, H,   W)
+    p4 = occ.addPoint(0.0, 0.0, W)
 
-    cl = gmsh.model.geo.addCurveLoop([l1, l2, l3, l4])
-    s0 = gmsh.model.geo.addPlaneSurface([cl])
+    l1 = occ.addLine(p1, p2)  # along +y
+    l2 = occ.addLine(p2, p3)  # along +z
+    l3 = occ.addLine(p3, p4)  # along -y
+    l4 = occ.addLine(p4, p1)  # along -z
 
-    # Ensure correct number of x y elements
-    gmsh.model.geo.mesh.setTransfiniteCurve(l1, Ny+1)
-    gmsh.model.geo.mesh.setTransfiniteCurve(l3, Ny+1)
-    gmsh.model.geo.mesh.setTransfiniteCurve(l2, Nz+1)
-    gmsh.model.geo.mesh.setTransfiniteCurve(l4, Nz+1)
+    cl = occ.addCurveLoop([l1, l2, l3, l4])
+    s0 = occ.addPlaneSurface([cl])
 
+    # ----------------------------
+    # Extrude along X
+    # ----------------------------
+    ext = occ.extrude([(2, s0)], L, 0.0, 0.0, numElements=[Nx], recombine=True)
+    occ.synchronize()
 
-    gmsh.model.geo.mesh.setTransfiniteSurface(s0)
-    gmsh.model.geo.mesh.setRecombine(2, s0)
+    # Extract volume
+    vols = [tag for dim, tag in ext if dim == 3]
+    assert len(vols) == 1, f"Expected 1 volume from extrude, got {len(vols)}"
+    vol = vols[0]
 
-    gmsh.model.geo.synchronize()
+    # ----------------------------
+    # Get boundary surfaces of the volume (THIS is the robust list)
+    # ----------------------------
+    bnd = gmsh.model.getBoundary([(3, vol)], oriented=False, recursive=False)
+    surf_tags = [tag for dim, tag in bnd if dim == 2]
+    assert len(surf_tags) >= 6, f"Expected at least 6 boundary faces, got {len(surf_tags)}"
 
-    # ---- Extrude along X (STRUCTURED HEX, deterministic) ----
-    ext = gmsh.model.geo.extrude(
-        [(2, s0)],
-        L, 0, 0,
-        numElements=[Nx],
-        recombine=True
-    )
+    # ----------------------------
+    # Identify inlet/outlet + Y/Z walls by bbox planes
+    # ----------------------------
+    inlet = None
+    outlet = None
+    y0, yH, z0, zW = [], [], [], []
 
-    gmsh.model.geo.synchronize()
+    for s in surf_tags:
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, s)
 
-    # Enforce transfinite volume (critical for structured hex)
-    vol = [tag for dim, tag in ext if dim == 3][0]
-    gmsh.model.geo.mesh.setTransfiniteVolume(vol)
+        # Planes x=0 and x=L
+        if abs(xmin - 0.0) < tol and abs(xmax - 0.0) < tol:
+            inlet = s
+            continue
+        if abs(xmin - L) < tol and abs(xmax - L) < tol:
+            outlet = s
+            continue
 
-    # Extract surfaces by location
-    surfaces = gmsh.model.getEntities(2)
-
-    inlet  = []
-    outlet = []
-    y0     = []
-    yH     = []
-    z0     = []
-    zW     = []
-
-    for dim, s in surfaces:
-        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(dim, s)
-        x = 0.5 * (xmin + xmax)
-        y = 0.5 * (ymin + ymax)
-        z = 0.5 * (zmin + zmax)
-
-        if abs(x - 0.0) < 1e-8:
-            inlet.append(s)
-        elif abs(x - L) < 1e-8:
-            outlet.append(s)
-        elif abs(y - 0.0) < 1e-8:
+        # Planes y=0 and y=H
+        if abs(ymin - 0.0) < tol and abs(ymax - 0.0) < tol:
             y0.append(s)
-        elif abs(y - H) < 1e-8:
+        elif abs(ymin - H) < tol and abs(ymax - H) < tol:
             yH.append(s)
-        elif abs(z - 0.0) < 1e-8:
+
+        # Planes z=0 and z=W
+        if abs(zmin - 0.0) < tol and abs(zmax - 0.0) < tol:
             z0.append(s)
-        elif abs(z - W) < 1e-8:
+        elif abs(zmin - W) < tol and abs(zmax - W) < tol:
             zW.append(s)
 
+    assert inlet is not None, "Failed to identify inlet surface (x=0 plane)"
+    assert outlet is not None, "Failed to identify outlet surface (x=L plane)"
+    assert len(y0) == 1, f"Expected 1 y=0 face, got {len(y0)}: {y0}"
+    assert len(yH) == 1, f"Expected 1 y=H face, got {len(yH)}: {yH}"
+    assert len(z0) == 1, f"Expected 1 z=0 face, got {len(z0)}: {z0}"
+    assert len(zW) == 1, f"Expected 1 z=W face, got {len(zW)}: {zW}"
 
-    # ---- Physical groups (DETERMINISTIC IDS) ----
+    # ----------------------------
+    # Physical groups (DETERMINISTIC IDS)
+    # ----------------------------
+    gmsh.model.addPhysicalGroup(2, [inlet], tag=20)
+    gmsh.model.setPhysicalName(2, 20, "InletX")
 
-    # Volume
+    gmsh.model.addPhysicalGroup(2, [outlet], tag=21)
+    gmsh.model.setPhysicalName(2, 21, "OutletX")
+
+    gmsh.model.addPhysicalGroup(2, y0, tag=10)
+    gmsh.model.setPhysicalName(2, 10, "FaradayMinusY")
+
+    gmsh.model.addPhysicalGroup(2, yH, tag=11)
+    gmsh.model.setPhysicalName(2, 11, "FaradayPlusY")
+
+    gmsh.model.addPhysicalGroup(2, z0 + zW, tag=30)
+    gmsh.model.setPhysicalName(2, 30, "SideWallsZ")
+
     gmsh.model.addPhysicalGroup(3, [vol], tag=1)
     gmsh.model.setPhysicalName(3, 1, "fluid")
 
-    # Faraday electrodes
-    gmsh.model.addPhysicalGroup(2, y0, tag=1)
-    gmsh.model.setPhysicalName(2, 1, "FaradayMinusY")
+    # ----------------------------
+    # Transfinite meshing
+    # ----------------------------
+    gmsh.model.mesh.setTransfiniteCurve(l1, Ny + 1)
+    gmsh.model.mesh.setTransfiniteCurve(l3, Ny + 1)
+    gmsh.model.mesh.setTransfiniteCurve(l2, Nz + 1)
+    gmsh.model.mesh.setTransfiniteCurve(l4, Nz + 1)
 
-    gmsh.model.addPhysicalGroup(2, yH, tag=2)
-    gmsh.model.setPhysicalName(2, 2, "FaradayPlusY")
+    # Curves created by extrusion that run along x will have bbox extent ~L
+    for dim, c in gmsh.model.getEntities(1):
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(1, c)
+        if abs((xmax - xmin) - L) < 10 * tol:
+            gmsh.model.mesh.setTransfiniteCurve(c, Nx + 1)
 
-    # Inlet / outlet (Hall electrodes later if desired)
-    gmsh.model.addPhysicalGroup(2, inlet, tag=3)
-    gmsh.model.setPhysicalName(2, 3, "InletX")
+    for s in surf_tags:
+        gmsh.model.mesh.setTransfiniteSurface(s)
+        gmsh.model.mesh.setRecombine(2, s)
 
-    gmsh.model.addPhysicalGroup(2, outlet, tag=4)
-    gmsh.model.setPhysicalName(2, 4, "OutletX")
+    gmsh.model.mesh.setTransfiniteVolume(vol)
 
-    # Insulating side walls
-    gmsh.model.addPhysicalGroup(2, z0 + zW, tag=5)
-    gmsh.model.setPhysicalName(2, 5, "SideWallsZ")
-
-    # ---- Mesh ----
+    # ----------------------------
+    # Mesh + sanity check
+    # ----------------------------
     gmsh.model.mesh.generate(3)
+
+    bnd2 = gmsh.model.getBoundary([(3, vol)], oriented=False, recursive=True)
+    bnd_surfs = [tag for dim, tag in bnd2 if dim == 2]
+    missing = [s for s in bnd_surfs if not gmsh.model.getPhysicalGroupsForEntity(2, s)]
+    assert len(missing) == 0, f"Missing boundary surfaces (no physical group): {missing}"
+
+    # Global bbox print
+    node_tags, coords, _ = gmsh.model.mesh.getNodes()
+    xs = coords[0::3]
+    ys = coords[1::3]
+    zs = coords[2::3]
+    print(
+        f"[gmsh] GLOBAL bbox: "
+        f"({min(xs):.6g} {min(ys):.6g} {min(zs):.6g}) "
+        f"({max(xs):.6g} {max(ys):.6g} {max(zs):.6g})"
+    )
 
     gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
     gmsh.option.setNumber("Mesh.Binary", 0)

@@ -24,23 +24,32 @@ internalField   uniform (0 0 3);
 // Boundary conditions, zero at boundaries
 boundaryField
 {
-    inlet
+    InletX
     {
-        type            zeroGradient;
+        type    zeroGradient;
     }
 
-    outlet
+    OutletX
     {
-        type            zeroGradient;
+        type    zeroGradient;
+    }
+    FaradayMinusY
+    {
+        type    zeroGradient;
     }
 
-    walls
+    FaradayPlusY
     {
-        type            zeroGradient;
+        type    zeroGradient;
+    }
+
+    SideWallsZ
+    {
+        type    zeroGradient;
     }
 
     defaultFaces
     {
-        type            zeroGradient;
+        type    zeroGradient;
     }
 }

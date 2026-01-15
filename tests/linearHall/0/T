@@ -18,26 +18,34 @@ internalField   uniform 500;
 
 boundaryField
 {
-    inlet
+    InletX
     {
-        type            fixedValue;
-        value           uniform 2000;
+        type    fixedValue;
+        value   uniform 2000;
     }
 
-    outlet
+    OutletX
     {
-        type            zeroGradient;
+        type    zeroGradient;
     }
 
-    walls
+    FaradayMinusY
     {
-        type            zeroGradient;     // or fixedValue if cooled/heated
-        // type            fixedValue;
-        // value           uniform 300;   // Example cooled walls
+        type    zeroGradient;
+    }
+
+    FaradayPlusY
+    {
+        type    zeroGradient;
+    }
+
+    SideWallsZ
+    {
+        type    zeroGradient;
     }
 
     defaultFaces
     {
-        type empty;   // only if 2D axisymmetric or 2D planar mesh (adjust as needed)
+        type    zeroGradient;
     }
 }

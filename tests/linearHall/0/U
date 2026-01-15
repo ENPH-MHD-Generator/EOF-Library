@@ -20,22 +20,37 @@ internalField   uniform (0 0 0);
 
 boundaryField
 {
-    inlet
+    InletX
     {
         type fixedValue;
-        value uniform (1.0 0 0);   // 1 m/s along x
+        value uniform (343.0 0 0);   // Mach 1
     }
 
-    outlet
+    OutletX
     {
         type zeroGradient;
     }
 
-    walls
+    FaradayMinusY
     {
-        type fixedValue;
-        value uniform (0 0 0);
+        type noSlip;
     }
+
+    FaradayPlusY
+    {
+        type noSlip;
+    }
+
+    SideWallsZ
+    {
+        type noSlip;
+    }
+
+    defaultFaces
+    {
+        type noSlip;
+    }
+
 }
 
 
