@@ -171,10 +171,16 @@ END SUBROUTINE StatCurrentSolver_Init
 
      
      SAVE LocalStiffMatrix, Load, LocalForce, &
-          ElementNodes, CalculateCurrent, CalculateHeating, &
-          AllocationsDone, VolCurrent, Heating, Conductivity, &
-          CalculateField, ConstantWeights, &
-          Cwrk, ControlScaling, CalculateNodalHeating
+      ElementNodes, CalculateCurrent, CalculateHeating, &
+      AllocationsDone, VolCurrent, Heating, Conductivity, &
+      CalculateField, ConstantWeights, &
+      Cwrk, ControlScaling, CalculateNodalHeating, &
+      UxVar, UyVar, UzVar, BxVar, ByVar, BzVar, &
+      UxVals, UyVals, UzVals, &
+      BxVals, ByVals, BzVals, &
+      UxPerm, UyPerm, UzPerm, &
+      BxPerm, ByPerm, BzPerm
+
      
 !------------------------------------------------------------------------------
 !    Get variables needed for solution

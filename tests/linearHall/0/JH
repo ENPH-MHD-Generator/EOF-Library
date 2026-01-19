@@ -23,24 +23,33 @@ internalField   uniform 0;
 
 boundaryField
 {
-    inlet
+    InletX
     {
         type            zeroGradient;
     }
 
-    outlet
+    OutletX
     {
-        type            zeroGradient;
+        type    zeroGradient;
+    }
+    FaradayMinusY
+    {
+        type    zeroGradient;
     }
 
-    walls
+    FaradayPlusY
     {
-        type            zeroGradient;
+        type    zeroGradient;
+    }
+
+    SideWallsZ
+    {
+        type    zeroGradient;
     }
 
     defaultFaces
     {
-        type            empty;
+        type    zeroGradient;
     }
 }
 
