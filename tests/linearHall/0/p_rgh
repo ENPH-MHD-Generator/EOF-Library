@@ -23,19 +23,18 @@ boundaryField
 {
     InletX
     {
-        type            zeroGradient;
+        type            fixedValue;
+        value           uniform 1;
     }
-
     OutletX
     {
         type            fixedValue;
-        value           uniform 0;
+        value           uniform 0.4;
     }
     FaradayMinusY
     {
         type    zeroGradient;
     }
-
     FaradayPlusY
     {
         type    zeroGradient;

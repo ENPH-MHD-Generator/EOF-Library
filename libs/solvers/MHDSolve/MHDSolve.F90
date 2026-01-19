@@ -36,11 +36,10 @@
 
 !/******************************************************************************
 ! *
-! *  Author: Felix Toft
+! *  Modified By: Felix Toft
 ! *  Email: felixtoft09@gmail.com
 ! *  Adapted from StatCurrent Solve
 ! *  https://github.com/ElmerCSC/elmerfem/blob/devel/fem/src/modules/StatCurrentSolve.F90
-! *  Modified by 
 ! *
 ! *****************************************************************************/
 
@@ -158,18 +157,12 @@ END SUBROUTINE StatCurrentSolver_Init
      TYPE(ValueHandle_t) :: CondAtIp_h
      REAL(KIND=dp) :: CondAtIp
 
-    !  REAL(KIND=dp), POINTER :: Uvals(:), Bvals(:)
-    !  INTEGER, POINTER :: Uperm(:), Bperm(:)
-    !  CHARACTER(LEN=MAX_NAME_LEN) :: UName, BName
-    !  TYPE(Variable_t), POINTER :: UVar, BVar
      REAL(KIND=dp), POINTER :: UxVals(:), UyVals(:), UzVals(:)
      REAL(KIND=dp), POINTER :: BxVals(:), ByVals(:), BzVals(:)
      INTEGER, POINTER :: UxPerm(:), UyPerm(:), UzPerm(:)
      INTEGER, POINTER :: BxPerm(:), ByPerm(:), BzPerm(:)
      TYPE(Variable_t), POINTER :: UxVar, UyVar, UzVar, BxVar, ByVar, BzVar
 
-
-     
      SAVE LocalStiffMatrix, Load, LocalForce, &
       ElementNodes, CalculateCurrent, CalculateHeating, &
       AllocationsDone, VolCurrent, Heating, Conductivity, &
@@ -850,7 +843,7 @@ END SUBROUTINE StatCurrentSolver_Init
                 s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
 
             DO j = 1, DIM
-              Current(j) = Current(j) + SigmaUxBgp(j) * s
+              Current(j) = Current(j) + ( -EpsGrad(j) + SigmaUxBgp(j) ) * s
             END DO
 
             ElemVol = ElemVol + s
