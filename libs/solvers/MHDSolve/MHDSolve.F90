@@ -809,21 +809,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             END IF
           END DO
 
-          ! Build the M matrix where M = []
-          M = 0.0_dp
-          DO i=1,dim
-            M(i,i) = EtaGP
-          END DO
-
-          M(1,2) = M(1,2) + HallCoeff * (-Bgp(3))
-          M(1,3) = M(1,3) + HallCoeff * ( Bgp(2))
-
-          M(2,1) = M(2,1) + HallCoeff * ( Bgp(3))
-          M(2,3) = M(2,3) + HallCoeff * (-Bgp(1))
-
-          M(3,1) = M(3,1) + HallCoeff * (-Bgp(2))
-          M(3,2) = M(3,2) + HallCoeff * ( Bgp(1))
-
           ! Cross product U x B
           UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
           UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
@@ -845,6 +830,20 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             EtaGP = 0.0_dp
           END IF
 
+          ! Build the M matrix
+          M = 0.0_dp
+          DO i=1,dim
+            M(i,i) = EtaGP
+          END DO
+
+          M(1,2) = M(1,2) + HallCoeff * (-Bgp(3))
+          M(1,3) = M(1,3) + HallCoeff * ( Bgp(2))
+
+          M(2,1) = M(2,1) + HallCoeff * ( Bgp(3))
+          M(2,3) = M(2,3) + HallCoeff * (-Bgp(1))
+
+          M(3,1) = M(3,1) + HallCoeff * (-Bgp(2))
+          M(3,2) = M(3,2) + HallCoeff * ( Bgp(1))
 
           RHS = 0.0_dp
           DO j=1,dim
