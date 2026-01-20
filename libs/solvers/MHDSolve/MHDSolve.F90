@@ -644,9 +644,15 @@ END SUBROUTINE StatCurrentSolver_Init
     INTEGER :: N_Integ, t, tg, i, j, k
     LOGICAL :: Stat
 
-    REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3), SigmaUxBgp(3)
+    REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3)
     INTEGER :: ip
     REAL(KIND=dp) :: Cgp(3,3)
+
+    REAL(KIND=dp) :: HallCoeff, EtaGP, SigmaIso
+    REAL(KIND=dp) :: RHS(3), Jgp(3)
+    REAL(KIND=dp) :: M(3,3), Minv(3,3)
+    LOGICAL :: gotHall
+
 
 
 !------------------------------------------------------------------------------
@@ -659,6 +665,13 @@ END SUBROUTINE StatCurrentSolver_Init
       ALLOCATE( SumOfWeights( Model % NumberOfNodes ) )
       SumOfWeights = 0.0d0
     END IF
+
+
+!------------------------------------------------------------------------------
+    ! hard coded hall coefficient
+    HallCoeff = 1.0   
+!------------------------------------------------------------------------------
+
 
     HeatingTot = 0.0d0
     VolTot = 0.0d0
@@ -809,6 +822,21 @@ END SUBROUTINE StatCurrentSolver_Init
             END IF
           END DO
 
+          ! Build the M matrix where M = []
+          M = 0.0_dp
+          DO i=1,dim
+            M(i,i) = EtaGP
+          END DO
+
+          M(1,2) = M(1,2) + HallCoeff * (-Bgp(3))
+          M(1,3) = M(1,3) + HallCoeff * ( Bgp(2))
+
+          M(2,1) = M(2,1) + HallCoeff * ( Bgp(3))
+          M(2,3) = M(2,3) + HallCoeff * (-Bgp(1))
+
+          M(3,1) = M(3,1) + HallCoeff * (-Bgp(2))
+          M(3,2) = M(3,2) + HallCoeff * ( Bgp(1))
+
           ! Cross product U x B
           UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
           UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
@@ -821,29 +849,43 @@ END SUBROUTINE StatCurrentSolver_Init
               Cgp(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
             END DO
           END DO
+        
+          ! Caluclate resistivity from conductivity
+          SigmaIso = (Cgp(1,1) + Cgp(2,2) + Cgp(3,3)) / REAL(dim,dp)
+          IF (SigmaIso > 0.0_dp) THEN
+            EtaGP = 1.0_dp / SigmaIso
+          ELSE
+            EtaGP = 0.0_dp
+          END IF
 
 
-          ! SigmaUxB = C * (U x B)
-          SigmaUxBgp = 0.0_dp
-          DO i=1,dim
-            DO j=1,dim
-              SigmaUxBgp(i) = SigmaUxBgp(i) + Cgp(i,j) * UxBgp(j)
-            END DO
+          RHS = 0.0_dp
+          DO j=1,dim
+            RHS(j) = -Grad(j) + UxBgp(j)
           END DO
 
-
-            
           VolTot = VolTot + s
 
-          HeatingTot = HeatingTot + &
-               s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
+          HeatingTot = HeatingTot + s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
 
           IF( CalculateHeating .OR. CalculateCurrent .OR. CalculateNodalHeating ) THEN
-            HeatingDensity = HeatingDensity + &
-                s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
-
-            DO j = 1, DIM
-              Current(j) = Current(j) + ( -EpsGrad(j) + SigmaUxBgp(j) ) * s
+            HeatingDensity = HeatingDensity + s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
+            
+            ! Invert the hall matrix
+            CALL Invert3x3(M, Minv, Stat)
+            IF (.NOT. Stat) THEN
+              CALL Fatal( &
+                'GeneralCurrent / Hall MHD', &
+                'Hall conductivity matrix is singular or ill-conditioned at Gauss point.' )
+            END IF
+            Jgp = 0.0_dp
+            DO i=1,3
+              DO j=1,3
+                Jgp(i) = Jgp(i) + Minv(i,j) * RHS(j)
+              END DO
+            END DO
+            DO j=1,dim
+              Current(j) = Current(j) + Jgp(j) * s
             END DO
 
             ElemVol = ElemVol + s
@@ -1086,76 +1128,107 @@ END SUBROUTINE StatCurrentSolver_Init
 !>  Return element local matrices and RHS vector for boundary conditions
 !>  of the electrostatic equation. 
 !------------------------------------------------------------------------------
-   SUBROUTINE StatCurrentBoundary( BoundaryMatrix, BoundaryVector, &
+  SUBROUTINE StatCurrentBoundary( BoundaryMatrix, BoundaryVector, &
         LoadVector, Element, n, Nodes )
 !------------------------------------------------------------------------------
-     REAL(KIND=dp) :: BoundaryMatrix(:,:), BoundaryVector(:), LoadVector(:)
-     TYPE(Nodes_t)   :: Nodes
-     TYPE(Element_t) :: Element
-     INTEGER :: n
+    REAL(KIND=dp) :: BoundaryMatrix(:,:), BoundaryVector(:), LoadVector(:)
+    TYPE(Nodes_t)   :: Nodes
+    TYPE(Element_t) :: Element
+    INTEGER :: n
 !------------------------------------------------------------------------------
-     REAL(KIND=dp) :: Basis(n)
-     REAL(KIND=dp) :: dBasisdx(n,3),SqrtElementMetric
-     REAL(KIND=dp) :: SqrtMetric,Metric(3,3),Symb(3,3,3),dSymb(3,3,3,3)
+    REAL(KIND=dp) :: Basis(n)
+    REAL(KIND=dp) :: dBasisdx(n,3),SqrtElementMetric
+    REAL(KIND=dp) :: SqrtMetric,Metric(3,3),Symb(3,3,3),dSymb(3,3,3,3)
 
-     REAL(KIND=dp) :: u,v,w,s,x,y,z
-     REAL(KIND=dp) :: Force
-     REAL(KIND=dp), POINTER :: U_Integ(:),V_Integ(:),W_Integ(:),S_Integ(:)
+    REAL(KIND=dp) :: u,v,w,s,x,y,z
+    REAL(KIND=dp) :: Force
+    REAL(KIND=dp), POINTER :: U_Integ(:),V_Integ(:),W_Integ(:),S_Integ(:)
 
-     INTEGER :: t,q,N_Integ
+    INTEGER :: t,q,N_Integ
 
-     TYPE(GaussIntegrationPoints_t), TARGET :: IntegStuff
+    TYPE(GaussIntegrationPoints_t), TARGET :: IntegStuff
 
-     LOGICAL :: stat
+    LOGICAL :: stat
 !------------------------------------------------------------------------------
 
-     BoundaryVector = 0.0d0
-     BoundaryMatrix = 0.0d0
+    BoundaryVector = 0.0d0
+    BoundaryMatrix = 0.0d0
 !------------------------------------------------------------------------------
 !    Integration stuff
 !------------------------------------------------------------------------------
-     IntegStuff = GaussPoints( Element )
-     U_Integ => IntegStuff % u
-     V_Integ => IntegStuff % v
-     W_Integ => IntegStuff % w
-     S_Integ => IntegStuff % s
-     N_Integ =  IntegStuff % n
+    IntegStuff = GaussPoints( Element )
+    U_Integ => IntegStuff % u
+    V_Integ => IntegStuff % v
+    W_Integ => IntegStuff % w
+    S_Integ => IntegStuff % s
+    N_Integ =  IntegStuff % n
 
 !------------------------------------------------------------------------------
 !   Now we start integrating
 !------------------------------------------------------------------------------
-     DO t=1,N_Integ
-       u = U_Integ(t)
-       v = V_Integ(t)
-       w = W_Integ(t)
+    DO t=1,N_Integ
+      u = U_Integ(t)
+      v = V_Integ(t)
+      w = W_Integ(t)
 !------------------------------------------------------------------------------
 !     Basis function values & derivates at the integration point
 !------------------------------------------------------------------------------
       stat = ElementInfo( Element,Nodes,u,v,w,SqrtElementMetric, &
-                 Basis,dBasisdx )
+                          Basis,dBasisdx )
 
 !------------------------------------------------------------------------------
 !      Coordinatesystem dependent info
 !------------------------------------------------------------------------------
-         IF ( CurrentCoordinateSystem() /= Cartesian ) THEN
-           x = SUM( ElementNodes % x(1:n)*Basis(1:n) )
-           y = SUM( ElementNodes % y(1:n)*Basis(1:n) )
-           z = SUM( ElementNodes % z(1:n)*Basis(1:n) )
-         END IF
+      IF ( CurrentCoordinateSystem() /= Cartesian ) THEN
+        x = SUM( ElementNodes % x(1:n)*Basis(1:n) )
+        y = SUM( ElementNodes % y(1:n)*Basis(1:n) )
+        z = SUM( ElementNodes % z(1:n)*Basis(1:n) )
+      END IF
 
-         CALL CoordinateSystemInfo( Metric,SqrtMetric,Symb,dSymb,x,y,z )
- 
-         s = S_Integ(t) * SqrtElementMetric * SqrtMetric
+      CALL CoordinateSystemInfo( Metric,SqrtMetric,Symb,dSymb,x,y,z )
 
+      s = S_Integ(t) * SqrtElementMetric * SqrtMetric
+
+  !------------------------------------------------------------------------------
+      Force = SUM( LoadVector(1:n)*Basis )
+
+      DO q=1,N
+        BoundaryVector(q) = BoundaryVector(q) + s * Basis(q) * Force
+      END DO
+    END DO
+  END SUBROUTINE StatCurrentBoundary
 !------------------------------------------------------------------------------
-       Force = SUM( LoadVector(1:n)*Basis )
 
-       DO q=1,N
-         BoundaryVector(q) = BoundaryVector(q) + s * Basis(q) * Force
-       END DO
-     END DO
-   END SUBROUTINE StatCurrentBoundary
-!------------------------------------------------------------------------------
+  SUBROUTINE Invert3x3(A, Ainv, ok)
+    REAL(KIND=dp), INTENT(IN)  :: A(3,3)
+    REAL(KIND=dp), INTENT(OUT) :: Ainv(3,3)
+    LOGICAL, INTENT(OUT) :: ok
+    REAL(KIND=dp) :: det
+
+    det = A(1,1)*(A(2,2)*A(3,3)-A(2,3)*A(3,2)) &
+        - A(1,2)*(A(2,1)*A(3,3)-A(2,3)*A(3,1)) &
+        + A(1,3)*(A(2,1)*A(3,2)-A(2,2)*A(3,1))
+
+    IF (ABS(det) < 1.0d-30) THEN
+      ok = .FALSE.
+      Ainv = 0.0_dp
+      RETURN
+    END IF
+    ok = .TRUE.
+
+    Ainv(1,1) =  (A(2,2)*A(3,3)-A(2,3)*A(3,2))/det
+    Ainv(1,2) = -(A(1,2)*A(3,3)-A(1,3)*A(3,2))/det
+    Ainv(1,3) =  (A(1,2)*A(2,3)-A(1,3)*A(2,2))/det
+
+    Ainv(2,1) = -(A(2,1)*A(3,3)-A(2,3)*A(3,1))/det
+    Ainv(2,2) =  (A(1,1)*A(3,3)-A(1,3)*A(3,1))/det
+    Ainv(2,3) = -(A(1,1)*A(2,3)-A(1,3)*A(2,1))/det
+
+    Ainv(3,1) =  (A(2,1)*A(3,2)-A(2,2)*A(3,1))/det
+    Ainv(3,2) = -(A(1,1)*A(3,2)-A(1,2)*A(3,1))/det
+    Ainv(3,3) =  (A(1,1)*A(2,2)-A(1,2)*A(2,1))/det
+  END SUBROUTINE Invert3x3
+
 
 !------------------------------------------------------------------------------
  END SUBROUTINE StatCurrentSolver
