@@ -635,12 +635,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     INTEGER :: ip
     REAL(KIND=dp) :: Cgp(3,3)
 
-    REAL(KIND=dp) :: HallCoeff, EtaGP, SigmaIso
+    REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso
     REAL(KIND=dp) :: RHS(3), Jgp(3)
     REAL(KIND=dp) :: M(3,3), Minv(3,3)
-    LOGICAL :: gotHall
-
-
 
 !------------------------------------------------------------------------------
 
@@ -656,7 +653,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
     ! hard coded hall coefficient
-    HallCoeff = 1.0   
+    HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
 !------------------------------------------------------------------------------
 
 
@@ -790,24 +787,31 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           Bgp = 0.0_dp
 
           DO i = 1, n
-            ip = UxPerm( NodeIndexes(i) )
-            IF (ip > 0) THEN
-              Ugp(1) = Ugp(1) + Basis(i) * UxVals(ip)
-              Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
-              IF (DIM == 3) THEN 
-                Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
-              END IF
+            ! Velocity components
+            ip = UxPerm(NodeIndexes(i))
+            IF (ip > 0) Ugp(1) = Ugp(1) + Basis(i) * UxVals(ip)
+
+            ip = UyPerm(NodeIndexes(i))
+            IF (ip > 0) Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
+
+            IF (DIM == 3) THEN
+              ip = UzPerm(NodeIndexes(i))
+              IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
             END IF
 
-            ip = BxPerm( NodeIndexes(i) )
-            IF (ip > 0) THEN
-              Bgp(1) = Bgp(1) + Basis(i) * BxVals(ip)
-              Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
-              IF (DIM == 3) THEN 
-                Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
-              END IF
+            ! Magnetic field components
+            ip = BxPerm(NodeIndexes(i))
+            IF (ip > 0) Bgp(1) = Bgp(1) + Basis(i) * BxVals(ip)
+
+            ip = ByPerm(NodeIndexes(i))
+            IF (ip > 0) Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
+
+            IF (DIM == 3) THEN
+              ip = BzPerm(NodeIndexes(i))
+              IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
             END IF
           END DO
+
 
           ! Cross product U x B
           UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
@@ -836,14 +840,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             M(i,i) = EtaGP
           END DO
 
-          M(1,2) = M(1,2) + HallCoeff * (-Bgp(3))
-          M(1,3) = M(1,3) + HallCoeff * ( Bgp(2))
-
-          M(2,1) = M(2,1) + HallCoeff * ( Bgp(3))
-          M(2,3) = M(2,3) + HallCoeff * (-Bgp(1))
-
-          M(3,1) = M(3,1) + HallCoeff * (-Bgp(2))
-          M(3,2) = M(3,2) + HallCoeff * ( Bgp(1))
+          M(1,2) = M(1,2) + HallCoeffAlpha * (-Bgp(3))
+          M(1,3) = M(1,3) + HallCoeffAlpha * ( Bgp(2))
+          M(2,1) = M(2,1) + HallCoeffAlpha * ( Bgp(3))
+          M(2,3) = M(2,3) + HallCoeffAlpha * (-Bgp(1))
+          M(3,1) = M(3,1) + HallCoeffAlpha * (-Bgp(2))
+          M(3,2) = M(3,2) + HallCoeffAlpha * ( Bgp(1))
 
           RHS = 0.0_dp
           DO j=1,dim
@@ -865,7 +867,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
               WRITE(*,*) '=============================================='
               WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
               WRITE(*,*) 'EtaGP     = ', EtaGP
-              WRITE(*,*) 'HallCoeff = ', HallCoeff
+              WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
               WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
               WRITE(*,*) 'M matrix:'
               WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
@@ -976,150 +978,194 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     SUBROUTINE StatCurrentCompose( StiffMatrix,Force,Conductivity, &
                             Load,Element,n,Nodes )
 !------------------------------------------------------------------------------
-       REAL(KIND=dp) :: StiffMatrix(:,:),Force(:),Load(:), Conductivity(:,:,:)
-       INTEGER :: n
-       TYPE(Nodes_t) :: Nodes
-       TYPE(Element_t), POINTER :: Element
+      REAL(KIND=dp) :: StiffMatrix(:,:),Force(:),Load(:), Conductivity(:,:,:)
+      INTEGER :: n
+      TYPE(Nodes_t) :: Nodes
+      TYPE(Element_t), POINTER :: Element
 !------------------------------------------------------------------------------
  
-       REAL(KIND=dp) :: SqrtMetric,Metric(3,3),Symb(3,3,3),dSymb(3,3,3,3)
-       REAL(KIND=dp) :: Basis(n),dBasisdx(n,3)
-       REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,C(3,3),x,y,z
-       LOGICAL :: Stat
+      REAL(KIND=dp) :: SqrtMetric,Metric(3,3),Symb(3,3,3),dSymb(3,3,3,3)
+      REAL(KIND=dp) :: Basis(n),dBasisdx(n,3)
+      REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,C(3,3),x,y,z
+      LOGICAL :: Stat
 
-       INTEGER :: i,j,p,q,t,DIM
+      INTEGER :: i,j,p,q,t,DIM
  
-       TYPE(GaussIntegrationPoints_t) :: IntegStuff
+      TYPE(GaussIntegrationPoints_t) :: IntegStuff
 
-       REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3), SigmaUxBgp(3)
-       INTEGER, POINTER :: NodeIndexes(:)
-       INTEGER :: ip
+      REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3)
+      INTEGER, POINTER :: NodeIndexes(:)
+      INTEGER :: ip
 
-       IF ( Element % PartIndex /= ParEnv % MyPE ) THEN
-         Force = 0.0_dp
-         StiffMatrix = 0.0_dp
-         RETURN
-       END IF
+      REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso
+      REAL(KIND=dp) :: M(3,3), Minv(3,3)
 
+      ! Guard against element is not part of this rank
+      IF ( Element % PartIndex /= ParEnv % MyPE ) THEN
+        Force = 0.0_dp
+        StiffMatrix = 0.0_dp
+        RETURN
+      END IF
 
- 
 !------------------------------------------------------------------------------
-       DIM = CoordinateSystemDimension()
-
-       Force = 0.0d0
-       StiffMatrix = 0.0d0
+      ! hard coded hall coefficient
+      HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
 !------------------------------------------------------------------------------
 
-       NodeIndexes => Element % NodeIndexes
+
+
+!------------------------------------------------------------------------------
+      DIM = CoordinateSystemDimension()
+
+      Force = 0.0d0
+      StiffMatrix = 0.0d0
+!------------------------------------------------------------------------------
+
+      NodeIndexes => Element % NodeIndexes
  
 !------------------------------------------------------------------------------
 !      Numerical integration
 !------------------------------------------------------------------------------
-       IntegStuff = GaussPoints( Element )
- 
-       DO t=1,IntegStuff % n
-         U = IntegStuff % u(t)
-         V = IntegStuff % v(t)
-         W = IntegStuff % w(t)
-         S = IntegStuff % s(t)
+      IntegStuff = GaussPoints( Element )
+
+      DO t=1,IntegStuff % n
+        U = IntegStuff % u(t)
+        V = IntegStuff % v(t)
+        W = IntegStuff % w(t)
+        S = IntegStuff % s(t)
 !------------------------------------------------------------------------------
 !        Basis function values & derivatives at the integration point
 !------------------------------------------------------------------------------
-         stat = ElementInfo( Element,Nodes,U,V,W,SqrtElementMetric, &
-                    Basis,dBasisdx )
+        stat = ElementInfo( Element,Nodes,U,V,W,SqrtElementMetric, &
+                  Basis,dBasisdx )
 !------------------------------------------------------------------------------
 !      Coordinatesystem dependent info
 !------------------------------------------------------------------------------
-         IF ( CurrentCoordinateSystem() /= Cartesian ) THEN
-           x = SUM( ElementNodes % x(1:n)*Basis(1:n) )
-           y = SUM( ElementNodes % y(1:n)*Basis(1:n) )
-           z = SUM( ElementNodes % z(1:n)*Basis(1:n) )
-         END IF
+        IF ( CurrentCoordinateSystem() /= Cartesian ) THEN
+          x = SUM( ElementNodes % x(1:n)*Basis(1:n) )
+          y = SUM( ElementNodes % y(1:n)*Basis(1:n) )
+          z = SUM( ElementNodes % z(1:n)*Basis(1:n) )
+        END IF
 
-         CALL CoordinateSystemInfo( Metric,SqrtMetric,Symb,dSymb,x,y,z )
- 
-         S = S * SqrtElementMetric * SqrtMetric
+        CALL CoordinateSystemInfo( Metric,SqrtMetric,Symb,dSymb,x,y,z )
 
-         L = SUM( Load(1:n) * Basis )
+        S = S * SqrtElementMetric * SqrtMetric
 
-         IF( GetCondAtIp ) THEN
-           CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = t )
-           C(1:dim,1:dim) = 0.0_dp
-           DO i=1,dim
-             C(i,i) = CondAtIp
-           END DO
-         ELSE
-           DO i=1,DIM
-             DO j=1,DIM
-               C(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
-             END DO
-           END DO
-         END IF
+        L = SUM( Load(1:n) * Basis )
+
+        IF( GetCondAtIp ) THEN
+          CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = t )
+          C(1:dim,1:dim) = 0.0_dp
+          DO i=1,dim
+            C(i,i) = CondAtIp
+          END DO
+        ELSE
+          DO i=1,DIM
+            DO j=1,DIM
+              C(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
+            END DO
+          END DO
+        END IF
+
+        ! Caluclate resistivity from conductivity
+        SigmaIso = (C(1,1) + C(2,2) + C(3,3)) / REAL(dim,dp)
+        IF (SigmaIso > 0.0_dp) THEN
+          EtaGP = 1.0_dp / SigmaIso
+        ELSE
+          EtaGP = 0.0_dp
+        END IF
 
         
         ! Reset Gauss-point velocity and magnetic field
         Ugp = 0.0_dp
         Bgp = 0.0_dp
 
-        ! Interpolate U and B from nodal scalar components
         DO i = 1, n
+          ! Velocity components: use each variable's own perm
+          ip = UxPerm(NodeIndexes(i))
+          IF (ip > 0) Ugp(1) = Ugp(1) + Basis(i) * UxVals(ip)
 
-          ip = UxVar % Perm( NodeIndexes(i) )
-          IF (ip > 0) THEN
-            Ugp(1) = Ugp(1) + Basis(i) * UxVals(ip)
-            Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
-            IF (DIM == 3) THEN 
-              Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip) 
-            END IF
+          ip = UyPerm(NodeIndexes(i))
+          IF (ip > 0) Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
+
+          IF (DIM == 3) THEN
+            ip = UzPerm(NodeIndexes(i))
+            IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
           END IF
 
-          ip = BxVar % Perm( NodeIndexes(i) )
-          IF (ip > 0) THEN
-            Bgp(1) = Bgp(1) + Basis(i) * BxVals(ip)
-            Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
-            IF (DIM == 3) THEN 
-              Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip) 
-            END IF
-          END IF
+          ! Magnetic field components: use each variable's own perm
+          ip = BxPerm(NodeIndexes(i))
+          IF (ip > 0) Bgp(1) = Bgp(1) + Basis(i) * BxVals(ip)
 
+          ip = ByPerm(NodeIndexes(i))
+          IF (ip > 0) Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
+
+          IF (DIM == 3) THEN
+            ip = BzPerm(NodeIndexes(i))
+            IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
+          END IF
         END DO
 
+
+        ! Build the M matrix
+        M = 0.0_dp
+        DO i=1,dim
+          M(i,i) = EtaGP
+        END DO
+
+        M(1,2) = M(1,2) + HallCoeffAlpha * (-Bgp(3))
+        M(1,3) = M(1,3) + HallCoeffAlpha * ( Bgp(2))
+        M(2,1) = M(2,1) + HallCoeffAlpha * ( Bgp(3))
+        M(2,3) = M(2,3) + HallCoeffAlpha * (-Bgp(1))
+        M(3,1) = M(3,1) + HallCoeffAlpha * (-Bgp(2))
+        M(3,2) = M(3,2) + HallCoeffAlpha * ( Bgp(1))
+
+        ! Invert the hall matrix
+        CALL Invert3x3(M, Minv, Stat)
+
+        ! Temporary debug block for debugging inversion issue
+        IF (.NOT. Stat) THEN
+          WRITE(*,*) '=============================================='
+          WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
+          WRITE(*,*) 'EtaGP     = ', EtaGP
+          WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
+          WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
+          WRITE(*,*) 'M matrix:'
+          WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
+          WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
+          WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
+          WRITE(*,*) '=============================================='
+          CALL Fatal('GeneralCurrent / Hall MHD', &
+                    'Hall conductivity matrix is singular or ill-conditioned at Gauss point.')
+        END IF
 
         ! Cross product UxB = U x B
         UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
         UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
         UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
 
-
-        ! SigmaUxB = C * UxB (use only 1:dim)
-        SigmaUxBgp = 0.0_dp
-        DO i=1,dim
-          DO j=1,dim
-            SigmaUxBgp(i) = SigmaUxBgp(i) + C(i,j) * UxBgp(j)
-          END DO
-        END DO
-
          
 !------------------------------------------------------------------------------
 !        The Poisson equation
 !------------------------------------------------------------------------------
-         DO p=1,n
-           DO q=1,n
-             A = 0.d0
-             DO i=1,DIM
-               DO J=1,DIM
-                 A = A + C(i,j) * dBasisdx(p,i) * dBasisdx(q,j)
-               END DO
-             END DO
-             StiffMatrix(p,q) = StiffMatrix(p,q) + S*A
-           END DO
-           Force(p) = Force(p) + S*L*Basis(p)
-           ! Add + ∫ (∇N_p · (σ (u×B))) dV
-           DO i=1,dim
-             Force(p) = Force(p) + S * dBasisdx(p,i) * SigmaUxBgp(i)
-           END DO
- 
-         END DO
+        DO p=1,n
+          DO q=1,n
+            A = 0.d0
+            DO i=1,DIM
+              DO J=1,DIM
+                A = A + dBasisdx(p,i) * Minv(i,j) * dBasisdx(q,j)
+              END DO
+            END DO
+            StiffMatrix(p,q) = StiffMatrix(p,q) + S*A
+          END DO
+          Force(p) = Force(p) + S*L*Basis(p)
+          ! Add forcing terms from the hall and motional EMF
+          DO i=1,dim
+            DO j=1, dim
+              Force(p) = Force(p) + S * dBasisdx(p,i) * Minv(i,j) * UxBgp(j)
+            END DO
+          END DO
+        END DO
 !------------------------------------------------------------------------------
        END DO
 !------------------------------------------------------------------------------

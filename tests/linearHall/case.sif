@@ -33,9 +33,7 @@ End
 
 
 ! --------------------------------------------------
-! 1) Declare imported scalars provided by OpenFOAM
-!    (KEEP Exec=Always like the working file)
-!    IMPORTANT: Each solver must have a UNIQUE Equation string
+! 1 Scalar Solvers
 ! --------------------------------------------------
 
 Solver 1
@@ -96,8 +94,7 @@ End
 
 
 ! --------------------------------------------------
-! 2) OpenFOAM → Elmer: fill imported fields
-!    (KEEP Exec=Always, solver-order dependent like working)
+! 2 OpenFOAM -> Elmer
 ! --------------------------------------------------
 Solver 8
   Exec Solver = Always
@@ -115,9 +112,7 @@ End
 
 
 ! --------------------------------------------------
-! 3) Static current solve for Potential
-!    (Swap OG StatCurrentSolve -> your custom MHDSolve solver)
-!    Keep the "working-like" equation naming style here.
+! 3 Custom Elmer MHD Solver
 ! --------------------------------------------------
 Solver 9
   Exec Solver = Always
@@ -130,16 +125,24 @@ Solver 9
   Calculate Volume Current = Logical True
   Calculate Joule Heating  = Logical True
 
+  ! --- EOF-compatible linear system ---
   Linear System Solver = Iterative
-  Linear System Iterative Method = BiCGStab
-  Linear System Preconditioning = ILU0
+  Linear System Iterative Method = GMRES
+  Linear System Symmetric = False
+  Linear System Preconditioning = ILU
+
   Linear System Max Iterations = 500
-  Linear System Convergence Tolerance = 1.0e-10
+  Linear System Convergence Tolerance = 1.0e-8
+
+  Linear System Abort Not Converged = False
+  Linear System Residual Output = 1
 End
 
 
+
+
 ! --------------------------------------------------
-! 4) Elmer -> OpenFOAM: export computed results
+! 4 Elmer -> OpenFOAM: export computed results
 ! --------------------------------------------------
 Solver 10
   Exec Solver = Always
@@ -176,17 +179,15 @@ End
 ! Boundary Conditions
 ! -------------------------
 Boundary Condition 1
-  ! FaradayMinusY (reference / ground)
+  ! FaradayMinusY
   Target Boundaries(1) = 1
-  Current Density BC = Logical True
-  Current Density = Real 0.0
+  Potential = Real 0.0
 End
 
 Boundary Condition 2
-  ! FaradayPlusY (as in your working file)
+  ! FaradayPlusY
   Target Boundaries(1) = 2
-  Current Density BC = Logical True
-  Current Density = Real 0.0
+  Potential = Real 1.0
 End
 
 Boundary Condition 3
