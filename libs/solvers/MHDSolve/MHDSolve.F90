@@ -653,7 +653,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
     ! hard coded hall coefficient
-    HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
+    ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
+    HallCoeffAlpha = 100 ! Crazy test value
 !------------------------------------------------------------------------------
 
 
@@ -840,12 +841,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             M(i,i) = EtaGP
           END DO
 
-          M(1,2) = M(1,2) + HallCoeffAlpha * (-Bgp(3))
-          M(1,3) = M(1,3) + HallCoeffAlpha * ( Bgp(2))
-          M(2,1) = M(2,1) + HallCoeffAlpha * ( Bgp(3))
-          M(2,3) = M(2,3) + HallCoeffAlpha * (-Bgp(1))
-          M(3,1) = M(3,1) + HallCoeffAlpha * (-Bgp(2))
-          M(3,2) = M(3,2) + HallCoeffAlpha * ( Bgp(1))
+          M(1,2) = M(1,2) - HallCoeffAlpha * (-Bgp(3))
+          M(1,3) = M(1,3) - HallCoeffAlpha * ( Bgp(2))
+          M(2,1) = M(2,1) - HallCoeffAlpha * ( Bgp(3))
+          M(2,3) = M(2,3) - HallCoeffAlpha * (-Bgp(1))
+          M(3,1) = M(3,1) - HallCoeffAlpha * (-Bgp(2))
+          M(3,2) = M(3,2) - HallCoeffAlpha * ( Bgp(1))
 
           RHS = 0.0_dp
           DO j=1,dim
@@ -863,21 +864,18 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             CALL Invert3x3(M, Minv, Stat)
 
             ! Temporary debug block for debugging inversion issue
-            IF (.NOT. Stat) THEN
-              WRITE(*,*) '=============================================='
-              WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-              WRITE(*,*) 'EtaGP     = ', EtaGP
-              WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
-              WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
-              WRITE(*,*) 'M matrix:'
-              WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
-              WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
-              WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
-              WRITE(*,*) '=============================================='
-              CALL Fatal('GeneralCurrent / Hall MHD', &
-                        'Hall conductivity matrix is singular or ill-conditioned at Gauss point.')
-            END IF
-
+            
+            WRITE(*,*) 'General Curerrent ============================'
+            WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
+            WRITE(*,*) 'EtaGP     = ', EtaGP
+            WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
+            WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
+            WRITE(*,*) 'M matrix:'
+            WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
+            WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
+            WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
+            WRITE(*,*) '=============================================='
+              
             IF (.NOT. Stat) THEN
               CALL Fatal( &
                 'GeneralCurrent / Hall MHD', &
@@ -1009,7 +1007,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
       ! hard coded hall coefficient
-      HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
+      ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
+      HallCoeffAlpha = 100 ! crazy number to test it out
 !------------------------------------------------------------------------------
 
 
@@ -1113,28 +1112,29 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           M(i,i) = EtaGP
         END DO
 
-        M(1,2) = M(1,2) + HallCoeffAlpha * (-Bgp(3))
-        M(1,3) = M(1,3) + HallCoeffAlpha * ( Bgp(2))
-        M(2,1) = M(2,1) + HallCoeffAlpha * ( Bgp(3))
-        M(2,3) = M(2,3) + HallCoeffAlpha * (-Bgp(1))
-        M(3,1) = M(3,1) + HallCoeffAlpha * (-Bgp(2))
-        M(3,2) = M(3,2) + HallCoeffAlpha * ( Bgp(1))
+        M(1,2) = M(1,2) - HallCoeffAlpha * (-Bgp(3))
+        M(1,3) = M(1,3) - HallCoeffAlpha * ( Bgp(2))
+        M(2,1) = M(2,1) - HallCoeffAlpha * ( Bgp(3))
+        M(2,3) = M(2,3) - HallCoeffAlpha * (-Bgp(1))
+        M(3,1) = M(3,1) - HallCoeffAlpha * (-Bgp(2))
+        M(3,2) = M(3,2) - HallCoeffAlpha * ( Bgp(1))
 
         ! Invert the hall matrix
         CALL Invert3x3(M, Minv, Stat)
 
         ! Temporary debug block for debugging inversion issue
-        IF (.NOT. Stat) THEN
-          WRITE(*,*) '=============================================='
-          WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-          WRITE(*,*) 'EtaGP     = ', EtaGP
-          WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
-          WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
-          WRITE(*,*) 'M matrix:'
-          WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
-          WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
-          WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
-          WRITE(*,*) '=============================================='
+        
+        WRITE(*,*) 'StatCurrentCompose============================'
+        WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
+        WRITE(*,*) 'EtaGP     = ', EtaGP
+        WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
+        WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
+        WRITE(*,*) 'M matrix:'
+        WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
+        WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
+        WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
+        WRITE(*,*) '=============================================='
+        IF (.NOT. Stat) THEN 
           CALL Fatal('GeneralCurrent / Hall MHD', &
                     'Hall conductivity matrix is singular or ill-conditioned at Gauss point.')
         END IF
