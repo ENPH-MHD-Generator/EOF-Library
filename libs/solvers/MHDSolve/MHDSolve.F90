@@ -167,8 +167,9 @@ END SUBROUTINE StatCurrentSolver_Init
      INTEGER, POINTER :: UxPerm(:), UyPerm(:), UzPerm(:)
      INTEGER, POINTER :: BxPerm(:), ByPerm(:), BzPerm(:)
      TYPE(Variable_t), POINTER :: UxVar, UyVar, UzVar, BxVar, ByVar, BzVar
-
-
+     TYPE(Variable_t), POINTER :: TeVar, PVar, TpVar, SigVar
+     REAL(KIND=dp), POINTER :: TeVals(:), PVals(:), TpVals(:), SigVals(:)
+     INTEGER, POINTER :: TePerm(:), PPerm(:), TpPerm(:), SigPerm(:)
      
      SAVE LocalStiffMatrix, Load, LocalForce, &
       ElementNodes, CalculateCurrent, CalculateHeating, &
@@ -179,7 +180,10 @@ END SUBROUTINE StatCurrentSolver_Init
       UxVals, UyVals, UzVals, &
       BxVals, ByVals, BzVals, &
       UxPerm, UyPerm, UzPerm, &
-      BxPerm, ByPerm, BzPerm
+      BxPerm, ByPerm, BzPerm, &
+      TeVar, PVar, TpVar, SigVar, &
+      TeVals, PVals, TpVals, SigVals, &
+      TePerm, PPerm, TpPerm, SigPerm
 
      
 !------------------------------------------------------------------------------
@@ -249,31 +253,47 @@ END SUBROUTINE StatCurrentSolver_Init
 
        NULLIFY( Cwrk )
 
-      UxVar => VariableGet( Solver % Mesh % Variables, 'Ux' )
-      UyVar => VariableGet( Solver % Mesh % Variables, 'Uy' )
-      UzVar => VariableGet( Solver % Mesh % Variables, 'Uz' )
+       UxVar => VariableGet( Solver % Mesh % Variables, 'Ux' )
+       UyVar => VariableGet( Solver % Mesh % Variables, 'Uy' )
+       UzVar => VariableGet( Solver % Mesh % Variables, 'Uz' )
 
-      BxVar => VariableGet( Solver % Mesh % Variables, 'Bx' )
-      ByVar => VariableGet( Solver % Mesh % Variables, 'By' )
-      BzVar => VariableGet( Solver % Mesh % Variables, 'Bz' )
+       BxVar => VariableGet( Solver % Mesh % Variables, 'Bx' )
+       ByVar => VariableGet( Solver % Mesh % Variables, 'By' )
+       BzVar => VariableGet( Solver % Mesh % Variables, 'Bz' )
 
-      IF (.NOT.ASSOCIATED(UxVar)) CALL Fatal('StatCurrentSolver','Ux not found')
-      IF (.NOT.ASSOCIATED(UyVar)) CALL Fatal('StatCurrentSolver','Uy not found')
-      IF (.NOT.ASSOCIATED(UzVar)) CALL Fatal('StatCurrentSolver','Uz not found')
+       IF (.NOT.ASSOCIATED(UxVar)) CALL Fatal('StatCurrentSolver','Ux not found')
+       IF (.NOT.ASSOCIATED(UyVar)) CALL Fatal('StatCurrentSolver','Uy not found')
+       IF (.NOT.ASSOCIATED(UzVar)) CALL Fatal('StatCurrentSolver','Uz not found')
 
-      IF (.NOT.ASSOCIATED(BxVar)) CALL Fatal('StatCurrentSolver','Bx not found')
-      IF (.NOT.ASSOCIATED(ByVar)) CALL Fatal('StatCurrentSolver','By not found')
-      IF (.NOT.ASSOCIATED(BzVar)) CALL Fatal('StatCurrentSolver','Bz not found')
+       IF (.NOT.ASSOCIATED(BxVar)) CALL Fatal('StatCurrentSolver','Bx not found')
+       IF (.NOT.ASSOCIATED(ByVar)) CALL Fatal('StatCurrentSolver','By not found')
+       IF (.NOT.ASSOCIATED(BzVar)) CALL Fatal('StatCurrentSolver','Bz not found')
 
-      UxVals => UxVar % Values ; UxPerm => UxVar % Perm
-      UyVals => UyVar % Values ; UyPerm => UyVar % Perm
-      UzVals => UzVar % Values ; UzPerm => UzVar % Perm
+       UxVals => UxVar % Values ; UxPerm => UxVar % Perm
+       UyVals => UyVar % Values ; UyPerm => UyVar % Perm
+       UzVals => UzVar % Values ; UzPerm => UzVar % Perm
 
-      BxVals => BxVar % Values ; BxPerm => BxVar % Perm
-      ByVals => ByVar % Values ; ByPerm => ByVar % Perm
-      BzVals => BzVar % Values ; BzPerm => BzVar % Perm
+       BxVals => BxVar % Values ; BxPerm => BxVar % Perm
+       ByVals => ByVar % Values ; ByPerm => ByVar % Perm
+       BzVals => BzVar % Values ; BzPerm => BzVar % Perm
 
- 
+       TeVar  => VariableGet( Solver % Mesh % Variables, 'Te' )
+       PVar   => VariableGet( Solver % Mesh % Variables, 'Pressure' )
+       TpVar  => VariableGet( Solver % Mesh % Variables, 'Tp' )
+       SigVar => VariableGet( Solver % Mesh % Variables, 'Electric Conductivity' )
+
+       IF (.NOT.ASSOCIATED(TeVar))  CALL Fatal('StatCurrentSolver','Te not found')
+       IF (.NOT.ASSOCIATED(PVar))   CALL Fatal('StatCurrentSolver','Pressure not found')
+       IF (.NOT.ASSOCIATED(SigVar)) CALL Fatal('StatCurrentSolver','Electric Conductivity not found')
+
+       TeVals => TeVar % Values ; TePerm => TeVar % Perm
+       PVals  => PVar  % Values ; PPerm  => PVar  % Perm
+       SigVals => SigVar % Values ; SigPerm => SigVar % Perm
+
+       IF (ASSOCIATED(TpVar)) THEN
+         TpVals => TpVar % Values ; TpPerm => TpVar % Perm
+       END IF
+
        CalculateCurrent = ListGetLogical( Params, &
            'Calculate Volume Current', GotIt )
        IF ( CalculateCurrent ) THEN
@@ -654,7 +674,7 @@ END SUBROUTINE StatCurrentSolver_Init
     REAL(KIND=dp) :: Ugp(3), Bgp(3), UxBgp(3), SigmaUxBgp(3)
     INTEGER :: ip
     REAL(KIND=dp) :: Cgp(3,3)
-
+    REAL(KIND=dp) :: Pgp, Tgp, ng, Te, ne
 
 !------------------------------------------------------------------------------
 
@@ -815,6 +835,18 @@ END SUBROUTINE StatCurrentSolver_Init
               END IF
             END IF
           END DO
+
+          Pgp = 0.0_dp
+          Tgp = 0.0_dp
+          DO i = 1, n
+            ip = PPerm( NodeIndexes(i) )
+            IF (ip > 0) Pgp = Pgp + Basis(i) * PVals(ip)
+
+            ip = TgPerm( NodeIndexes(i) )
+            IF (ip > 0) Tgp = Tgp + Basis(i) * TgVals(ip)
+          END DO
+
+          ng = Pgp / (kB * Tgp)
 
           ! Cross product U x B
           UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)

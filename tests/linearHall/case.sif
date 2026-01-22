@@ -28,7 +28,7 @@ End
 
 Equation 1
   Name = "EOF_HallChannel"
-  Active Solvers(10) = 1 2 3 4 5 6 7 8 9 10
+  Active Solvers(12) = 1 2 3 4 5 6 7 8 9 10 11 12
 End
 
 
@@ -94,12 +94,31 @@ Solver 7
   Variable DOFs = 1
 End
 
+! --------------------------------------------------
+! 4) Saha Equation
+! --------------------------------------------------
+
+Solver 8
+  Exec Solver = Always
+  Equation = "DeclarePressure"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Pressure"
+  Variable DOFs = 1
+End
+
+Solver 9
+  Exec Solver = Always
+  Equation = "DeclareGasTemp"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Gas Temperature"
+  Variable DOFs = 1
+End
 
 ! --------------------------------------------------
 ! 2) OpenFOAM → Elmer: fill imported fields
 !    (KEEP Exec=Always, solver-order dependent like working)
 ! --------------------------------------------------
-Solver 8
+Solver 10
   Exec Solver = Always
   Equation = "OpenFOAM2Elmer"
   Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
@@ -111,6 +130,8 @@ Solver 8
   Target Variable 5 = String "Bx"
   Target Variable 6 = String "By"
   Target Variable 7 = String "Bz"
+  Target Variable 8 = String "Pressure"
+  Target Variable 9 = String "Gas Temperature"
 End
 
 
@@ -119,7 +140,7 @@ End
 !    (Swap OG StatCurrentSolve -> your custom MHDSolve solver)
 !    Keep the "working-like" equation naming style here.
 ! --------------------------------------------------
-Solver 9
+Solver 11
   Exec Solver = Always
   Equation = "Static Current Solver"
   Procedure = "MHDSolve" "StatCurrentSolver"
@@ -141,7 +162,7 @@ End
 ! --------------------------------------------------
 ! 4) Elmer -> OpenFOAM: export computed results
 ! --------------------------------------------------
-Solver 10
+Solver 12
   Exec Solver = Always
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
@@ -161,6 +182,14 @@ Material 1
 
   Electric Conductivity = Variable "Electric Conductivity"
     Real MATC "tx"
+
+  Primary Gas Mass = Real 6.63e-26
+  Ionization Potential = Real 15.76
+  Electron Neutral Cross Section = Real 1.0e-19  ! m^2 (placeholder)
+
+  Sigma Min = Real 1.0e-2
+  Sigma Max = Real 1.0e6
+
 End
 
 

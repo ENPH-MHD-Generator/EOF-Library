@@ -59,7 +59,7 @@ energyExchange
 // Iteration controls
 TeCoupling
 {
-    maxIter    1;
+    maxIter    8;
     tolRel     1e-3;
     omega      0.2;
     TeMin      300;

@@ -199,67 +199,6 @@ volScalarField T
     mesh
 );
 
-Info<< "Initializing field Te\n" << endl;
-
-IOobject TeIO
-(
-    "Te",
-    runTime.timeName(),
-    mesh,
-    IOobject::READ_IF_PRESENT,
-    IOobject::AUTO_WRITE
-);
-
-const bool haveTe = TeIO.typeHeaderOk<volScalarField>(true);  // true = verbose
-
-volScalarField Te
-(
-    TeIO,
-    mesh,
-    dimensionedScalar("Te", dimTemperature, 0.0)
-);
-
-if (!haveTe)
-{
-    Info<< "Te not found; initializing Te = T" << endl;
-    Te = T;
-    Te.correctBoundaryConditions();
-}
-
-Info<< "Initializing field alpha\n" << endl;
-
-volScalarField alpha
-(
-    IOobject("alpha", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
-    mesh,
-    dimensionedScalar("alpha", dimless, 0.0)
-);
-Info<< "Initializing field ne\n" << endl;
-
-volScalarField ne
-(
-    IOobject("ne", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
-    mesh,
-    dimensionedScalar("ne", dimless/dimVolume, 0.0) // 1/m^3
-);
-Info<< "Initializing field Cep\n" << endl;
-
-volScalarField Cep
-(
-    IOobject("Cep", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
-    mesh,
-    dimensionedScalar("Cep", dimPower/dimVolume/dimTemperature, 0.0) // W/(m^3 K)
-);
-Info<< "Initializing field TeNew\n" << endl;
-
-volScalarField TeNew
-(
-    IOobject("TeNew", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
-    mesh,
-    dimensionedScalar("TeNew", dimTemperature, 0.0)
-);
-TeNew = T;
-
 Info<< "Initializing field JH\n" << endl;
 volScalarField JH
 (
@@ -402,7 +341,7 @@ dimensionedScalar elcond_melt
 );
 
 // Force single, nonzero conductivity everywhere
-//elcond = elcond_melt;
+elcond = elcond_melt;
 
 // -------------------------------------------------------------------------
 // Elmer update control
@@ -544,3 +483,4 @@ volScalarField Bz
 Bx = B.component(vector::X);
 By = B.component(vector::Y);
 Bz = B.component(vector::Z);
+

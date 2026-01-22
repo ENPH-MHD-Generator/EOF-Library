@@ -49,6 +49,9 @@ interpolationSchemes
     Bx              cellPoint;
     By              cellPoint;
     Bz              cellPoint;
+
+    T               cellPoint;
+    p               cellPoint;
 }
 
 snGradSchemes
