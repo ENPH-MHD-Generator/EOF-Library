@@ -14,7 +14,7 @@ FoamFile
 // Temperature [K]
 dimensions      [0 0 0 1 0 0 0];
 
-internalField   uniform 1500;
+internalField   uniform 100;
 
 boundaryField
 {
