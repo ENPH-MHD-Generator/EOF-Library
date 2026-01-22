@@ -49,7 +49,10 @@ mode_(mode),
 myBoundBox(mesh.points(),false)
 {
     multiregion_ = multiregion;
-    if(init) initialize();
+    if (init) {
+		Info << "Initializing...\n" << endl;
+		initialize();
+	}
 }
 
 template <class meshT>

@@ -31,4 +31,39 @@ kappa 0.0866;  // Thermal conductivity (W/m/K) at 2500 K
 elcond_melt  500.0;  // Representative value for weakly ionized argon plasma
 maxRelDiff 0; // Call elmer on very time step
 
+saha
+{
+    molarMass  0.039948;    // kg/mol (Argon)
+    chi_eV     15.7596;     // eV  (Ar first ionization)
+    gi_over_gn 1.0;         // start with 1.0
+    alphaMin   0;
+    alphaMax   1;
+}
+
+// Very simple sigma model knobs (placeholder!)
+sigmaModel
+{
+    sigmaMin   1e-2;
+    sigmaMax   1e6;
+    sigmaRef   500.0;       // roughly your old elcond_melt
+    alphaRef   1e-4;        // scaling point for alpha -> sigma mapping
+}
+
+// Electron-heavy energy exchange closure (placeholder!)
+energyExchange
+{
+    Cep0       1e-12;       // [W/(m^3 K)] per electron density unit, used as Cep = Cep0*ne
+    CepMin     1e-6;        // floor on Cep to avoid blowups
+}
+
+// Iteration controls
+TeCoupling
+{
+    maxIter    1;
+    tolRel     1e-3;
+    omega      0.2;
+    TeMin      300;
+    TeMax      20000;
+}
+
 // ************************************************************************* //

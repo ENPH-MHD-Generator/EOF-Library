@@ -24,6 +24,7 @@ Description
 #include "fvOptions.H"
 #include "CorrectPhi.H"
 #include "Elmer.H"
+#include "hallClosure.H"
 
 int main(int argc, char *argv[])
 {
@@ -38,6 +39,7 @@ int main(int argc, char *argv[])
     #include "createFields.H"
     #include "createFvOptions.H"
     #include "correctPhi.H"
+    #include "setHallClosureCoeffs.H"
 
     turbulence->validate();
 
@@ -48,6 +50,10 @@ int main(int argc, char *argv[])
     #include "readTimeControls.H" // reads time controls from the control dict
     #include "CourantNo.H"
     #include "setInitialDeltaT.H"
+
+    Info<<"\n Initializing Te...\n" << endl;
+
+    if (gMax(Te) <= SMALL) { Te = T; Te.correctBoundaryConditions(); }
 
     Info<< "\nStarting time loop\n" << endl;
 
@@ -64,55 +70,132 @@ int main(int argc, char *argv[])
     By = B.component(vector::Y);
     Bz = B.component(vector::Z);
 
+    Info<< "\nStarting time loop\n" << endl;
 
     // Send fields to Elmer
-    Elmer<fvMesh> sending(mesh, 1);     //  1 = send
-    sending.sendStatus(1);              //  1 = ok / continue
-    elcond = elcond_melt;
-    sending.sendScalar(elcond);
-    sending.sendScalar(Ux);
-    sending.sendScalar(Uy);
-    sending.sendScalar(Uz);
-    sending.sendScalar(Bx);
-    sending.sendScalar(By);
-    sending.sendScalar(Bz);
+    Info<< "Constructing Elmer receiving...\n" << endl;
+    bool receiverInitialized = false;
+    Elmer<fvMesh> receiving(mesh, -1, false); // Do not initialize yet
 
-    // Receive fields from Elmer
-    Elmer<fvMesh> receiving(mesh, -1);  // -1 = receive
-    receiving.sendStatus(1);
+    Info<< "Constructing Elmer sending...\n" << endl;
+    Elmer<fvMesh> sending(mesh, 1);
 
-    receiving.recvScalar(Jx);
-    receiving.recvScalar(Jy);
-    receiving.recvScalar(Jz);
-    receiving.recvScalar(JH_recv);
-    JH  = JH_recv;
+    Info<< "Elmer objects constructed.\n" << endl;
 
-    // Reconstruct J_dens from component fields
-    // Brackets define a local scope in OF6
+    Info<< "\nStarting time loop3\n" << endl;
+    for (label k = 0; k < TeMaxIter; ++k)
     {
-        vectorField& J_dens_in = J_dens.primitiveFieldRef();
-        const scalarField & Jx_in = Jx.internalField();
-        const scalarField & Jy_in = Jy.internalField();
-        const scalarField & Jz_in = Jz.internalField();
+        Info<< "\nStarting time loop-1\n" << endl;
+        sending.sendStatus(1); //  1 = ok / continue
+        Info<< "\nStarting time loop0\n" << endl;
 
-        forAll(J_dens_in, celli)
-        {
-            J_dens_in[celli] = vector(Jx_in[celli], Jy_in[celli], Jz_in[celli]);
+        // 2) Saha -> ne
+        computeAlphaNe(Te, alpha, ne, rhoConstVal, saha);
+        Info<< "\nStarting time loop0.5e\n" << endl;
+
+        // 3) ne -> sigma (placeholder from alpha)
+        computeSigmaFromAlpha(alpha, elcond, sigmaRef, alphaRef, sigmaMin, sigmaMax);
+        Info<< "\nStarting time loop4\n" << endl;
+        // Send sigma + U,B to Elmer
+        Info<< "about to send elcond\n" << endl;
+        sending.sendScalar(elcond);
+        Info<< "sent elcond\n" << endl;
+        sending.sendScalar(Ux);
+        sending.sendScalar(Uy);
+        sending.sendScalar(Uz);
+        sending.sendScalar(Bx);
+        sending.sendScalar(By);
+        sending.sendScalar(Bz);
+        Info<< "\nStarting time loop5\n" << endl;
+        // Receive fields from Elmer
+
+        if (!receiverInitialized) {
+            receiving.initialize(); // Initialize now that we are ready
+            receiverInitialized = true;
         }
 
-        forAll(J_dens.boundaryField(), patchi)
+        receiving.sendStatus(1);
+        Info<< "\nStarting time loop6\n" << endl;
+        // Receive J from Elmer
+        receiving.recvScalar(Jx);
+        receiving.recvScalar(Jy);
+        receiving.recvScalar(Jz);
+        receiving.recvScalar(JH_recv);
+        JH = JH_recv;
+        Info<< "\nStarting time loop7\n" << endl;
+        // Reconstruct J_dens from component fields
+        // Brackets define a local scope in OF6
         {
-            vectorField& J_dens_p = J_dens.boundaryFieldRef()[patchi];
-            const scalarField & Jx_p = Jx.boundaryField()[patchi];
-            const scalarField & Jy_p = Jy.boundaryField()[patchi];
-            const scalarField & Jz_p = Jz.boundaryField()[patchi];
+            vectorField& J_dens_in = J_dens.primitiveFieldRef();
+            const scalarField & Jx_in = Jx.internalField();
+            const scalarField & Jy_in = Jy.internalField();
+            const scalarField & Jz_in = Jz.internalField();
 
-            forAll(J_dens_p, facei)
+            forAll(J_dens_in, celli)
             {
-                J_dens_p[facei] = vector(Jx_p[facei], Jy_p[facei], Jz_p[facei]);
+                J_dens_in[celli] = vector(Jx_in[celli], Jy_in[celli], Jz_in[celli]);
             }
+
+            forAll(J_dens.boundaryField(), patchi)
+            {
+                vectorField& J_dens_p = J_dens.boundaryFieldRef()[patchi];
+                const scalarField & Jx_p = Jx.boundaryField()[patchi];
+                const scalarField & Jy_p = Jy.boundaryField()[patchi];
+                const scalarField & Jz_p = Jz.boundaryField()[patchi];
+
+                forAll(J_dens_p, facei)
+                {
+                    J_dens_p[facei] = vector(Jx_p[facei], Jy_p[facei], Jz_p[facei]);
+                }
+            }
+            Info<< "\nStarting time loop8\n" << endl;
         }
+
+        // 4) Energy balance: Cep*(Te - T) = eta*|J|^2 = |J|^2/sigma
+        computeCep(ne, Cep, Cep0, CepMin);
+        const dimensionedScalar sigmaMinDim("sigmaMin", elcond.dimensions(), sigmaMin);
+        const dimensionedScalar CepMinDim("CepMin",  Cep.dimensions(),  CepMin);
+
+        // TeNew = T + |J|^2/(sigma*Cep)
+        // (sigma already clamped; also clamp Cep)
+        TeNew = T + magSqr(J_dens) / (max(elcond, sigmaMinDim) * max(Cep, CepMinDim));
+        Info<< "\nStarting time loop9\n" << endl;
+        // 5) relax + clamp
+        Te = (1.0 - TeOmega)*Te + TeOmega*TeNew;
+        Te.max(TeMin);
+        Te.min(TeMax);
+        Te.correctBoundaryConditions();
+
+        // residual check
+        const scalarField dTe = TeNew.internalField() - Te.internalField();
+        Info<< "\nStarting time loop10\n" << endl;
+        scalar maxAbs = 0.0;
+        scalar maxDen = 0.0;
+
+        forAll(dTe, i)
+        {
+            maxAbs = max(maxAbs, mag(dTe[i]));
+        }
+
+        // denominator: max |Te|
+        const scalarField& TeI = Te.internalField();
+        forAll(TeI, i)
+        {
+            maxDen = max(maxDen, mag(TeI[i]));
+        }
+        Info<< "\nStarting time loop11\n" << endl;
+        const scalar rel = maxAbs / (maxDen + SMALL);
+        Info<< "Te iter " << k
+            << " rel=" << rel
+            << " Te[min/max]=" << gMin(Te) << " " << gMax(Te)
+            << " alpha[min/max]=" << gMin(alpha) << " " << gMax(alpha)
+            << " sigma[min/max]=" << gMin(elcond) << " " << gMax(elcond)
+            << nl << endl;
+
+        if (rel < TeTolRel) break;
     }
+
+    Info<< "\nStarting time loop12\n" << endl;
 
     fLorentz = J_dens ^ B;
     {
