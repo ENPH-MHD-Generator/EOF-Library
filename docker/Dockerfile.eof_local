@@ -24,7 +24,7 @@ WORKDIR /home/openfoam/EOF-Library
 
 # Add alias for initializing and building the project
 RUN echo 'alias init="cd ~ && eofCompile && cd EOF-Library && wmake solvers/mdhLinearHall && cp -r tests/linearHall runs && cd runs/linearHall "' >> ~/.bashrc
-RUN echo 'alias generate_mesh="cd ~/EOF-Library/runs/linearHall && rm -rf constant/polyMesh processor* meshElmer && blockMesh && decomposePar && ElmerGrid 14 2 channel.msh -out meshElmer -metis 2"' >> ~/.bashrc
+RUN echo 'alias generate_mesh="cd ~/EOF-Library/runs/linearHall && rm -rf constant/polyMesh processor* meshElmer && blockMesh && potentialFoam && decomposePar && ElmerGrid 14 2 channel.msh -out meshElmer -metis 2"' >> ~/.bashrc
 RUN echo 'alias configure_elmer="cd ~/EOF-Library/runs/linearHall && echo \"case.sif\" > ELMERSOLVER_STARTINFO"' >> ~/.bashrc
 RUN echo 'alias build_elmer_solver="sudo cp ~/EOF-Library/libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90 && cd /opt/elmerfem/build && sudo cmake .. && sudo make -j\$(nproc) MHDSolve && sudo make install"' >> ~/.bashrc
 RUN echo 'alias build_elmer_solver_debug="cd ~/EOF-Library/runs/linearHall && sudo cp ~/EOF-Library/libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90 && cd /opt/elmerfem/build && sudo cmake .. -DCMAKE_BUILD_TYPE=Debug -DCMAKE_Fortran_FLAGS_DEBUG=\"-O0 -g -fbacktrace -fcheck=all -ffpe-trap=invalid,zero,overflow\" && sudo make -j\$(nproc) MHDSolve && sudo make install"' >> ~/.bashrc

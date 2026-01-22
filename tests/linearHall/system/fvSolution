@@ -15,6 +15,14 @@ FoamFile
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 solvers
 {
+    Phi
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-8;
+        relTol          0;
+    }
+
     p_rgh
     {
         solver          GAMG;
@@ -90,12 +98,23 @@ PIMPLE
     nCorrectors         2;
     nNonOrthogonalCorrectors 0;
 
+    pRefCell  0;
+    pRefValue 0;
+
     residualControl
     {
         p_rgh   1e-6;
         U       1e-7;
         T       1e-7;
     }
+}
+
+potentialFlow
+{
+    solver          PCG;
+    preconditioner  DIC;
+    tolerance       1e-8;
+    relTol          0;
 }
 
 // very aggressive for testing solver convergence

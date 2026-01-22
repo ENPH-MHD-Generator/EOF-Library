@@ -14,14 +14,14 @@ FoamFile
 // Temperature [K]
 dimensions      [0 0 0 1 0 0 0];
 
-internalField   uniform 500;
+internalField   uniform 100;
 
 boundaryField
 {
     InletX
     {
         type    fixedValue;
-        value   uniform 2000;
+        value   uniform 1500;
     }
 
     OutletX
