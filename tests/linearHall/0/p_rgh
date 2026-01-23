@@ -27,7 +27,7 @@ boundaryField
     }
     OutletX
     {
-        type fixedFluxPressure;
+        type fixedValue;
         value uniform 0;
     }
     FaradayMinusY

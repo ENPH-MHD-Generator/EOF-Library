@@ -182,7 +182,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       BxPerm, ByPerm, BzPerm, &
       PVar, TgasVar, SigVar, &
       PVals, TgasVals, SigVals, &
-      PPerm, TgasPerm, SigPerm      
+      PPerm, TgasPerm, SigPerm
 
      
 !------------------------------------------------------------------------------
@@ -200,6 +200,15 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
   Norm = Solver % Variable % Norm
   DIM = CoordinateSystemDimension()
+
+
+  IF (Dim /= 3) THEN
+    CALL Fatal( &
+      'StatCurrentSolver', &
+      'This solver requires a fully 3D coordinate system. ' // &
+      'CoordinateSystemDimension() != 3. Aborting.' )
+  END IF
+
 
   ControlTarget = GetCReal( Params,'Power Control',ControlPower)
   IF(ControlPower) THEN
@@ -776,8 +785,9 @@ END SUBROUTINE UpdateConductivityFromTe
 
 !------------------------------------------------------------------------------
     ! hard coded hall coefficient
-    ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
-    HallCoeffAlpha = 100 ! Crazy test value
+    ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
+    HallCoeffAlpha = 0 ! Test turning off hall effect
+    ! HallCoeffAlpha = 100 ! Crazy test value
 !------------------------------------------------------------------------------
 
 
@@ -941,6 +951,20 @@ END SUBROUTINE UpdateConductivityFromTe
           UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
           UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
 
+          ! Log U and B
+          ! WRITE(*,'(A,I4,A,I2,A,3ES12.4,A,3ES12.4)') &
+          !   '[GeneralCurrent] Elem=', Element % BodyId, &
+          !   ' GP=', t, &
+          !   '  Ugp=', Ugp(1), Ugp(2), Ugp(3), &
+          !   '  Bgp=', Bgp(1), Bgp(2), Bgp(3)
+
+          ! ! Log corss product
+          ! WRITE(*,'(A,I4,A,I2,A,3ES12.4)') &
+          !   '[GeneralCurrent][UxB] Elem=', Element % BodyId, &
+          !   ' GP=', tg, &
+          !   '  UxB=', UxBgp(1), UxBgp(2), UxBgp(3)
+
+
           Cgp = 0.0_dp
           DO i = 1, dim
             DO j = 1, dim
@@ -974,6 +998,14 @@ END SUBROUTINE UpdateConductivityFromTe
             RHS(j) = -Grad(j) + UxBgp(j)
           END DO
 
+          ! Log RHS
+          ! WRITE(*,'(A,I4,A,I2,A,3ES12.4,A,3ES12.4)') &
+          !   '[GeneralCurrent][RHS] Elem=', Element % BodyId, &
+          !   ' GP=', tg, &
+          !   '  -GradPhi=', -Grad(1), -Grad(2), -Grad(3), &
+          !   '  RHS=', RHS(1), RHS(2), RHS(3)
+
+
           VolTot = VolTot + s
 
           HeatingTot = HeatingTot + s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
@@ -985,19 +1017,18 @@ END SUBROUTINE UpdateConductivityFromTe
             CALL Invert3x3(M, Minv, Stat)
 
             ! Temporary debug block for debugging inversion issue
-
-            WRITE(*,*) 'General Curerrent ============================'
-            WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-            WRITE(*,*) 'EtaGP     = ', EtaGP
-            WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
-            WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
-            WRITE(*,*) 'M matrix:'
-            WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
-            WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
-            WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
-            WRITE(*,*) '=============================================='
+            ! WRITE(*,*) 'General Curerrent ============================'
+            ! WRITE(*,*) 'EtaGP     = ', EtaGP
+            ! WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
+            ! WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
+            ! WRITE(*,*) 'M matrix:'
+            ! WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
+            ! WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
+            ! WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
+            ! WRITE(*,*) '=============================================='
 
             IF (.NOT. Stat) THEN
+              WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
               CALL Fatal( &
                 'GeneralCurrent / Hall MHD', &
                 'Hall conductivity matrix is singular or ill-conditioned at Gauss point.' )
@@ -1008,6 +1039,12 @@ END SUBROUTINE UpdateConductivityFromTe
                 Jgp(i) = Jgp(i) + Minv(i,j) * RHS(j)
               END DO
             END DO
+            ! Log Jgp
+            ! WRITE(*,'(A,I4,A,I2,A,3ES12.4)') &
+            !   '[GeneralCurrent][Jgp] Elem=', Element % BodyId, &
+            !   ' GP=', tg, &
+            !   '  Jgp=', Jgp(1), Jgp(2), Jgp(3)
+
             DO j=1,dim
               Current(j) = Current(j) + Jgp(j) * s
             END DO
@@ -1129,7 +1166,8 @@ END SUBROUTINE UpdateConductivityFromTe
 !------------------------------------------------------------------------------
       ! hard coded hall coefficient
       ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
-      HallCoeffAlpha = 100 ! crazy number to test it out
+      HallCoeffAlpha = 0 ! Test hall stuff off
+      ! HallCoeffAlpha = 100 ! crazy number to test it out
 !------------------------------------------------------------------------------
 
 
@@ -1161,6 +1199,10 @@ END SUBROUTINE UpdateConductivityFromTe
 !------------------------------------------------------------------------------
 !      Coordinatesystem dependent info
 !------------------------------------------------------------------------------
+        x = 0.0_dp
+        y = 0.0_dp
+        z = 0.0_dp
+
         IF ( CurrentCoordinateSystem() /= Cartesian ) THEN
           x = SUM( ElementNodes % x(1:n)*Basis(1:n) )
           y = SUM( ElementNodes % y(1:n)*Basis(1:n) )
@@ -1170,6 +1212,13 @@ END SUBROUTINE UpdateConductivityFromTe
         CALL CoordinateSystemInfo( Metric,SqrtMetric,Symb,dSymb,x,y,z )
 
         S = S * SqrtElementMetric * SqrtMetric
+
+        WRITE(*,'(A,I6,A,I3,A,ES12.4,A,ES12.4,A,ES12.4)') &
+          '[SCC][Metric] Elem=', Element % BodyId, &
+          ' GP=', t, &
+          ' SqrtElementMetric=', SqrtElementMetric, &
+          ' SqrtMetric=', SqrtMetric, &
+          ' S(weight)=', S
 
         L = SUM( Load(1:n) * Basis )
 
@@ -1226,6 +1275,11 @@ END SUBROUTINE UpdateConductivityFromTe
           END IF
         END DO
 
+        ! WRITE(*,'(A,I4,A,I2,A,3ES12.4,A,3ES12.4)') &
+        !   '[StatCurrentCompose] Elem=', Element % BodyId, &
+        !   ' GP=', t, &
+        !   '  Ugp=', Ugp(1), Ugp(2), Ugp(3), &
+        !   '  Bgp=', Bgp(1), Bgp(2), Bgp(3)
 
         ! Build the M matrix
         M = 0.0_dp
@@ -1244,18 +1298,18 @@ END SUBROUTINE UpdateConductivityFromTe
         CALL Invert3x3(M, Minv, Stat)
 
         ! Temporary debug block for debugging inversion issue
+        ! WRITE(*,*) 'StatCurrentCompose============================'
+        ! WRITE(*,*) 'EtaGP     = ', EtaGP
+        ! WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
+        ! WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
+        ! WRITE(*,*) 'M matrix:'
+        ! WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
+        ! WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
+        ! WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
+        ! WRITE(*,*) '=============================================='
 
-        WRITE(*,*) 'StatCurrentCompose============================'
-        WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-        WRITE(*,*) 'EtaGP     = ', EtaGP
-        WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
-        WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
-        WRITE(*,*) 'M matrix:'
-        WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
-        WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
-        WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
-        WRITE(*,*) '=============================================='
         IF (.NOT. Stat) THEN
+          WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
           CALL Fatal('GeneralCurrent / Hall MHD', &
                     'Hall conductivity matrix is singular or ill-conditioned at Gauss point.')
         END IF
@@ -1265,7 +1319,15 @@ END SUBROUTINE UpdateConductivityFromTe
         UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
         UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
 
-         
+        WRITE(*,'(A,I6,A,I3,A,3ES12.4,A,3ES12.4,A,3ES12.4)') &
+          '[SCC][Fields] Elem=', Element % BodyId, &
+          ' GP=', t, &
+          ' Ugp=', Ugp(1), Ugp(2), Ugp(3), &
+          ' Bgp=', Bgp(1), Bgp(2), Bgp(3), &
+          ' UxB=', UxBgp(1), UxBgp(2), UxBgp(3)
+
+
+
 !------------------------------------------------------------------------------
 !        The Poisson equation
 !------------------------------------------------------------------------------
@@ -1359,7 +1421,7 @@ END SUBROUTINE UpdateConductivityFromTe
 
       s = S_Integ(t) * SqrtElementMetric * SqrtMetric
 
-  !------------------------------------------------------------------------------
+!------------------------------------------------------------------------------
       Force = SUM( LoadVector(1:n)*Basis )
 
       DO q=1,N
