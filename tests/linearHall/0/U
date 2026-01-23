@@ -5,6 +5,7 @@
 |   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
 |    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
+
 FoamFile
 {
     version     2.0;
@@ -12,48 +13,98 @@ FoamFile
     class       volVectorField;
     location    "0";
     object      U;
-}
+};
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 dimensions      [0 1 -1 0 0 0 0];
+
 internalField   uniform (0 0 0);
 
 boundaryField
 {
     InletX
     {
-        type fixedValue;
-        value uniform (343.0 0 0);   // Mach 1
+        type    fixedValue;
+        value   uniform (343 0 0);   // Mach 1 inflow
+    }
+
+flow
+
+
+--> FOAM FATAL ERROR: 
+Continuity error cannot be removed by adjusting the outflow.
+Please check the velocity boundary conditions and/or run potentialFoam to initialise the outflow.
+Total flux              : 2.22507e-308
+Specified mass inflow   : 3.43
+Specified mass outflow  : 0
+Adjustable mass outflow : 0
+
+
+    From function bool Foam::adjustPhi(Foam::surfaceScalarField&, const volVectorField&, Foam::volScalarField&)
+    in file cfdTools/general/adjustPhi/adjustPhi.C at line 107.
+
+FOAM exiting
+
+openfoam@91c8ceefc028:~/EOF-Library/runs/linearHall$ cat 0/U 
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  dev                                   |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    location    "0";
+    object      U;
+};
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];
+
+internalField   uniform (0 0 0);
+
+boundaryField
+{
+    InletX
+    {
+        type    fixedValue;
+        value   uniform (343 0 0);   // Mach 1 inflow
     }
 
     OutletX
     {
-        type zeroGradient;
+        type        inletOutlet;
+        inletValue  uniform (0 0 0);
+        value       uniform (0 0 0);
     }
+
 
     FaradayMinusY
     {
-        type noSlip;
+        type    noSlip;
     }
 
     FaradayPlusY
     {
-        type noSlip;
+        type    noSlip;
     }
 
     SideWallsZ
     {
-        type noSlip;
+        type    noSlip;
     }
 
     defaultFaces
     {
-        type noSlip;
+        type    noSlip;
     }
-
 }
 
-
-
 // ************************************************************************* //
-

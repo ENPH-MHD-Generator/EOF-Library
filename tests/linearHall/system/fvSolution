@@ -115,6 +115,9 @@ potentialFlow
     preconditioner  DIC;
     tolerance       1e-8;
     relTol          0;
+
+    PhiRefCell      0;
+    PhiRefValue     0;
 }
 
 // very aggressive for testing solver convergence
