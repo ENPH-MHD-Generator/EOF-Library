@@ -166,9 +166,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
      INTEGER, POINTER :: UxPerm(:), UyPerm(:), UzPerm(:)
      INTEGER, POINTER :: BxPerm(:), ByPerm(:), BzPerm(:)
      TYPE(Variable_t), POINTER :: UxVar, UyVar, UzVar, BxVar, ByVar, BzVar
-     TYPE(Variable_t), POINTER :: TeVar, PVar, TpVar, SigVar
-     REAL(KIND=dp), POINTER :: TeVals(:), PVals(:), TpVals(:), SigVals(:)
-     INTEGER, POINTER :: TePerm(:), PPerm(:), TpPerm(:), SigPerm(:)
+     TYPE(Variable_t), POINTER :: PVar, TgasVar, SigVar
+     REAL(KIND=dp), POINTER :: PVals(:), TgasVals(:), SigVals(:)
+     INTEGER, POINTER :: PPerm(:), TgasPerm(:), SigPerm(:)
 
      SAVE LocalStiffMatrix, Load, LocalForce, &
       ElementNodes, CalculateCurrent, CalculateHeating, &
@@ -180,9 +180,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       BxVals, ByVals, BzVals, &
       UxPerm, UyPerm, UzPerm, &
       BxPerm, ByPerm, BzPerm, &
-      TeVar, PVar, TpVar, SigVar, &
-      TeVals, PVals, TpVals, SigVals, &
-      TePerm, PPerm, TpPerm, SigPerm
+      PVar, TgasVar, SigVar, &
+      PVals, TgasVals, SigVals, &
+      PPerm, TgasPerm, SigPerm      
 
      
 !------------------------------------------------------------------------------
@@ -276,22 +276,17 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     ByVals => ByVar % Values ; ByPerm => ByVar % Perm
     BzVals => BzVar % Values ; BzPerm => BzVar % Perm
 
-    TeVar  => VariableGet( Solver % Mesh % Variables, 'Te' )
-    PVar   => VariableGet( Solver % Mesh % Variables, 'Pressure' )
-    TpVar  => VariableGet( Solver % Mesh % Variables, 'Tp' )
-    SigVar => VariableGet( Solver % Mesh % Variables, 'Electric Conductivity' )
+    PVar     => VariableGet( Solver % Mesh % Variables, 'Pressure' )
+    TgasVar  => VariableGet( Solver % Mesh % Variables, 'Gas Temperature' )
+    SigVar   => VariableGet( Solver % Mesh % Variables, 'Electric Conductivity' )
 
-    IF (.NOT.ASSOCIATED(TeVar))  CALL Fatal('StatCurrentSolver','Te not found')
-    IF (.NOT.ASSOCIATED(PVar))   CALL Fatal('StatCurrentSolver','Pressure not found')
-    IF (.NOT.ASSOCIATED(SigVar)) CALL Fatal('StatCurrentSolver','Electric Conductivity not found')
+    IF (.NOT.ASSOCIATED(PVar))     CALL Fatal('StatCurrentSolver','Pressure not found')
+    IF (.NOT.ASSOCIATED(TgasVar))  CALL Fatal('StatCurrentSolver','Gas Temperature not found')
+    IF (.NOT.ASSOCIATED(SigVar))   CALL Fatal('StatCurrentSolver','Electric Conductivity not found')
 
-    TeVals => TeVar % Values ; TePerm => TeVar % Perm
-    PVals  => PVar  % Values ; PPerm  => PVar  % Perm
-    SigVals => SigVar % Values ; SigPerm => SigVar % Perm
-
-    IF (ASSOCIATED(TpVar)) THEN
-        TpVals => TpVar % Values ; TpPerm => TpVar % Perm
-    END IF
+    PVals     => PVar    % Values ; PPerm     => PVar    % Perm
+    TgasVals  => TgasVar % Values ; TgasPerm  => TgasVar % Perm
+    SigVals   => SigVar  % Values ; SigPerm   => SigVar  % Perm
 
     CalculateCurrent = ListGetLogical( Params, &
         'Calculate Volume Current', GotIt )
@@ -363,6 +358,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
   CALL DefaultStart()
 
+  ! CALL UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PPerm, &
+  !                           SigVals, SigPerm)
   DO iter = 1, NonlinearIter
     at  = CPUTime()
     at0 = RealTime()
@@ -630,6 +627,107 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CONTAINS
 
 !------------------------------------------------------------------------------
+!    Calculate conductivity!
+!------------------------------------------------------------------------------
+SUBROUTINE UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PPerm, &
+                                   SigVals, SigPerm)
+  USE DefUtils
+  IMPLICIT NONE
+  TYPE(Model_t) :: Model
+  TYPE(Solver_t), TARGET :: Solver
+
+  REAL(KIND=dp), POINTER :: TgasVals(:), PVals(:), SigVals(:)
+  INTEGER, POINTER :: TgasPerm(:), PPerm(:), SigPerm(:)
+
+  INTEGER :: i, ipT, ipP, ipTp, ipS, matId
+  REAL(KIND=dp) :: Te, Tp, P, ng, ne, alpha
+  REAL(KIND=dp) :: chi_eV, chi_J, sigma_en
+  REAL(KIND=dp) :: SahaRHS, root, vth, nu_en, sigma
+  REAL(KIND=dp) :: sigmaMin, sigmaMax
+  LOGICAL :: gotIt
+
+  ! constants
+  REAL(KIND=dp), PARAMETER :: kB = 1.380649d-23
+  REAL(KIND=dp), PARAMETER :: me = 9.1093837015d-31
+  REAL(KIND=dp), PARAMETER :: qe = 1.602176634d-19
+  REAL(KIND=dp), PARAMETER :: h  = 6.62607015d-34
+  REAL(KIND=dp), PARAMETER :: eV_to_J = 1.602176634d-19
+
+  ! For now: assume Body 1 material is used (same as your case)
+  matId = ListGetInteger(Model % Bodies(1) % Values, 'Material', gotIt, minv=1, maxv=Model % NumberOfMaterials)
+  IF (.NOT.gotIt) CALL Fatal('UpdateConductivityFromTe','Could not get Material id from Body 1')
+
+  chi_eV = ListGetCReal(Model % Materials(matId) % Values, 'Ionization Potential [eV]', gotIt)
+  IF (.NOT.gotIt) CALL Fatal('UpdateConductivityFromTe','Missing Ionization Potential [eV] in Material')
+  chi_J = chi_eV * eV_to_J
+
+  sigma_en = ListGetCReal(Model % Materials(matId) % Values, 'Electron Neutral Cross Section', gotIt)
+  IF (.NOT.gotIt) CALL Fatal('UpdateConductivityFromTe','Missing Electron Neutral Cross Section in Material')
+
+  sigmaMin = ListGetCReal(Model % Materials(matId) % Values, 'Sigma Min', gotIt)
+  IF (.NOT.gotIt) sigmaMin = 1.0d-2
+  sigmaMax = ListGetCReal(Model % Materials(matId) % Values, 'Sigma Max', gotIt)
+  IF (.NOT.gotIt) sigmaMax = 1.0d6
+
+  ! Fill sigma at nodes (stored in the Electric Conductivity variable)
+  DO i = 1, Solver % Mesh % NumberOfNodes
+    ipT = TgasPerm(i)
+    ipP = PPerm(i)
+    ipS = SigPerm(i)
+
+    IF (ipT <= 0 .OR. ipP <= 0 .OR. ipS <= 0) CYCLE
+
+    Te = TgasVals(ipT)   ! equilibrium assumption Te := Tg at nodes
+    P  = PVals(ipP)
+
+    Tp = Te
+
+    ! guard
+    IF (Te <= 1.0d0) Te = 1.0d0
+    IF (Tp <= 1.0d0) Tp = 1.0d0
+    IF (P  <= 0.0d0) THEN
+      SigVals(ipS) = sigmaMin
+      CYCLE
+    END IF
+
+    ! primary gas number density
+    ng = P / (kB * Tp)
+
+    ! --- Saha (single ionization, Te = Tp assumed) ---
+    ! SahaRHS = (2/ng) * (2*pi*me*kB*Te/h^2)^(3/2) * exp(-chi/(kB*Te))
+    SahaRHS = (2.0d0 / ng) * ( (2.0d0*pi*me*kB*Te)/(h*h) )**(1.5d0) * EXP( -chi_J/(kB*Te) )
+
+    IF (SahaRHS <= 0.0d0) THEN
+      alpha = 0.0d0
+    ELSE
+      root = SQRT(SahaRHS*SahaRHS + 4.0d0*SahaRHS)
+      alpha = 0.5d0 * ( -SahaRHS + root )
+      IF (alpha < 0.0d0) alpha = 0.0d0
+      IF (alpha > 1.0d0) alpha = 1.0d0
+    END IF
+
+    ne = alpha * ng
+
+    ! --- collision model conductivity ---
+    ! vth = sqrt(8 kB Te / (pi me))
+    vth = SQRT( 8.0d0*kB*Te/(pi*me) )
+    nu_en = ng * sigma_en * vth
+
+    IF (nu_en <= 0.0d0) THEN
+      sigma = sigmaMin
+    ELSE
+      sigma = ne * qe*qe / (me * nu_en)
+    END IF
+
+    ! clamp
+    IF (sigma < sigmaMin) sigma = sigmaMin
+    IF (sigma > sigmaMax) sigma = sigmaMax
+
+    SigVals(ipS) = sigma
+  END DO
+
+END SUBROUTINE UpdateConductivityFromTe
+!------------------------------------------------------------------------------
 !> Compute the Current and Joule Heating at model nodes.
 !------------------------------------------------------------------------------
   SUBROUTINE GeneralCurrent( Model, Potential, Reorder )
@@ -664,8 +762,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso
     REAL(KIND=dp) :: RHS(3), Jgp(3)
     REAL(KIND=dp) :: M(3,3), Minv(3,3)
-    REAL(KIND=dp) :: Pgp, Tgp, ng, Te, ne
-
 !------------------------------------------------------------------------------
 
     ALLOCATE( Nodes % x( Model % MaxElementNodes ) )
@@ -840,23 +936,10 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             END IF
           END DO
 
-          Pgp = 0.0_dp
-          Tgp = 0.0_dp
-          DO i = 1, n
-            ip = PPerm( NodeIndexes(i) )
-            IF (ip > 0) Pgp = Pgp + Basis(i) * PVals(ip)
-
-            ip = TgPerm( NodeIndexes(i) )
-            IF (ip > 0) Tgp = Tgp + Basis(i) * TgVals(ip)
-          END DO
-
-          ng = Pgp / (kB * Tgp)
-
           ! Cross product U x B
           UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
           UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
           UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
-
 
           Cgp = 0.0_dp
           DO i = 1, dim

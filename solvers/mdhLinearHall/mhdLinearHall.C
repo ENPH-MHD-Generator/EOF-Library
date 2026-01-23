@@ -88,6 +88,7 @@ int main(int argc, char *argv[])
     receiving.recvScalar(Jz);
     receiving.recvScalar(JH_recv);
     JH  = JH_recv;
+    receiving.recvScalar(elcond_elmer);
 
     // Reconstruct J_dens from component fields
     // Brackets define a local scope in OF6
@@ -189,6 +190,7 @@ int main(int argc, char *argv[])
         receiving.recvScalar(Jz);
         receiving.recvScalar(JH_recv);
         JH  = JH_recv;
+        receiving.recvScalar(elcond_elmer);
 
         // Reconstruct J_dens from component fields
         // Brackets define a local scope in OF6

@@ -484,3 +484,16 @@ Bx = B.component(vector::X);
 By = B.component(vector::Y);
 Bz = B.component(vector::Z);
 
+volScalarField elcond_elmer
+(
+    IOobject
+    (
+        "elcond_elmer",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar("zero", elcond.dimensions(), 0.0)
+);
