@@ -662,8 +662,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
     ! hard coded hall coefficient
-    ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
-    HallCoeffAlpha = 0 ! Test turning off hall effect
+    HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
+    ! HallCoeffAlpha = 0 ! Test turning off hall effect
     ! HallCoeffAlpha = 100 ! Crazy test value
 !------------------------------------------------------------------------------
 
@@ -1043,8 +1043,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
       ! hard coded hall coefficient
-      ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
-      HallCoeffAlpha = 0 ! Test hall stuff off
+      HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
+      ! HallCoeffAlpha = 0 ! Test hall stuff off
       ! HallCoeffAlpha = 100 ! crazy number to test it out
 !------------------------------------------------------------------------------
 
@@ -1233,7 +1233,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
      END SUBROUTINE StatCurrentCompose
 !------------------------------------------------------------------------------
 
-
 !------------------------------------------------------------------------------
 !>  Return element local matrices and RHS vector for boundary conditions
 !>  of the electrostatic equation. 
@@ -1284,7 +1283,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !     Basis function values & derivates at the integration point
 !------------------------------------------------------------------------------
       stat = ElementInfo( Element,Nodes,u,v,w,SqrtElementMetric, &
-                          Basis,dBasisdx )
+                  Basis,dBasisdx )
 
 !------------------------------------------------------------------------------
 !      Coordinatesystem dependent info
@@ -1308,6 +1307,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     END DO
   END SUBROUTINE StatCurrentBoundary
 !------------------------------------------------------------------------------
+
 
   SUBROUTINE Invert3x3(A, Ainv, ok)
     REAL(KIND=dp), INTENT(IN)  :: A(3,3)
