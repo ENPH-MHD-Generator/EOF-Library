@@ -65,8 +65,25 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   CHARACTER(LEN=MAX_NAME_LEN) :: VarName
 !------------------------------------------------------------------------------
 
+  ! Voltages and Currents for Electrode Coupling
+  INTEGER :: NumElectrodePairs
+  REAL(KIND=dp), POINTER :: VpVals(:), VmVals(:), IVals(:)
+  INTEGER, POINTER       :: VpPerm(:), VmPerm(:), IPerm(:)
+
+
   Params => GetSolverParams()
   Dim    = CoordinateSystemDimension()
+
+  ! Count the number of electrode pairs
+  NumElectrodePairs = 0
+  DO i = 1, Model % NumberOfBCs
+    IF ( ListGetInteger( Model % BCs(i) % Values, &
+        'Electrode Pair', gotIt ) ) THEN
+      NumElectrodePairs = MAX( NumElectrodePairs, &
+          ListGetInteger( Model % BCs(i) % Values, 'Electrode Pair', gotIt ) )
+    END IF
+  END DO
+
 
   !------------------------------------------------------------
   ! Exported variables
@@ -93,6 +110,22 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
       CALL ListAddString( Params, &
            NextFreeKeyword('Exported Variable ', Params), &
            'Volume Current[Volume Current:3]' )
+      
+      IF ( NumElectrodePairs > 0 ) THEN
+        CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
+            Solver, 'ElectrodeVoltagePlus', NumElectrodePairs, &
+            VpVals, VpPerm )
+
+        CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
+            Solver, 'ElectrodeVoltageMinus', NumElectrodePairs, &
+            VmVals, VmPerm )
+
+        CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
+            Solver, 'ElectrodeCurrent', NumElectrodePairs, &
+            IVals, IPerm )
+      END IF
+
+
     END IF
   END IF
 
@@ -498,11 +531,11 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       END DO ! of i=1,model bcs
     END DO   ! Neumann BCs
 
-      !------------------------------------------------------------------------------
-      !    FinishAssembly must be called after all other assembly steps, but before
-      !    Dirichlet boundary settings. Actually no need to call it except for
-      !    transient simulations.
-      !------------------------------------------------------------------------------
+    !------------------------------------------------------------------------------
+    !    FinishAssembly must be called after all other assembly steps, but before
+    !    Dirichlet boundary settings. Actually no need to call it except for
+    !    transient simulations.
+    !------------------------------------------------------------------------------
     CALL DefaultFinishAssembly()
 
     !------------------------------------------------------------------------------
@@ -662,8 +695,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
     ! hard coded hall coefficient
-    HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
-    ! HallCoeffAlpha = 0 ! Test turning off hall effect
+    ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
+    HallCoeffAlpha = 0 ! Test turning off hall effect
     ! HallCoeffAlpha = 100 ! Crazy test value
 !------------------------------------------------------------------------------
 
@@ -1043,8 +1076,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
       ! hard coded hall coefficient
-      HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
-      ! HallCoeffAlpha = 0 ! Test hall stuff off
+      ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
+      HallCoeffAlpha = 0 ! Test hall stuff off
       ! HallCoeffAlpha = 100 ! crazy number to test it out
 !------------------------------------------------------------------------------
 
