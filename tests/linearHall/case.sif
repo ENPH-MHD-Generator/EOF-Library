@@ -182,12 +182,15 @@ Boundary Condition 1
   ! FaradayMinusY
   Target Boundaries(1) = 1
   Potential = Real 0.0
+  Electrode ID = 1
+
 End
 
 Boundary Condition 2
   ! FaradayPlusY
   Target Boundaries(1) = 2
-  Potential = Real 1.0
+  Electrode ID = 2
+  ! Potential = Real 0.0
 End
 
 Boundary Condition 3
