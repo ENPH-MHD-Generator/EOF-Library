@@ -51,6 +51,7 @@
 SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 !------------------------------------------------------------------------------
   USE DefUtils
+  USE SolverUtils
   IMPLICIT NONE
 !------------------------------------------------------------------------------
   TYPE(Model_t)            :: Model
@@ -67,8 +68,11 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 
   ! Voltages and Currents for Electrode Coupling
   INTEGER :: NumElectrodePairs
-  REAL(KIND=dp), POINTER :: VpVals(:), VmVals(:), IVals(:)
-  INTEGER, POINTER       :: VpPerm(:), VmPerm(:), IPerm(:)
+  INTEGER :: nElectrodeDOFs
+  REAL(dp), POINTER :: ElectrodeVals(:)
+  INTEGER, POINTER :: ElectrodePerm(:)
+  INTEGER :: i, k
+  LOGICAL :: gotIt
 
 
   Params => GetSolverParams()
@@ -77,13 +81,17 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   ! Count the number of electrode pairs
   NumElectrodePairs = 0
   DO i = 1, Model % NumberOfBCs
-    IF ( ListGetInteger( Model % BCs(i) % Values, &
-        'Electrode Pair', gotIt ) ) THEN
-      NumElectrodePairs = MAX( NumElectrodePairs, &
-          ListGetInteger( Model % BCs(i) % Values, 'Electrode Pair', gotIt ) )
+    k = ListGetInteger( Model % BCs(i) % Values, 'Electrode Pair', gotIt )
+    IF ( gotIt ) THEN
+      NumElectrodePairs = MAX( NumElectrodePairs, k )
     END IF
   END DO
 
+  ! Electrode index convention is as follows 
+  ! index = 3*(k-1) + 1 → Vp_k
+  ! index = 3*(k-1) + 2 → Vm_k
+  ! index = 3*(k-1) + 3 → I_k
+  nElectrodeDOFs = 3 * NumElectrodePairs
 
   !------------------------------------------------------------
   ! Exported variables
@@ -110,22 +118,13 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
       CALL ListAddString( Params, &
            NextFreeKeyword('Exported Variable ', Params), &
            'Volume Current[Volume Current:3]' )
-      
-      IF ( NumElectrodePairs > 0 ) THEN
-        CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
-            Solver, 'ElectrodeVoltagePlus', NumElectrodePairs, &
-            VpVals, VpPerm )
 
-        CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
-            Solver, 'ElectrodeVoltageMinus', NumElectrodePairs, &
-            VmVals, VmPerm )
+    END IF
 
-        CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
-            Solver, 'ElectrodeCurrent', NumElectrodePairs, &
-            IVals, IPerm )
-      END IF
-
-
+    IF (NumElectrodePairs > 0) THEN
+      CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
+          Solver, 'ElectrodeUnknowns', nElectrodeDOFs, &
+          ElectrodeVals, ElectrodePerm )
     END IF
   END IF
 
@@ -142,6 +141,7 @@ END SUBROUTINE StatCurrentSolver_Init
 SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !------------------------------------------------------------------------------
   USE DefUtils
+  USE SolverUtils
   USE Differentials
   IMPLICIT NONE
 !------------------------------------------------------------------------------ 
@@ -190,11 +190,29 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   TYPE(ValueHandle_t) :: CondAtIp_h
   REAL(KIND=dp) :: CondAtIp
 
+  ! Velocity and Magnetic field values
   REAL(KIND=dp), POINTER :: UxVals(:), UyVals(:), UzVals(:)
   REAL(KIND=dp), POINTER :: BxVals(:), ByVals(:), BzVals(:)
   INTEGER, POINTER :: UxPerm(:), UyPerm(:), UzPerm(:)
   INTEGER, POINTER :: BxPerm(:), ByPerm(:), BzPerm(:)
   TYPE(Variable_t), POINTER :: UxVar, UyVar, UzVar, BxVar, ByVar, BzVar
+
+  ! Electrode Unknowns
+  INTEGER, ALLOCATABLE :: ElectrodePairOfBC(:)
+  INTEGER, ALLOCATABLE :: ElectrodeSignOfBC(:)
+  CHARACTER(len=32) :: SignStr
+  TYPE(Variable_t), POINTER :: ElectrodeVar
+  REAL(dp), POINTER :: ElectrodeVals(:)
+  INTEGER, POINTER :: ElectrodePerm(:)
+  INTEGER :: NumElectrodePairs
+  INTEGER :: sign
+  INTEGER :: rowVp, rowVm, rowI
+  LOGICAL, SAVE :: ElectrodeInitialized = .FALSE.
+
+  REAL(dp), ALLOCATABLE :: ElectrodeResistance(:)
+  LOGICAL :: gotItR
+  REAL(dp) :: Rbc
+
 
   SAVE LocalStiffMatrix, Load, LocalForce, &
   ElementNodes, CalculateCurrent, CalculateHeating, &
@@ -207,15 +225,64 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   UxPerm, UyPerm, UzPerm, &
   BxPerm, ByPerm, BzPerm
 
-     
 !------------------------------------------------------------------------------
 !    Get variables needed for solution
 !------------------------------------------------------------------------------
   IF(.NOT.ASSOCIATED(Solver % Matrix)) RETURN
 
+  NumElectrodePairs = 0
+  DO i = 1, Model % NumberOfBCs
+    k = ListGetInteger( Model % BCs(i) % Values, 'Electrode Pair', gotIt )
+    IF ( gotIt ) THEN
+      NumElectrodePairs = MAX( NumElectrodePairs, k )
+    END IF
+  END DO
+
+  ! Alocate electrode resistance memory
+  IF (ALLOCATED(ElectrodeResistance)) DEALLOCATE(ElectrodeResistance)
+  ALLOCATE( ElectrodeResistance(NumElectrodePairs) )
+  ElectrodeResistance = -1.0_dp   ! sentinel = unset
+
+  DO i = 1, Model % NumberOfBCs
+    k = ListGetInteger(Model % BCs(i) % Values, 'Electrode Pair', gotIt)
+    IF (.NOT. gotIt) CYCLE
+
+    Rbc = GetCReal(Model % BCs(i) % Values, 'Electrode Resistance', gotItR)
+    IF (.NOT. gotItR) CYCLE
+
+    IF (ElectrodeResistance(k) < 0.0_dp) THEN
+      ElectrodeResistance(k) = Rbc
+    ELSE
+      IF (ABS(ElectrodeResistance(k) - Rbc) > 1.0e-14_dp) THEN
+        CALL Fatal('StatCurrentSolver','Electrode Resistance mismatch for pair index')
+      END IF
+    END IF
+  END DO
+  
+
   Potential     => Solver % Variable % Values
   PotentialPerm => Solver % Variable % Perm
   Params => GetSolverParams()
+
+  ! Get electrode unknown from solver variable equation
+  IF (NumElectrodePairs > 0) THEN
+    ElectrodeVar => VariableGet(Solver % Mesh % Variables, 'ElectrodeUnknowns')
+    IF (.NOT. ASSOCIATED(ElectrodeVar)) THEN
+      CALL Fatal('StatCurrentSolver','ElectrodeUnknowns not found')
+    END IF
+    ElectrodeVals => ElectrodeVar % Values
+    ElectrodePerm => ElectrodeVar % Perm
+    IF (.NOT. ASSOCIATED(ElectrodePerm)) THEN
+      CALL Fatal('StatCurrentSolver','ElectrodePerm not associated')
+    END IF
+
+    ! Initialize ONCE, after Elmer owns everything
+    IF (.NOT. ElectrodeInitialized) THEN
+      ElectrodeVals = 0.0_dp
+      ElectrodeInitialized = .TRUE.
+    END IF
+  END IF
+
 
   LocalNodes = Model % NumberOfNodes
   StiffMatrix => Solver % Matrix
@@ -224,14 +291,13 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   Norm = Solver % Variable % Norm
   DIM = CoordinateSystemDimension()
 
-
+  ! We don't support 2 dimensions for MHD
   IF (Dim /= 3) THEN
     CALL Fatal( &
       'StatCurrentSolver', &
       'This solver requires a fully 3D coordinate system. ' // &
       'CoordinateSystemDimension() != 3. Aborting.' )
   END IF
-
 
   ControlTarget = GetCReal( Params,'Power Control',ControlPower)
   IF(ControlPower) THEN
@@ -252,6 +318,48 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   IF ( .NOT. GotIt ) NonlinearIter = 1
 
   GetCondAtIp = ListGetLogical( Params,'Conductivity At Ip',GotIt )
+
+  !------------------------------------------------------------
+  ! Electrode allocation and assignment
+  !------------------------------------------------------------
+  ALLOCATE( ElectrodePairOfBC( Model % NumberOfBCs ) )
+  ALLOCATE( ElectrodeSignOfBC( Model % NumberOfBCs ) )
+
+  ElectrodePairOfBC = 0
+  ElectrodeSignOfBC = 0
+
+  DO i = 1, Model % NumberOfBCs
+
+    ! Is this BC an electrode?
+    ElectrodePairOfBC(i) = ListGetInteger( &
+        Model % BCs(i) % Values, 'Electrode Pair', gotIt )
+
+    IF (.NOT. gotIt) CYCLE
+
+    ! Get sign ONCE
+    SignStr = ListGetString( Model % BCs(i) % Values, &
+                            'Electrode Sign', gotIt )
+
+    IF (.NOT. gotIt) THEN
+      CALL Fatal( 'StatCurrentSolver', &
+        'Electrode BC missing Electrode Sign (use "plus" or "minus")' )
+    END IF
+
+    SignStr = TRIM( SignStr )
+
+    IF ( SignStr == 'plus' ) THEN
+      ElectrodeSignOfBC(i) = +1
+    ELSE IF ( SignStr == 'minus' ) THEN
+      ElectrodeSignOfBC(i) = -1
+    ELSE
+      CALL Fatal( 'StatCurrentSolver', &
+        'Electrode Sign must be "plus" or "minus" (lowercase)' )
+    END IF
+
+  END DO
+
+
+
      
 !------------------------------------------------------------------------------
 !    Allocate some permanent storage, this is done first time only
@@ -476,13 +584,35 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       CALL DefaultUpdateEquations( LocalStiffMatrix, LocalForce )
 
     END DO
+
+    ! Enforce constraint on scalar potential and current
+    DO k = 1, NumElectrodePairs
+      IF (ElectrodeResistance(k) < 0.0_dp) THEN
+        CALL Fatal('StatCurrentSolver', 'Missing Electrode Resistance for a pair')
+      END IF
+    END DO
+
+    DO k = 1, NumElectrodePairs
+      rowVp = ElectrodePerm(3*(k-1)+1)
+      rowVm = ElectrodePerm(3*(k-1)+2)
+      rowI  = ElectrodePerm(3*(k-1)+3)
+
+      Resistance = ElectrodeResistance(k)
+
+      ! Vp - Vm - R*I = 0
+      CALL AddToMatrixElement(Solver % Matrix, rowVp, rowI,  1.0_dp)
+      CALL AddToMatrixElement(Solver % Matrix, rowVm, rowI, -1.0_dp)
+      CALL AddToMatrixElement(Solver % Matrix, rowI,  rowVp, 1.0_dp)
+      CALL AddToMatrixElement(Solver % Matrix, rowI,  rowVm,-1.0_dp)
+      CALL AddToMatrixElement(Solver % Matrix, rowI,  rowI, -Resistance)
+    END DO
     
     CALL DefaultFinishBulkAssembly()
-      
+
     !------------------------------------------------------------------------------
     !     Neumann boundary conditions
     !------------------------------------------------------------------------------
-    DO t=Solver % Mesh % NumberOfBulkElements + 1, &
+    DO t = Solver % Mesh % NumberOfBulkElements + 1, &
         Solver % Mesh % NumberOfBulkElements + &
         Solver % Mesh % NumberOfBoundaryElements
 
@@ -501,6 +631,28 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           n = CurrentElement % TYPE % NumberOfNodes
           NodeIndexes => CurrentElement % NodeIndexes
           IF ( ANY( PotentialPerm(NodeIndexes) <= 0 ) ) CYCLE
+
+          !------------------------------------------------------------------------------
+          !            Invoke custome electore BC handling
+          !------------------------------------------------------------------------------
+          k = ElectrodePairOfBC(i)
+          sign = ElectrodeSignOfBC(i)
+          IF ( k > 0 ) THEN
+            ElementNodes % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes)
+            ElementNodes % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes)
+            ElementNodes % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes)
+            IF (sign == +1) THEN
+              CALL AssembleEquipotential( &
+                  CurrentElement, ElementNodes, n, &
+                  ElectrodePerm(3*(k-1)+1) )
+            ELSE
+              CALL AssembleEquipotential( &
+                  CurrentElement, ElementNodes, n, &
+                  ElectrodePerm(3*(k-1)+2) )
+            END IF
+
+            CYCLE
+          END IF
 
           FluxBC = ListGetLogical(Model % BCs(i) % Values, &
               'Current Density BC',gotIt) 
@@ -637,6 +789,11 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     CALL InvalidateVariable( Model % Meshes, Solver % Mesh, &
         'Nodal Joule Heating')
   END IF
+
+  ! Deallocate electrode stuff
+  IF (ALLOCATED(ElectrodePairOfBC)) DEALLOCATE(ElectrodePairOfBC)
+  IF (ALLOCATED(ElectrodeSignOfBC)) DEALLOCATE(ElectrodeSignOfBC)
+  IF (ALLOCATED(ElectrodeResistance)) DEALLOCATE(ElectrodeResistance)
 
   CALL DefaultFinish()
     
@@ -1124,12 +1281,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
         S = S * SqrtElementMetric * SqrtMetric
 
-        WRITE(*,'(A,I6,A,I3,A,ES12.4,A,ES12.4,A,ES12.4)') &
-          '[SCC][Metric] Elem=', Element % BodyId, &
-          ' GP=', t, &
-          ' SqrtElementMetric=', SqrtElementMetric, &
-          ' SqrtMetric=', SqrtMetric, &
-          ' S(weight)=', S
+        ! WRITE(*,'(A,I6,A,I3,A,ES12.4,A,ES12.4,A,ES12.4)') &
+        !   '[SCC][Metric] Elem=', Element % BodyId, &
+        !   ' GP=', t, &
+        !   ' SqrtElementMetric=', SqrtElementMetric, &
+        !   ' SqrtMetric=', SqrtMetric, &
+        !   ' S(weight)=', S
 
         L = SUM( Load(1:n) * Basis )
 
@@ -1230,12 +1387,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
         UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
 
-        WRITE(*,'(A,I6,A,I3,A,3ES12.4,A,3ES12.4,A,3ES12.4)') &
-          '[SCC][Fields] Elem=', Element % BodyId, &
-          ' GP=', t, &
-          ' Ugp=', Ugp(1), Ugp(2), Ugp(3), &
-          ' Bgp=', Bgp(1), Bgp(2), Bgp(3), &
-          ' UxB=', UxBgp(1), UxBgp(2), UxBgp(3)
+        ! WRITE(*,'(A,I6,A,I3,A,3ES12.4,A,3ES12.4,A,3ES12.4)') &
+        !   '[SCC][Fields] Elem=', Element % BodyId, &
+        !   ' GP=', t, &
+        !   ' Ugp=', Ugp(1), Ugp(2), Ugp(3), &
+        !   ' Bgp=', Bgp(1), Bgp(2), Bgp(3), &
+        !   ' UxB=', UxBgp(1), UxBgp(2), UxBgp(3)
 
 
          
@@ -1330,7 +1487,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       CALL CoordinateSystemInfo( Metric,SqrtMetric,Symb,dSymb,x,y,z )
 
       s = S_Integ(t) * SqrtElementMetric * SqrtMetric
-
 !------------------------------------------------------------------------------
       Force = SUM( LoadVector(1:n)*Basis )
 
@@ -1340,6 +1496,46 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     END DO
   END SUBROUTINE StatCurrentBoundary
 !------------------------------------------------------------------------------
+
+
+  !------------------------------------------------------------------------------
+  !   Enforce that the potential of each boundary element on the electrod
+  !   Is equal to +/- V, a solved variable
+  !------------------------------------------------------------------------------
+  SUBROUTINE AssembleEquipotential(Element, Nodes, n, Vrow)
+    USE DefUtils
+    USE SolverUtils
+    TYPE(Element_t), POINTER :: Element
+    TYPE(Nodes_t) :: Nodes
+    INTEGER :: n, Vrow
+
+    REAL(dp) :: Basis(n), dBasisdx(n,3), s, SqrtElementMetric
+    INTEGER :: p, t
+    TYPE(GaussIntegrationPoints_t) :: Integ
+    INTEGER, POINTER :: NodeIndexes(:)
+    LOGICAL :: stat
+
+    NodeIndexes => Element % NodeIndexes
+    Integ = GaussPoints(Element)
+
+    DO t = 1, Integ % n
+      stat = ElementInfo(Element, Nodes, &
+          Integ%u(t), Integ%v(t), Integ%w(t), &
+          SqrtElementMetric, Basis, dBasisdx)
+
+      s = Integ%s(t) * SqrtElementMetric
+
+      DO p = 1, n
+        CALL AddToMatrixElement( Solver % Matrix, &
+          PotentialPerm(NodeIndexes(p)), Vrow, s * Basis(p) )
+
+        CALL AddToMatrixElement( Solver % Matrix, &
+          Vrow, PotentialPerm(NodeIndexes(p)), s * Basis(p) )
+      END DO
+
+      CALL AddToMatrixElement( Solver % Matrix, Vrow, Vrow, -s )
+    END DO
+  END SUBROUTINE AssembleEquipotential
 
 
   SUBROUTINE Invert3x3(A, Ainv, ok)

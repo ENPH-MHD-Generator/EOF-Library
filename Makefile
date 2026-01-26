@@ -42,13 +42,25 @@ simulation: environment
 	echo \"case.sif\" > ELMERSOLVER_STARTINFO
 	cd $(EOF_HOME) 
 
+# elmer: environment
+# 	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90 
+# 	cd /opt/elmerfem/build
+# 	sudo cmake .. 
+# 	sudo make MHDSolve 
+# 	sudo make install MHDSolve 
+# 	cd $(EOF_HOME)
+
+# Uncomment for debug flags
 elmer: environment
-	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90 
-	cd /opt/elmerfem/build
-	sudo cmake .. 
-	sudo make MHDSolve 
-	sudo make install MHDSolve 
+	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90
+	cd /opt/elmerfem/build && \
+	sudo cmake .. \
+	  -DCMAKE_BUILD_TYPE=Debug \
+	  -DCMAKE_Fortran_FLAGS_DEBUG="-O0 -g -fbacktrace -fcheck=all -ffpe-trap=invalid,zero,overflow"
+	cd /opt/elmerfem/build && sudo make MHDSolve
+	cd /opt/elmerfem/build && sudo make install MHDSolve
 	cd $(EOF_HOME)
+
 
 # -- Host System
 

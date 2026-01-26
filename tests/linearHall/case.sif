@@ -125,18 +125,23 @@ Solver 9
   Calculate Volume Current = Logical True
   Calculate Joule Heating  = Logical True
 
-  ! --- EOF-compatible linear system ---
+  ! --- Electrode circuit parameters ---
+  Electrode Resistance(1) = Real 0.05
+
+  ! --- Linear system: saddle-point friendly ---
   Linear System Solver = Iterative
   Linear System Iterative Method = GMRES
+
   Linear System Symmetric = False
   Linear System Preconditioning = ILU
 
-  Linear System Max Iterations = 500
+  Linear System Max Iterations = 1000
   Linear System Convergence Tolerance = 1.0e-8
 
   Linear System Abort Not Converged = False
   Linear System Residual Output = 1
 End
+
 
 
 
@@ -181,16 +186,20 @@ End
 Boundary Condition 1
   ! FaradayMinusY
   Target Boundaries(1) = 1
-  Potential = Real 0.0
-  Electrode ID = 1
+
+  Electrode Pair = Integer 1
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 0.14
 
 End
 
 Boundary Condition 2
   ! FaradayPlusY
   Target Boundaries(1) = 2
-  Electrode ID = 2
-  ! Potential = Real 0.0
+  
+  Electrode Pair = Integer 1
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 0.14
 End
 
 Boundary Condition 3
