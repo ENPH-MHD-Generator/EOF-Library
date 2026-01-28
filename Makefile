@@ -8,6 +8,8 @@ export OPENFOAM_HOME	 := /opt/openfoam6
 export ROOT_DIR			 := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST)))) # https://stackoverflow.com/a/23324703
 export IMAGE_NAME		 := eof_local
 
+# ---- Build options ----
+ELMER_DEBUG ?= 0
 
 # This is so that the environment variables persist between commands
 SHELL := /bin/bash
@@ -42,25 +44,23 @@ simulation: environment
 	echo \"case.sif\" > ELMERSOLVER_STARTINFO
 	cd $(EOF_HOME) 
 
-# elmer: environment
-# 	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90 
-# 	cd /opt/elmerfem/build
-# 	sudo cmake .. 
-# 	sudo make MHDSolve 
-# 	sudo make install MHDSolve 
-# 	cd $(EOF_HOME)
 
-# Uncomment for debug flags
+# Elmer debug flag
+ifeq ($(ELMER_DEBUG),1)
+  ELMER_CMAKE_FLAGS := \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_Fortran_FLAGS_DEBUG="-O0 -g -fbacktrace -fcheck=all -ffpe-trap=invalid,zero,overflow"
+else
+  ELMER_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release
+endif
+
 elmer: environment
 	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90
 	cd /opt/elmerfem/build && \
-	sudo cmake .. \
-	  -DCMAKE_BUILD_TYPE=Debug \
-	  -DCMAKE_Fortran_FLAGS_DEBUG="-O0 -g -fbacktrace -fcheck=all -ffpe-trap=invalid,zero,overflow"
+	sudo cmake .. $(ELMER_CMAKE_FLAGS)
 	cd /opt/elmerfem/build && sudo make MHDSolve
 	cd /opt/elmerfem/build && sudo make install MHDSolve
 	cd $(EOF_HOME)
-
 
 # -- Host System
 
@@ -71,7 +71,13 @@ setup: build_environment
 	mkdir -p ./runs
 
 build: setup
-	docker build --progress=plain --network host --platform linux/amd64 -f docker/Dockerfile.build_simulation -t $(IMAGE_NAME):latest .
+	docker build \
+	  --build-arg ELMER_DEBUG=$(ELMER_DEBUG) \
+	  --progress=plain \
+	  --network host \
+	  --platform linux/amd64 \
+	  -f docker/Dockerfile.build_simulation \
+	  -t $(IMAGE_NAME):latest .
 
 clean: build_environment
 	docker ps -a --filter "ancestor=$(IMAGE_NAME)" -q | xargs -r docker rm -f

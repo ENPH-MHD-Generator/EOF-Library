@@ -1,5 +1,8 @@
 FROM eoflibrary/eof_elmer84_of6:latest
 
+# Build Args
+ARG ELMER_DEBUG=0
+
 USER root
 
 # Tools (combine apt calls into one layer)
@@ -24,13 +27,13 @@ COPY Makefile  /home/openfoam/EOF-Library/Makefile
 
 WORKDIR /home/openfoam/EOF-Library
 
-RUN make elmer
-
 RUN make eof
 
 COPY solvers/  /home/openfoam/EOF-Library/solvers/
 
 RUN make solver
+
+RUN make elmer ELMER_DEBUG=${ELMER_DEBUG}
 
 # Ensure interactive shells know OpenFOAM + EOF env (helps aliases & PATH)
 RUN echo '. /opt/openfoam6/etc/bashrc' >> /home/openfoam/.bashrc \
