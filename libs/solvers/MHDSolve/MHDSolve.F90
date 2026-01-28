@@ -66,32 +66,8 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   CHARACTER(LEN=MAX_NAME_LEN) :: VarName
 !------------------------------------------------------------------------------
 
-  ! Voltages and Currents for Electrode Coupling
-  INTEGER :: NumElectrodePairs
-  INTEGER :: nElectrodeDOFs
-  REAL(dp), POINTER :: ElectrodeVals(:)
-  INTEGER, POINTER :: ElectrodePerm(:)
-  INTEGER :: i, k
-  LOGICAL :: gotIt
-
-
   Params => GetSolverParams()
   Dim    = CoordinateSystemDimension()
-
-  ! Count the number of electrode pairs
-  NumElectrodePairs = 0
-  DO i = 1, Model % NumberOfBCs
-    k = ListGetInteger( Model % BCs(i) % Values, 'Electrode Pair', gotIt )
-    IF ( gotIt ) THEN
-      NumElectrodePairs = MAX( NumElectrodePairs, k )
-    END IF
-  END DO
-
-  ! Electrode index convention is as follows 
-  ! index = 3*(k-1) + 1 → Vp_k
-  ! index = 3*(k-1) + 2 → Vm_k
-  ! index = 3*(k-1) + 3 → I_k
-  nElectrodeDOFs = 3 * NumElectrodePairs
 
   !------------------------------------------------------------
   ! Exported variables
@@ -119,12 +95,6 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
            NextFreeKeyword('Exported Variable ', Params), &
            'Volume Current[Volume Current:3]' )
 
-    END IF
-
-    IF (NumElectrodePairs > 0) THEN
-      CALL VariableAdd( Solver % Mesh % Variables, Solver % Mesh, &
-          Solver, 'ElectrodeUnknowns', nElectrodeDOFs, &
-          ElectrodeVals, ElectrodePerm )
     END IF
   END IF
 
@@ -202,15 +172,13 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   INTEGER, ALLOCATABLE :: ElectrodePairOfBC(:)
   INTEGER, ALLOCATABLE :: ElectrodeSignOfBC(:)
   CHARACTER(len=32) :: SignStr
-  TYPE(Variable_t), POINTER :: ElectrodeVar
-  REAL(dp), POINTER :: ElectrodeVals(:)
-  INTEGER, POINTER :: ElectrodePerm(:)
   INTEGER :: NumElectrodePairs
   INTEGER :: sign
   INTEGER :: rowVp, rowVm, rowI
-  LOGICAL, SAVE :: ElectrodeInitialized = .FALSE.
-  LOGICAL :: OwnsElectrodeDOF
-  INTEGER :: kk
+  INTEGER :: Vrow
+  INTEGER :: nNodalRows
+  INTEGER :: baseRows
+  LOGICAL :: ownsExtra
 
   REAL(dp), ALLOCATABLE :: ElectrodeResistance(:)
   LOGICAL :: gotItR
@@ -261,31 +229,17 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       END IF
     END IF
   END DO
+
+  ! Add new DOFs for custom constraint equation
+  IF (NumElectrodePairs > 0) THEN
+    Solver % Matrix % ExtraDOFs = 3 * NumElectrodePairs
+  END IF
+
   
 
   Potential     => Solver % Variable % Values
   PotentialPerm => Solver % Variable % Perm
   Params => GetSolverParams()
-
-  ! Get electrode unknown from solver variable equation
-  IF (NumElectrodePairs > 0) THEN
-    ElectrodeVar => VariableGet(Solver % Mesh % Variables, 'ElectrodeUnknowns')
-    IF (.NOT. ASSOCIATED(ElectrodeVar)) THEN
-      CALL Fatal('StatCurrentSolver','ElectrodeUnknowns not found')
-    END IF
-    ElectrodeVals => ElectrodeVar % Values
-    ElectrodePerm => ElectrodeVar % Perm
-    IF (.NOT. ASSOCIATED(ElectrodePerm)) THEN
-      CALL Fatal('StatCurrentSolver','ElectrodePerm not associated')
-    END IF
-
-    ! Initialize ONCE, after Elmer owns everything
-    IF (.NOT. ElectrodeInitialized) THEN
-      ElectrodeVals = 0.0_dp
-      ElectrodeInitialized = .TRUE.
-    END IF
-  END IF
-
 
   LocalNodes = Model % NumberOfNodes
   StiffMatrix => Solver % Matrix
@@ -358,10 +312,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       CALL Fatal( 'StatCurrentSolver', &
         'Electrode Sign must be "plus" or "minus" (lowercase)' )
     END IF
-
   END DO
-
-
 
      
 !------------------------------------------------------------------------------
@@ -588,10 +539,136 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       CALL DefaultUpdateEquations( LocalStiffMatrix, LocalForce )
 
     END DO
-    
-    CALL DefaultFinishBulkAssembly()
 
     !------------------------------------------------------------------------------
+    !    Custom Electrode BC constraint assembly
+    !------------------------------------------------------------------------------
+    
+    baseRows = Solver % Matrix % NumberOfRows - Solver % Matrix % ExtraDOFs
+    nNodalRows = Solver % Matrix % NumberOfRows
+    IF (ParEnv % MyPE == 0) THEN
+      WRITE(*,*) 'DBG: baseRows', baseRows
+      WRITE(*,*) 'DBG: totalRows', Solver % Matrix % NumberOfRows
+      WRITE(*,*) 'DBG: extra', Solver % Matrix % ExtraDOFs
+    END IF
+    ownsExtra  = (ParEnv % MyPE == 0)
+    
+    ! Switch matrix to LIST before any manual matrix edits
+    IF (Solver % Matrix % FORMAT == MATRIX_CRS) THEN
+      CALL List_ToListMatrix(Solver % Matrix)
+    END IF
+    IF (ParEnv % MyPE == 0) WRITE(*,*) 'DBG: to LIST'
+
+    ! Apply IR = deltaV constraint
+    DO k = 1, NumElectrodePairs
+      IF (ElectrodeResistance(k) < 0.0_dp) THEN
+        CALL Fatal('StatCurrentSolver', 'Missing Electrode Resistance for a pair')
+      END IF
+    END DO
+
+    DO k = 1, NumElectrodePairs
+      rowVp = baseRows + 3*(k-1) + 1
+      rowVm = baseRows + 3*(k-1) + 2
+      rowI  = baseRows + 3*(k-1) + 3
+
+      IF (ParEnv % MyPE == 0) THEN
+        WRITE(*,'(A,I4,A,3I8)') 'DBG[ELECTRODE]: k=',k,' rows=',rowVp,rowVm,rowI
+      END IF
+
+      ! --- hard bounds check ---
+      IF (rowVp < baseRows+1 .OR. rowVp > nNodalRows .OR. &
+          rowVm < baseRows+1 .OR. rowVm > nNodalRows .OR. &
+          rowI  < baseRows+1 .OR. rowI  > nNodalRows) THEN
+        WRITE(*,*) 'FATAL: electrode row out of bounds'
+        WRITE(*,*) ' rank=',ParEnv % MyPE,' k=',k
+        WRITE(*,*) ' baseRows=',baseRows,' nRows=',nNodalRows
+        WRITE(*,*) ' rowVp=',rowVp,' rowVm=',rowVm,' rowI=',rowI
+        CALL Fatal('StatCurrentSolver','Bad electrode DOF index')
+      END IF
+
+
+      ! Ensure diagonal elements are nonzero & owned by at least 1 rank
+      ! IF (ParEnv % MyPE == 0) THEN
+      !   CALL AddToMatrixElement(Solver % Matrix, rowVp, rowVp, 1.0_dp)
+      !   CALL AddToMatrixElement(Solver % Matrix, rowVm, rowVm, 1.0_dp)
+      ! END IF
+
+      Resistance = ElectrodeResistance(k)
+
+      IF (ParEnv % MyPE == 0) THEN
+        WRITE(*,*) 'DBG: k', k, 'Vp', rowVp, 'Vm', rowVm, 'I', rowI
+      END IF
+
+      ! Vp - Vm - R*I = 0
+
+      ! Guard against truly 0 resistance.
+      ! This seems to break a fundemental FEM assumption that 
+      ! diags of the stiffness matrix are nonzero 
+      IF (ABS(Resistance) < 1.0e-14_dp) THEN
+        CALL Fatal('StatCurrentSolver', &
+          'Electrode Resistance must be nonzero')
+      END IF
+
+      IF (ownsExtra) THEN
+        CALL AddToMatrixElement(Solver % Matrix, rowI, rowVp,  1.0_dp)
+        CALL AddToMatrixElement(Solver % Matrix, rowI, rowVm, -1.0_dp)
+        CALL AddToMatrixElement(Solver % Matrix, rowI, rowI , -Resistance)
+      END IF
+    END DO
+    
+    ! Apply Equipotential Electrode Constraint
+    DO t = Solver % Mesh % NumberOfBulkElements + 1, &
+        Solver % Mesh % NumberOfBulkElements + &
+        Solver % Mesh % NumberOfBoundaryElements
+
+      CurrentElement => Solver % Mesh % Elements(t)
+
+      DO i=1,Model % NumberOfBCs
+        IF ( CurrentElement % BoundaryInfo % Constraint == &
+          Model % BCs(i) % Tag ) THEN
+
+          Model % CurrentElement => CurrentElement
+          n = CurrentElement % TYPE % NumberOfNodes
+          NodeIndexes => CurrentElement % NodeIndexes
+
+          IF ( ANY( PotentialPerm(NodeIndexes) <= 0 ) ) CYCLE
+
+          k = ElectrodePairOfBC(i)
+          sign = ElectrodeSignOfBC(i)
+
+          IF (k > 0) THEN
+            ! Recompute electrode row for THIS k
+            IF (sign == +1) THEN
+              Vrow = baseRows + 3*(k-1) + 1   ! Vp_k
+            ELSE
+              Vrow = baseRows + 3*(k-1) + 2   ! Vm_k
+            END IF
+
+            ! Optional sanity check (highly recommended while debugging)
+            IF (Vrow < baseRows+1 .OR. Vrow > nNodalRows) THEN
+              WRITE(*,*) 'FATAL: bad equipotential Vrow'
+              WRITE(*,*) ' rank=',ParEnv % MyPE,' k=',k,' sign=',sign
+              WRITE(*,*) ' Vrow=',Vrow,' baseRows=',baseRows,' nRows=',nNodalRows
+              CALL Fatal('StatCurrentSolver','Bad equipotential electrode row')
+            END IF
+            ElementNodes % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes)
+            ElementNodes % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes)
+            ElementNodes % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes)
+            CALL AssembleEquipotential(CurrentElement, ElementNodes, n, Vrow)
+            CYCLE
+          END IF
+        END IF
+      END DO
+    END DO
+
+    ! Switch back to CRS for efficient solving
+    IF (Solver % Matrix % FORMAT == MATRIX_LIST) THEN
+      CALL List_ToCRSMatrix(Solver % Matrix)
+    END IF
+
+    IF (ParEnv % MyPE == 0) WRITE(*,*) 'DBG: List To CRS'
+    
+    !-----------------------------------------------------------------------------
     !     Neumann boundary conditions
     !------------------------------------------------------------------------------
     DO t = Solver % Mesh % NumberOfBulkElements + 1, &
@@ -649,106 +726,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       END DO ! of i=1,model bcs
     END DO   ! Neumann BCs
 
-    !------------------------------------------------------------------------------
-    !    Custom Electrode BC constraint assembly
-    !------------------------------------------------------------------------------
-
-
-    OwnsElectrodeDOF = .FALSE.
-    DO kk = 1, NumElectrodePairs
-      IF ( ElectrodePerm(3*(kk-1)+1) > 0 .OR. &
-          ElectrodePerm(3*(kk-1)+2) > 0 .OR. &
-          ElectrodePerm(3*(kk-1)+3) > 0 ) THEN
-        OwnsElectrodeDOF = .TRUE.
-        EXIT
-      END IF
-    END DO
-
-    ! Switch matrix to LIST before any manual matrix edits
-    IF (Solver % Matrix % FORMAT == MATRIX_CRS) THEN
-      CALL List_ToListMatrix(Solver % Matrix)
-    END IF
-
-
-    ! Apply IR = deltaV constraint
-    DO k = 1, NumElectrodePairs
-      IF (ElectrodeResistance(k) < 0.0_dp) THEN
-        CALL Fatal('StatCurrentSolver', 'Missing Electrode Resistance for a pair')
-      END IF
-    END DO
-
-    DO k = 1, NumElectrodePairs
-      rowVp = ElectrodePerm(3*(k-1)+1)
-      rowVm = ElectrodePerm(3*(k-1)+2)
-      rowI  = ElectrodePerm(3*(k-1)+3)
-
-      Resistance = ElectrodeResistance(k)
-
-      ! Vp - Vm - R*I = 0
-      IF (rowVp > 0 .AND. rowI > 0) THEN
-        CALL AddToMatrixElement(Solver % Matrix, rowVp, rowI,  1.0_dp)
-      END IF
-
-      IF (rowVm > 0 .AND. rowI > 0) THEN
-        CALL AddToMatrixElement(Solver % Matrix, rowVm, rowI, -1.0_dp)
-      END IF
-
-      IF (rowI > 0 .AND. rowVp > 0) THEN
-        CALL AddToMatrixElement(Solver % Matrix, rowI, rowVp,  1.0_dp)
-      END IF
-
-      IF (rowI > 0 .AND. rowVm > 0) THEN
-        CALL AddToMatrixElement(Solver % Matrix, rowI, rowVm, -1.0_dp)
-      END IF
-
-      IF (rowI > 0) THEN
-        CALL AddToMatrixElement(Solver % Matrix, rowI, rowI, -Resistance)
-      END IF
-    END DO
-    
-    ! Apply Equipotential Electrode Constraint
-    DO t = Solver % Mesh % NumberOfBulkElements + 1, &
-        Solver % Mesh % NumberOfBulkElements + &
-        Solver % Mesh % NumberOfBoundaryElements
-
-      CurrentElement => Solver % Mesh % Elements(t)
-
-      DO i=1,Model % NumberOfBCs
-        IF ( CurrentElement % BoundaryInfo % Constraint == &
-          Model % BCs(i) % Tag ) THEN
-
-          Model % CurrentElement => CurrentElement
-          n = CurrentElement % TYPE % NumberOfNodes
-          NodeIndexes => CurrentElement % NodeIndexes
-
-          IF ( ANY( PotentialPerm(NodeIndexes) <= 0 ) ) CYCLE
-
-          k = ElectrodePairOfBC(i)
-          sign = ElectrodeSignOfBC(i)
-          IF ( k > 0 ) THEN
-            ElementNodes % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes)
-            ElementNodes % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes)
-            ElementNodes % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes)
-            IF (sign == +1) THEN
-              CALL AssembleEquipotential( &
-                  CurrentElement, ElementNodes, n, &
-                  ElectrodePerm(3*(k-1)+1) )
-            ELSE
-              CALL AssembleEquipotential( &
-                  CurrentElement, ElementNodes, n, &
-                  ElectrodePerm(3*(k-1)+2) )
-            END IF
-
-            CYCLE
-          END IF
-        END IF
-      END DO
-    END DO
-
-    ! Switch back to CRS for efficient solving
-    IF (Solver % Matrix % FORMAT == MATRIX_LIST) THEN
-      CALL List_ToCRSMatrix(Solver % Matrix)
-    END IF
+    CALL DefaultFinishBulkAssembly()
 
     !------------------------------------------------------------------------------
     !    FinishAssembly must be called after all other assembly steps, but before
@@ -770,10 +748,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     !    Solve the system and we are done.
     !------------------------------------------------------------------------------
 
-    ! DEBUG
-    WRITE(*,*) 'Rank', ParEnv % MyPE, &
-           'Matrix size =', Solver % Matrix % Rows, &
-           'Max electrode perm =', MAXVAL(ElectrodePerm)
+    ! DEBUG (safe)
+    IF (ParEnv % MyPE == 0) THEN
+      WRITE(*,*) 'DBG: Rows', Solver % Matrix % NumberOfRows
+      WRITE(*,*) 'DBG: NEP ', NumElectrodePairs
+    END IF
+
 
     
     st = CPUTime()
@@ -938,6 +918,16 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     IF ( CalculateHeating )  Heating = 0.0d0
     IF ( CalculateNodalHeating)  NodalHeating = 0.0d0
     IF ( CalculateCurrent )  VolCurrent = 0.0d0
+
+    IF (CalculateCurrent) THEN
+      IF (.NOT. ASSOCIATED(VolCurrent)) THEN
+        CALL Fatal('GeneralCurrent','DBG: VolCurrent NA')
+      END IF
+      IF (MOD(SIZE(VolCurrent), DIM) /= 0) THEN
+        CALL Fatal('GeneralCurrent','DBG: VC bad size')
+      END IF
+    END IF
+
 
     IF( GetCondAtIp ) THEN
       CALL ListInitElementKeyword( CondAtIp_h,'Material','Electric Conductivity')
@@ -1587,6 +1577,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     TYPE(GaussIntegrationPoints_t) :: Integ
     INTEGER, POINTER :: NodeIndexes(:)
     LOGICAL :: stat
+    INTEGER :: nTotalRows
+
+    nTotalRows = Solver % Matrix % NumberOfRows
 
     NodeIndexes => Element % NodeIndexes
     Integ = GaussPoints(Element)
@@ -1600,13 +1593,31 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
       DO p = 1, n
         ip = PotentialPerm(NodeIndexes(p))
-        IF (ip > 0 .AND. Vrow > 0) THEN
+        
+        IF (Vrow > 0) THEN
+          IF (Vrow > nTotalRows) THEN
+            CALL Fatal('AssembleEquipotential','DBG: Vrow OOR')
+          END IF
+        END IF
+
+        IF (ip > 0) THEN
+          IF (ip > Solver % Matrix % NumberOfRows) THEN
+            CALL Fatal('AssembleEquipotential','DBG: ip OOR')
+          END IF
+        END IF
+
+        IF (ip > 0) THEN
+          ! Nodal-row contribution is OK on any rank that owns ip row
           CALL AddToMatrixElement(Solver % Matrix, ip, Vrow, s * Basis(p))
-          CALL AddToMatrixElement(Solver % Matrix, Vrow, ip, s * Basis(p))
+
+          ! Extra-row (Vrow) must be assembled only by rank 0
+          IF (ParEnv % MyPE == 0) THEN
+            CALL AddToMatrixElement(Solver % Matrix, Vrow, ip, s * Basis(p))
+          END IF
         END IF
       END DO
 
-      IF (Vrow > 0) THEN
+      IF (ParEnv % MyPE == 0) THEN
         CALL AddToMatrixElement( Solver % Matrix, Vrow, Vrow, -s )
       END IF
     END DO
