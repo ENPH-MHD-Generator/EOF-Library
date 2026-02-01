@@ -8,7 +8,7 @@
       + fvm::div(rhoPhi, T)
       - (
             fvm::laplacian(kappaf, T)
-          + JH/cp
+          // + JH/cp
         )
     );
 

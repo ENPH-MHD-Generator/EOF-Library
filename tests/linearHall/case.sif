@@ -131,7 +131,7 @@ Solver 9
   ! --------------------------------------------------
   Nonlinear System Max Iterations = 100
   Nonlinear System Convergence Tolerance = 1.0e-5
-! Nonlinear System Relaxation Factor = 0.8
+  Nonlinear System Relaxation Factor = 0.8
 
   ! Force Picard only (no Newton)
   Nonlinear System Newton After Iterations = 0
@@ -199,7 +199,7 @@ Boundary Condition 1
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.014
+  Electrode Resistance = Real 0.00014
 
 End
 
@@ -209,7 +209,7 @@ Boundary Condition 2
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.014
+  Electrode Resistance = Real 0.00014
 End
 
 Boundary Condition 3
