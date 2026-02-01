@@ -7,8 +7,9 @@ Simulation
   Coordinate System = String "Cartesian 3D"
   Simulation Type = Steady
 
-  Steady State Max Iterations = 1000000
-  Steady State Min Iterations = 1000000
+  ! One steady-state iteration per coupling step (avoids blocking on 2nd recv from OpenFOAM)
+  Steady State Max Iterations = 1000
+  Steady State Min Iterations = 1000
 
   Output Intervals = 1
   Post File = case.ep
@@ -125,24 +126,34 @@ Solver 9
   Calculate Volume Current = Logical True
   Calculate Joule Heating  = Logical True
 
-  ! --- Electrode circuit parameters ---
-  Electrode Resistance(1) = Real 0.05
+  ! --------------------------------------------------
+  ! Nonlinear system (Picard, damped)
+  ! --------------------------------------------------
+  Nonlinear System Max Iterations = 100
+  Nonlinear System Convergence Tolerance = 1.0e-5
+  Nonlinear System Relaxation Factor = 0.8
 
-  ! --- Linear system: saddle-point friendly ---
+  ! Force Picard only (no Newton)
+  Nonlinear System Newton After Iterations = 0
+  Nonlinear System Newton After Tolerance  = 1.0e-3
+
+  ! --------------------------------------------------
+  ! Linear system (inexact solves, robust Krylov)
+  ! --------------------------------------------------
   Linear System Solver = Iterative
-  Linear System Iterative Method = GMRES
+  Linear System Iterative Method = FGMRES
 
   Linear System Symmetric = False
-  Linear System Preconditioning = ILU
+  Linear System Preconditioning = ILUT
+  Linear System ILUT Tolerance = 1.0e-4
 
-  Linear System Max Iterations = 1000
-  Linear System Convergence Tolerance = 1.0e-8
-
+  Linear System Max Iterations = 300
+  Linear System Convergence Tolerance = 1.0e-6
   Linear System Abort Not Converged = False
-  Linear System Residual Output = 1
+  Linear System Residual Output Interval = 50
+
+  Linear System Scaling = True
 End
-
-
 
 
 
@@ -189,7 +200,7 @@ Boundary Condition 1
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.14
+  Electrode Resistance = Real 0.000014
 
 End
 
@@ -199,7 +210,7 @@ Boundary Condition 2
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.14
+  Electrode Resistance = Real 0.000014
 End
 
 Boundary Condition 3

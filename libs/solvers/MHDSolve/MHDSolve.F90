@@ -65,8 +65,6 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   TYPE(ValueList_t), POINTER :: Params
   INTEGER                 :: Dim
 !------------------------------------------------------------------------------
-  CHARACTER(LEN=MAX_NAME_LEN) :: VarName
-!------------------------------------------------------------------------------
 
   Params => GetSolverParams()
   Dim    = CoordinateSystemDimension()
@@ -134,7 +132,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   REAL (KIND=DP), POINTER :: ForceVector(:), Potential(:)
   REAL (KIND=DP), POINTER :: ElField(:), VolCurrent(:)
   REAL (KIND=DP), POINTER :: Heating(:), NodalHeating(:)
-  REAL (KIND=DP), POINTER :: EleC(:)
   REAL (KIND=DP), POINTER :: Cwrk(:,:,:)
   REAL (KIND=DP), ALLOCATABLE ::  Conductivity(:,:,:), &
     LocalStiffMatrix(:,:), Load(:), LocalForce(:)
@@ -198,24 +195,10 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   TYPE(Matrix_t), POINTER, SAVE :: AuxMatrix => NULL()
   LOGICAL, SAVE :: AuxBuilt = .FALSE.
   INTEGER, SAVE :: AuxNPhi = -1, AuxNEP = -1
-  INTEGER :: NPhi, NX, be, ep, inode, pRow, gidVp, gidVm, gidI, PermMax, GlobalNPhi
-  LOGICAL :: stat
-  INTEGER :: fr, lr
-  TYPE(Element_t), POINTER :: Elem
-  REAL(dp), ALLOCATABLE :: VrowBuf(:)
-  REAL(dp) :: VdiagLocal, VdiagGlobal
-  INTEGER :: sgn, gidV, p
-  TYPE(Variable_t), POINTER :: CktVar
-  INTEGER :: nm, nCkt, base
-  
-  ! Export Lagrange multipliers for electrode constraints
-  REAL(dp), POINTER :: ElectrodeValues(:) => NULL()
-  TYPE(Variable_t), POINTER :: ElectrodeVar => NULL()
+  INTEGER :: NPhi, PermMax, GlobalNPhi
 
   ! Diagnostics for solution change (variables declared below in main declarations)
   REAL(dp), ALLOCATABLE :: OldPotential(:)
-  REAL(dp) :: maxPotChange, avgPotChange, sumChange
-  INTEGER :: nPotNodes
 
   ! Resistances
   REAL(dp), ALLOCATABLE :: ElectrodeResistance(:)
@@ -1598,7 +1581,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     INTEGER, POINTER :: NodeIndexes(:)
     INTEGER :: maxN
     INTEGER :: gp
-    INTEGER :: maxGlobalDOF, gDOF
 
     TYPE(Nodes_t) :: EN
     TYPE(GaussIntegrationPoints_t) :: Integ
