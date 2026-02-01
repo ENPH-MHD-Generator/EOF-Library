@@ -87,6 +87,12 @@ int main(int argc, char *argv[])
     receiving.recvScalar(JH_recv);
     JH  = JH_recv;
 
+    // Without this, parallel decomposition fails when writing fields with non-zero values
+    Jx.correctBoundaryConditions();
+    Jy.correctBoundaryConditions();
+    Jz.correctBoundaryConditions();
+    JH.correctBoundaryConditions();
+
     // Reconstruct J_dens from component fields
     // Brackets define a local scope in OF6
     {
@@ -186,6 +192,12 @@ int main(int argc, char *argv[])
         receiving.recvScalar(JH_recv);
         JH  = JH_recv;
 
+        // Without this, parallel decomposition fails when writing fields with non-zero values
+        Jx.correctBoundaryConditions();
+        Jy.correctBoundaryConditions();
+        Jz.correctBoundaryConditions();
+        JH.correctBoundaryConditions();
+        
         // Reconstruct J_dens from component fields
         // Brackets define a local scope in OF6
         {
