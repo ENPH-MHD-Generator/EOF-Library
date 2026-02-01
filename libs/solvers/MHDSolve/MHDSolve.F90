@@ -52,6 +52,8 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 !------------------------------------------------------------------------------
   USE DefUtils
   USE SolverUtils
+  USE MHDUtils
+  USE MHDLog
   IMPLICIT NONE
 !------------------------------------------------------------------------------
   TYPE(Model_t)            :: Model
@@ -112,6 +114,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   USE DefUtils
   USE SolverUtils
   USE ListMatrix
+  USE MHDUtils
+  USE MHDLog
+  USE MHDDiagnostics
 
   IMPLICIT NONE
 !------------------------------------------------------------------------------ 
@@ -155,6 +160,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   TYPE(Variable_t), POINTER :: Var
 
   CHARACTER(LEN=MAX_NAME_LEN) :: EquationName
+  CHARACTER(LEN=256) :: LogMsg
 
   LOGICAL :: GetCondAtIp
   TYPE(ValueHandle_t) :: CondAtIp_h
@@ -174,6 +180,13 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   INTEGER :: NumElectrodePairs
   INTEGER :: sign
   LOGICAL, SAVE :: ElectrodeMatrixBuilt = .FALSE.
+  
+  ! For lagged Neumann BC iteration
+  REAL(KIND=dp), ALLOCATABLE, SAVE :: ElectrodeCurrentLagged(:)
+  REAL(KIND=dp), ALLOCATABLE, SAVE :: ElectrodeAreaPlus(:), ElectrodeAreaMinus(:)
+  INTEGER :: NLiter
+  REAL(KIND=dp) :: MaxCurrentChange
+  LOGICAL :: ElectrodeConverged
   INTEGER :: Vrow
   REAL(dp) :: s, Basis(MAX_ELEMENT_NODES)
   REAL(dp) :: dBasisdx(MAX_ELEMENT_NODES,3)
@@ -199,13 +212,15 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   REAL(dp), POINTER :: ElectrodeValues(:) => NULL()
   TYPE(Variable_t), POINTER :: ElectrodeVar => NULL()
 
-
+  ! Diagnostics for solution change (variables declared below in main declarations)
+  REAL(dp), ALLOCATABLE :: OldPotential(:)
+  REAL(dp) :: maxPotChange, avgPotChange, sumChange
+  INTEGER :: nPotNodes
 
   ! Resistances
   REAL(dp), ALLOCATABLE :: ElectrodeResistance(:)
   LOGICAL :: gotItR
   REAL(dp) :: Rbc
-
 
   SAVE LocalStiffMatrix, Load, LocalForce, &
   ElementNodes, CalculateCurrent, CalculateHeating, &
@@ -216,7 +231,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   UxVals, UyVals, UzVals, &
   BxVals, ByVals, BzVals, &
   UxPerm, UyPerm, UzPerm, &
-  BxPerm, ByPerm, BzPerm
+  BxPerm, ByPerm, BzPerm, OldPotential
 
 !------------------------------------------------------------------------------
 !    Get variables needed for solution
@@ -437,9 +452,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       StiffMatrix % MassValues = 0.0d0
     END IF
 
-    !------------------------------------------------------------------------------
-    !      Add electric field to the variable list (disabled)
-    !------------------------------------------------------------------------------
+    ! Add electric field to variable list (disabled)
     IF ( CalculateField ) THEN
       CALL Info('StatCurrentSolver_bulk', '*** ABOUT TO ADD VARIABLE ***', Level=1)
       CALL VariableAddVector( Solver % Mesh % Variables, Solver % Mesh, &
@@ -462,8 +475,40 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
   CALL DefaultStart()
   
+  ! Initialize lagged iteration arrays for electrode Neumann BC
+  IF (.NOT. ALLOCATED(ElectrodeCurrentLagged)) THEN
+    ALLOCATE(ElectrodeCurrentLagged(NumElectrodePairs))
+    ALLOCATE(ElectrodeAreaPlus(NumElectrodePairs))
+    ALLOCATE(ElectrodeAreaMinus(NumElectrodePairs))
+    ElectrodeCurrentLagged = 0.0_dp
+    
+    ! Compute electrode areas (needed for current density = I/A)
+    CALL ComputeElectrodeAreas(Model, Solver, ElectrodePairOfBC, ElectrodeSignOfBC, &
+      NumElectrodePairs, ElectrodeAreaPlus, ElectrodeAreaMinus)
+  END IF
+  
+  ! Initialize convergence flags
+  ElectrodeConverged = .FALSE.
+  MaxCurrentChange = HUGE(MaxCurrentChange)
+  
+  IF (ParEnv % MyPE == 0) THEN
+    CALL LogSection('[LAGGED ITERATION] Starting electrode-current coupling')
+    WRITE(LogMsg,'(A,I0,A)') ' Max nonlinear iterations: ', NonlinearIter
+    CALL LogLine(TRIM(LogMsg))
+    CALL LogLine(' Iterating: I_lagged → solve φ → extract I_new → repeat')
+    CALL LogSectionEnd()
+  END IF
   
   DO iter = 1, NonlinearIter
+    NLiter = iter
+    
+    IF (ParEnv % MyPE == 0 .AND. iter > 1) THEN
+      CALL LogLine('')
+      CALL LogSectionEnd()
+      WRITE(LogMsg,'(A,I0)') ' [LAGGED ITERATION] Starting iteration ', iter
+      CALL LogLine(TRIM(LogMsg))
+      CALL LogSectionEnd()
+    END IF
     at  = CPUTime()
     at0 = RealTime()
 
@@ -507,7 +552,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       ElementNodes % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes)
       ElementNodes % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes)
       ElementNodes % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes)
-      !------------------------------------------------------------------------------
 
       bf_id = ListGetInteger( Model % Bodies(CurrentElement % BodyId) % &
           Values, 'Body Force', gotIt, minv=1, maxv=Model % NumberOfBodyForces )
@@ -574,29 +618,57 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         IF ( CurrentElement % BoundaryInfo % Constraint == &
           Model % BCs(i) % Tag ) THEN
 
-          !------------------------------------------------------------------------------
-          !             Set the current element pointer in the model structure to
-          !             reflect the element being processed
-          !------------------------------------------------------------------------------
           Model % CurrentElement => CurrentElement
-          !------------------------------------------------------------------------------
           n = CurrentElement % TYPE % NumberOfNodes
           NodeIndexes => CurrentElement % NodeIndexes
           IF ( ANY( PotentialPerm(NodeIndexes) <= 0 ) ) CYCLE
 
           !------------------------------------------------------------
-          ! Skip Neumann handling on electrode boundaries
+          ! CURRENT ITERATION: Apply electrode current as Neumann BC
           !------------------------------------------------------------
           k = ListGetInteger(Model % BCs(i) % Values, 'Electrode Pair', gotIt)
-          IF (gotIt) CYCLE
+          IF (gotIt) THEN
+            ! This is an electrode boundary - apply lagged current as Neumann BC
+            IF (ALLOCATED(ElectrodeCurrentLagged) .AND. k <= SIZE(ElectrodeCurrentLagged)) THEN
+              ! Get electrode sign
+              SignStr = ListGetString(Model % BCs(i) % Values, 'Electrode Sign', gotIt)
+              IF (gotIt) THEN
+                IF (TRIM(SignStr) == 'plus' .OR. TRIM(SignStr) == '+') THEN
+                  sign = +1
+                ELSE
+                  sign = -1
+                END IF
+                
+                ! Current density = I/Area (positive = outward, negative = inward)
+                ! For plus electrode: +I means current OUT (positive Neumann)
+                ! For minus electrode: -I means current IN (negative Neumann)
+                Load = 0.0d0
+                IF (sign == +1 .AND. ElectrodeAreaPlus(k) > 1.0e-20_dp) THEN
+                  Load(1:n) = ElectrodeCurrentLagged(k) / ElectrodeAreaPlus(k)
+                ELSE IF (sign == -1 .AND. ElectrodeAreaMinus(k) > 1.0e-20_dp) THEN
+                  Load(1:n) = -ElectrodeCurrentLagged(k) / ElectrodeAreaMinus(k)
+                END IF
+                
+                ! Apply the Neumann BC
+                IF (MAXVAL(ABS(Load(1:n))) > 1.0e-20_dp) THEN
+                  ElementNodes % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes)
+                  ElementNodes % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes)
+                  ElementNodes % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes)
+                  
+                  CALL StatCurrentBoundary( LocalStiffMatrix, LocalForce,  &
+                      Load, CurrentElement, n, ElementNodes )
+                  CALL DefaultUpdateEquations( LocalStiffMatrix, LocalForce )
+                END IF
+              END IF
+            END IF
+            CYCLE  ! Skip standard Neumann handling for electrodes
+          END IF
 
           FluxBC = ListGetLogical(Model % BCs(i) % Values, &
               'Current Density BC',gotIt) 
           IF(GotIt .AND. .NOT. FluxBC) CYCLE
 
-          !------------------------------------------------------------------------------
-          !             BC: cond@Phi/@n = g
-          !------------------------------------------------------------------------------
+          ! BC: cond dPhi/dn = g
           Load = 0.0d0
           Load(1:n) = ListGetReal( Model % BCs(i) % Values,'Current Density', &
               n,NodeIndexes,gotIt )
@@ -606,137 +678,53 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           ElementNodes % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes)
           ElementNodes % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes)
 
-          !------------------------------------------------------------------------------
-          !             Get element matrix and rhs due to boundary conditions ...
-          !------------------------------------------------------------------------------
           CALL StatCurrentBoundary( LocalStiffMatrix, LocalForce,  &
               Load, CurrentElement, n, ElementNodes )
-          !------------------------------------------------------------------------------
-          !             Update global matrices from local matrices
-          !------------------------------------------------------------------------------
           CALL DefaultUpdateEquations( LocalStiffMatrix, LocalForce )
         END IF ! of currentelement bc == bcs(i)
       END DO ! of i=1,model bcs
     END DO   ! Neumann BCs
-
+    
     CALL DefaultFinishBulkAssembly()
 
-    !------------------------------------------------------------------------------
-    !    FinishAssembly must be called after all other assembly steps, but before
-    !    Dirichlet boundary settings. Actually no need to call it except for
-    !    transient simulations.
-    !------------------------------------------------------------------------------
     CALL DefaultFinishAssembly()
-
-    !------------------------------------------------------------------------------
-    !    Dirichlet boundary conditions
-    !------------------------------------------------------------------------------
     CALL DefaultDirichletBCs()
 
-    !------------------------------------------------------------
-    ! Build electrode AddMatrix only on first iteration (like CircuitsAndDynamics)
-    ! The matrix structure doesn't change between iterations
-    !------------------------------------------------------------
+    ! Build electrode AddMatrix only on first iteration (matrix structure is fixed).
+    ! CRITICAL: set NPhi before any use (needed when matrix already built).
+    NPhi = Solver % Matrix % NumberOfRows
+    IF (NPhi < 1) THEN
+      CALL Fatal('StatCurrentSolver', 'Matrix NumberOfRows <= 0!')
+    END IF
+    
     IF (.NOT. ElectrodeMatrixBuilt) THEN
-      ! Use actual matrix size (like CircuitUtils.F90:1093) not computed from perm
-      ! This accounts for bubble functions, extra DOFs, etc.
-      NPhi = Solver % Matrix % NumberOfRows
-      IF (NPhi < 1) THEN
-        CALL Fatal('StatCurrentSolver', 'Matrix NumberOfRows <= 0!')
-      END IF
       
       ! CRITICAL: Ensure ParallelInfo matches current matrix size
-      ! SolverUtils.F90:11415 only checks IF (.NOT. ASSOCIATED(ParMatrix)), 
-      ! which fails when matrix grows after initial ParallelInitMatrix call.
-      ! We must verify size and force reinit if needed.
-      IF (ParEnv % MyPE == 0) THEN
-        WRITE(*,'(A,I0)') '[DEBUG] ParEnv % PEs = ', ParEnv % PEs
-        WRITE(*,'(A,L1)') '[DEBUG] ASSOCIATED(Solver % Matrix % ParallelInfo) = ', &
-          ASSOCIATED(Solver % Matrix % ParallelInfo)
-        IF (ASSOCIATED(Solver % Matrix % ParallelInfo)) THEN
-          WRITE(*,'(A,L1)') '[DEBUG] ASSOCIATED(ParallelInfo % NeighbourList) = ', &
-            ASSOCIATED(Solver % Matrix % ParallelInfo % NeighbourList)
-          IF (ASSOCIATED(Solver % Matrix % ParallelInfo % NeighbourList)) THEN
-            WRITE(*,'(A,I0)') '[DEBUG] SIZE(NeighbourList) = ', &
-              SIZE(Solver % Matrix % ParallelInfo % NeighbourList)
-            WRITE(*,'(A,I0)') '[DEBUG] NPhi (NumberOfRows) = ', NPhi
-          END IF
-        END IF
-      END IF
-      
+      ! SolverUtils only checks ASSOCIATED(ParMatrix); we must reinit when matrix grows.
       IF (ParEnv % PEs > 1) THEN
         IF (ASSOCIATED(Solver % Matrix % ParallelInfo)) THEN
           IF (ASSOCIATED(Solver % Matrix % ParallelInfo % NeighbourList)) THEN
             IF (SIZE(Solver % Matrix % ParallelInfo % NeighbourList) /= NPhi) THEN
               IF (ParEnv % MyPE == 0) THEN
-                WRITE(*,'(A,I0,A,I0)') '[StatCurrentSolver] ParallelInfo size mismatch: ', &
-                  SIZE(Solver % Matrix % ParallelInfo % NeighbourList), ' vs ', NPhi
-                WRITE(*,'(A)') '[StatCurrentSolver] Forcing ParallelInitMatrix reinit'
+                WRITE(*,'(A,I0,A,I0,A)') '[StatCurrentSolver] ParallelInfo size ', &
+                  SIZE(Solver % Matrix % ParallelInfo % NeighbourList), ' /= ', NPhi, ', reinitializing'
               END IF
               CALL ParallelInitMatrix(Solver, Solver % Matrix)
-              
-              IF (ParEnv % MyPE == 0) THEN
-                WRITE(*,'(A,I0)') '[DEBUG] After reinit, SIZE(NeighbourList) = ', &
-                  SIZE(Solver % Matrix % ParallelInfo % NeighbourList)
-              END IF
-            ELSE
-              IF (ParEnv % MyPE == 0) THEN
-                WRITE(*,'(A,I0)') '[DEBUG] Size matches, no reinit needed: ', NPhi
-              END IF
-            END IF
-          ELSE
-            IF (ParEnv % MyPE == 0) THEN
-              WRITE(*,'(A)') '[DEBUG] NeighbourList not associated!'
             END IF
           END IF
-        ELSE
-          IF (ParEnv % MyPE == 0) THEN
-            WRITE(*,'(A)') '[DEBUG] ParallelInfo not associated!'
-          END IF
-        END IF
-      ELSE
-        IF (ParEnv % MyPE == 0) THEN
-          WRITE(*,'(A)') '[DEBUG] Not parallel (PEs <= 1), skipping ParallelInfo check'
         END IF
       END IF
 
-      ! Print from ALL ranks to see if there's a mismatch
       PermMax = MAXVAL(PotentialPerm, MASK=(PotentialPerm > 0))
-      WRITE(*,'(A,I0,A,I0)') '[StatCurrentSolver][Rank ', ParEnv % MyPE, '] SIZE(PotentialPerm) = ', &
-        SIZE(PotentialPerm)
-      WRITE(*,'(A,I0,A,I0)') '[StatCurrentSolver][Rank ', ParEnv % MyPE, &
-        '] Solver % Matrix % NumberOfRows = ', NPhi
-      WRITE(*,'(A,I0,A,I0)') '[StatCurrentSolver][Rank ', ParEnv % MyPE, '] MAXVAL(PotentialPerm) = ', PermMax
-      IF (ASSOCIATED(Solver % Matrix % ParallelInfo)) THEN
-        IF (ASSOCIATED(Solver % Matrix % ParallelInfo % NeighbourList)) THEN
-          WRITE(*,'(A,I0,A,I0)') '[StatCurrentSolver][Rank ', ParEnv % MyPE, &
-            '] SIZE(ParallelInfo % NeighbourList) = ', &
-            SIZE(Solver % Matrix % ParallelInfo % NeighbourList)
-        END IF
-      END IF
-      ! Compute global max NPhi for informational purposes only
-      ! Constraint indices now use LOCAL NPhi on each rank
       IF (ParEnv % PEs > 1) THEN
         GlobalNPhi = NINT(ParallelReduction(REAL(NPhi, dp), 2))  ! MPI_MAX
-        IF (ParEnv % MyPE == 0) THEN
-          WRITE(*,'(A,I0)') '[StatCurrentSolver] GlobalNPhi (max across ranks) = ', GlobalNPhi
-        END IF
       ELSE
         GlobalNPhi = NPhi
       END IF
-      
-      ! Print expected size (using LOCAL NPhi for matrix dimensions)
-      WRITE(*,'(A,I0,A,I0)') '[StatCurrentSolver][Rank ', ParEnv % MyPE, '] EXPECTED AddMatrix rows = ', &
-        NPhi + 3*NumElectrodePairs
-      
+
       CALL BuildElectrodeAddMatrix( Model, Solver, AuxMatrix, &
           PotentialPerm, ElectrodePairOfBC, ElectrodeSignOfBC, &
           ElectrodeResistance, NumElectrodePairs, NPhi )
-
-      ! Verify actual AuxMatrix size on ALL ranks
-      WRITE(*,'(A,I0,A,I0,A,I0)') '[StatCurrentSolver][Rank ', ParEnv % MyPE, &
-        '] ACTUAL AuxMatrix % NumberOfRows = ', AuxMatrix % NumberOfRows, &
-        ' (Expected: ', NPhi + 3*NumElectrodePairs, ')'
 
       Solver % Matrix % AddMatrix => AuxMatrix
       ElectrodeMatrixBuilt = .TRUE.
@@ -745,10 +733,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       IF (.NOT. ListCheckPresent(Solver % Values, 'Export Lagrange Multiplier')) THEN
         CALL ListAddLogical(Solver % Values, 'Export Lagrange Multiplier', .TRUE.)
         CALL ListAddString(Solver % Values, 'Lagrange Multiplier Name', 'Electrode Circuit Values')
-      END IF
-      
-      IF (ParEnv % MyPE == 0) THEN
-        WRITE(*,'(A)') '[StatCurrentSolver] Electrode AddMatrix built and attached successfully'
       END IF
     ELSE
       ! On subsequent iterations, just reset RHS (though it is constant anyways)
@@ -764,14 +748,33 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     !    Solve the system and we are done.
     !------------------------------------------------------------------------------
     st = CPUTime()
+    
+    ! Store old potential for comparison
+    IF (.NOT. ALLOCATED(OldPotential)) THEN
+      ALLOCATE(OldPotential(SIZE(Potential)))
+      OldPotential = 0.0_dp
+    END IF
+    IF (SIZE(OldPotential) /= SIZE(Potential)) THEN
+      DEALLOCATE(OldPotential)
+      ALLOCATE(OldPotential(SIZE(Potential)))
+      OldPotential = 0.0_dp
+    END IF
+    
+    ! Save old solution
+    OldPotential = Potential
+    
     Norm = DefaultSolve()
 
     st = CPUTime() - st
     WRITE( Message, * ) 'Solve (s)             :',st
     CALL Info( 'StatCurrentSolve', Message, Level=5 )
-
-    ! Log electrode circuit solution (only runs on rank 0, so use local NPhi)
+    
+    ! Log electrode circuit solution
     CALL LogElectrodeCktSolution(Solver, Potential, PotentialPerm, NPhi, NumElectrodePairs)
+    
+    ! Update lagged current for next iteration and check convergence
+    CALL UpdateLaggedCurrent(Solver, ElectrodeCurrentLagged, NumElectrodePairs, NLiter, &
+      MaxCurrentChange, ElectrodeConverged)
 
 !------------------------------------------------------------------------------
 !    Compute the electric field from the potential: E = -grad Phi
@@ -785,6 +788,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     IF ( Control .OR. CalculateCurrent .OR. CalculateHeating .OR. &
         CalculateNodalHeating ) THEN 
       CALL GeneralCurrent( Model, Potential, PotentialPerm )
+      
+      ! Check current at electrode boundaries (only on last iteration)
+      IF (CalculateCurrent .AND. ElectrodeConverged) THEN
+        CALL DiagnoseElectrodeCurrents(Model, Solver, VolCurrent, PotentialPerm, DIM)
+        CALL DiagnoseBulkVsBoundaryCurrents(Model, Solver, VolCurrent, PotentialPerm, DIM)
+      END IF
 
       WRITE( Message, * ) 'Total Heating Power   :', Heatingtot
       CALL Info( 'StatCurrentSolve', Message, Level=4 )
@@ -834,10 +843,25 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       IF ( CalculateCurrent )     VolCurrent = ControlScaling * VolCurrent
     END IF
 
-    IF( Solver % Variable % NonlinConverged > 0 ) EXIT
-  END DO
 
-!------------------------------------------------------------------------------
+    IF (NumElectrodePairs > 0 .AND. ALLOCATED(ElectrodeCurrentLagged)) THEN
+      ! Use electrode current convergence criterion
+      IF (ElectrodeConverged) THEN
+        IF (ParEnv % MyPE == 0) THEN
+          CALL LogSectionEnd()
+          WRITE(LogMsg,'(A,I0,A)') ' ✓ ELECTRODE ITERATION CONVERGED after ', iter, ' iterations'
+          CALL LogLine(TRIM(LogMsg))
+          WRITE(LogMsg,'(A,ES12.4,A)') ' Max current change: ', MaxCurrentChange, ' A'
+          CALL LogLine(TRIM(LogMsg))
+          CALL LogSectionEnd()
+        END IF
+        EXIT
+      END IF
+    ELSE
+      ! Standard convergence check (for non-electrode problems)
+      IF( Solver % Variable % NonlinConverged > 0 ) EXIT
+    END IF
+  END DO
 
   CALL InvalidateVariable( Model % Meshes, Solver % Mesh, 'Potential')
   
@@ -860,17 +884,13 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   IF (ALLOCATED(ElectrodeResistance)) DEALLOCATE(ElectrodeResistance)
 
   CALL DefaultFinish()
-    
 
-!------------------------------------------------------------------------------
- 
   CONTAINS
 
 !------------------------------------------------------------------------------
 !> Compute the Current and Joule Heating at model nodes.
 !------------------------------------------------------------------------------
   SUBROUTINE GeneralCurrent( Model, Potential, Reorder )
-!------------------------------------------------------------------------------
     TYPE(Model_t) :: Model
     REAL(KIND=dp) :: Potential(:)
     INTEGER :: Reorder(:)
@@ -901,8 +921,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso
     REAL(KIND=dp) :: RHS(3), Jgp(3)
     REAL(KIND=dp) :: M(3,3), Minv(3,3)
-
-!------------------------------------------------------------------------------
 
     ALLOCATE( Nodes % x( Model % MaxElementNodes ) )
     ALLOCATE( Nodes % y( Model % MaxElementNodes ) )
@@ -1091,19 +1109,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
           UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
           UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
-
-          ! Log U and B
-          ! WRITE(*,'(A,I4,A,I2,A,3ES12.4,A,3ES12.4)') &
-          !   '[GeneralCurrent] Elem=', Element % BodyId, &
-          !   ' GP=', t, &
-          !   '  Ugp=', Ugp(1), Ugp(2), Ugp(3), &
-          !   '  Bgp=', Bgp(1), Bgp(2), Bgp(3)
-
-          ! ! Log corss product
-          ! WRITE(*,'(A,I4,A,I2,A,3ES12.4)') &
-          !   '[GeneralCurrent][UxB] Elem=', Element % BodyId, &
-          !   ' GP=', tg, &
-          !   '  UxB=', UxBgp(1), UxBgp(2), UxBgp(3)
 
 
           Cgp = 0.0_dp
@@ -1416,11 +1421,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           END IF
         END DO
 
-        ! WRITE(*,'(A,I4,A,I2,A,3ES12.4,A,3ES12.4)') &
-        !   '[StatCurrentCompose] Elem=', Element % BodyId, &
-        !   ' GP=', t, &
-        !   '  Ugp=', Ugp(1), Ugp(2), Ugp(3), &
-        !   '  Bgp=', Bgp(1), Bgp(2), Bgp(3)
 
         ! Build the M matrix
         M = 0.0_dp
@@ -1438,16 +1438,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         ! Invert the hall matrix
         CALL Invert3x3(M, Minv, Stat)
 
-        ! Temporary debug block for debugging inversion issue   
-        ! WRITE(*,*) 'StatCurrentCompose============================'
-        ! WRITE(*,*) 'EtaGP     = ', EtaGP
-        ! WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
-        ! WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
-        ! WRITE(*,*) 'M matrix:'
-        ! WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
-        ! WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
-        ! WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
-        ! WRITE(*,*) '=============================================='
 
         IF (.NOT. Stat) THEN 
           WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
@@ -1619,6 +1609,10 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
     REAL(dp), ALLOCATABLE :: VrowBuf(:)
     REAL(dp) :: VdiagLocal, VdiagGlobal
+    
+    ! Variables for boundary current coupling
+    REAL(dp) :: AreaPlus, AreaMinus, areaCoeff
+    INTEGER :: nCoupled
 
     maxN = Model % MaxElementNodes
     ALLOCATE( EN % x(maxN), EN % y(maxN), EN % z(maxN) )
@@ -1640,8 +1634,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     AuxMatrix => AllocateMatrix()
     AuxMatrix % FORMAT = MATRIX_LIST
     AuxMatrix % Symmetric = .FALSE.
-    ! CRITICAL: Use LOCAL NPhi so AddMatrix matches Stiffness matrix size on each rank
-    ! Constraint row indices also use LOCAL NPhi (e.g., NPhi+1, NPhi+2, etc.)
     AuxMatrix % NumberOfRows = NPhi + NX
 
     ALLOCATE(AuxMatrix % RHS(AuxMatrix % NumberOfRows))
@@ -1651,7 +1643,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     ! CRITICAL: Use LOCAL NPhi for array sizes to match local matrix dimensions
     IF (ParEnv % PEs > 1) THEN
       ! Allocate RowOwner and initialize to -1 (like CircuitUtils.F90:1742)
-      ! Use local NPhi to match actual matrix size on this rank
       ALLOCATE(AuxMatrix % RowOwner(NPhi + NX))
       AuxMatrix % RowOwner = -1
       
@@ -1678,8 +1669,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     END IF
 
     ! Buffer for reduced circuit-row coefficients
-    ! Use LOCAL NPhi since each rank only assembles into its local DOFs
-    ! ParallelSumVector will use Matrix % ParallelInfo which is sized to local NPhi
     ALLOCATE(VrowBuf(NPhi))
     VrowBuf = 0.0_dp
 
@@ -1769,13 +1758,11 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       END DO
     END DO
 
-    !------------------------------------------------------------
     !    Ohm law per pair: (Vp - Vm) - R * I = 0   (row gidI)
     !    Keep these rows on rank 0 (simple and stable).
-    !------------------------------------------------------------
     DO ep = 1, NumElectrodePairs
       gidVp = NPhi + 3*(ep-1) + 1  ! Use local NPhi for local matrix indexing
-      gidVm = NPhi + 3*(ep-1) + 2  ! Use local NPhi for local matrix indexing
+      gidVm = NPhi + 3*(ep-1) + 2  
       gidI  = NPhi + 3*(ep-1) + 3  ! Use local NPhi for local matrix indexing
 
       IF (ParEnv % MyPE == 0) THEN
@@ -1783,15 +1770,135 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         CALL AddToMatrixElement(AuxMatrix, gidI, gidVm, -1.0_dp)
         CALL AddToMatrixElement(AuxMatrix, gidI, gidI,  -ElectrodeResistance(ep))
       ELSE
-        ! CRITICAL: Add dummy diagonal entries on other ranks to prevent List_ToCRSMatrix
-        ! from trimming empty constraint rows (lines 192-194 in ListMatrix.F90 find last
-        ! non-empty row and truncate NumberOfRows to that value)
-        ! Use LOCAL constraint row indices (NPhi + offset) not global (GlobalNPhi + offset)
+        ! Add dummy diagonal entries on other ranks to prevent List_ToCRSMatrix
+        ! from trimming empty constraint rows
         CALL AddToMatrixElement(AuxMatrix, NPhi + 3*(ep-1) + 1, NPhi + 3*(ep-1) + 1, 0.0_dp)
         CALL AddToMatrixElement(AuxMatrix, NPhi + 3*(ep-1) + 2, NPhi + 3*(ep-1) + 2, 0.0_dp)
         CALL AddToMatrixElement(AuxMatrix, NPhi + 3*(ep-1) + 3, NPhi + 3*(ep-1) + 3, 0.0_dp)
       END IF
     END DO
+    
+    IF (ParEnv % MyPE == 0) THEN
+      WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] Starting boundary current coupling'
+      WRITE(*,'(A,I3)') '   NumElectrodePairs = ', NumElectrodePairs
+      WRITE(*,'(A,I6)') '   NPhi = ', NPhi
+    END IF
+    
+    nCoupled = 0
+    DO ep = 1, NumElectrodePairs
+      gidI = NPhi + 3*(ep-1) + 3
+      
+      IF (ParEnv % MyPE == 0) THEN
+        WRITE(*,'(A,I3,A,I6)') '   Processing electrode pair ', ep, ', gidI = ', gidI
+      END IF
+      
+      ! Compute electrode areas (same as earlier area computation)
+      AreaPlus = 0.0_dp
+      AreaMinus = 0.0_dp
+      
+      DO be = 1, Solver % Mesh % NumberOfBoundaryElements
+        Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
+        NodeIndexes => Elem % NodeIndexes
+
+        DO i = 1, Model % NumberOfBCs
+          IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
+          IF (ElectrodePairOfBC(i) /= ep) CYCLE
+
+          n = Elem % TYPE % NumberOfNodes
+          EN % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes(1:n))
+          EN % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes(1:n))
+          EN % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes(1:n))
+
+          Integ = GaussPoints(Elem)
+          DO gp = 1, Integ % n
+            stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &
+                              SqrtElementMetric, Basis, dBasisdx)
+            s = SqrtElementMetric * Integ % s(gp)
+            IF (ElectrodeSignOfBC(i) == +1) THEN
+              AreaPlus = AreaPlus + s
+            ELSE
+              AreaMinus = AreaMinus + s
+            END IF
+          END DO
+        END DO
+      END DO
+      
+      ! Parallel reduction for areas
+      IF (ParEnv % PEs > 1) THEN
+        AreaPlus = ParallelReduction(AreaPlus)
+        AreaMinus = ParallelReduction(AreaMinus)
+      END IF
+      
+      IF (ParEnv % MyPE == 0) THEN
+        WRITE(*,'(A,I3,A,ES12.4,A,ES12.4)') ' [BoundaryCoupling] Pair ', ep, &
+          ': AreaPlus=', AreaPlus, ' AreaMinus=', AreaMinus
+        WRITE(*,'(A,I6)') '   gidI (current DOF index) = ', gidI
+      END IF
+      
+
+      DO be = 1, Solver % Mesh % NumberOfBoundaryElements
+        Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
+        NodeIndexes => Elem % NodeIndexes
+
+        DO i = 1, Model % NumberOfBCs
+          IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
+          IF (ElectrodePairOfBC(i) /= ep) CYCLE
+          
+          n = Elem % TYPE % NumberOfNodes
+          EN % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes(1:n))
+          EN % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes(1:n))
+          EN % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes(1:n))
+
+          ! Determine area coefficient
+          IF (ElectrodeSignOfBC(i) == +1 .AND. AreaPlus > 1.0e-20) THEN
+            areaCoeff = 1.0_dp / AreaPlus  ! Positive: I/A
+          ELSE IF (ElectrodeSignOfBC(i) == -1 .AND. AreaMinus > 1.0e-20) THEN
+            areaCoeff = -1.0_dp / AreaMinus  ! Negative: -I/A
+          ELSE
+            CYCLE
+          END IF
+
+          Integ = GaussPoints(Elem)
+          DO gp = 1, Integ % n
+            stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &
+                              SqrtElementMetric, Basis, dBasisdx)
+            s = SqrtElementMetric * Integ % s(gp)
+            
+            DO inode = 1, n
+              pRow = PotentialPerm(NodeIndexes(inode))
+              IF (pRow <= 0) CYCLE
+              
+              ! FORWARD coupling: phi equation gets I contribution
+              ! Weak form: K·φ = ∫(I/A)ψ dS  -->  K·φ - B·I = 0
+              ! So: A(pRow, gidI) = -∫ψ/A dS  (NEGATIVE!)
+              IF (ParEnv % PEs > 1 .AND. ALLOCATED(Solver % Matrix % RowOwner)) THEN
+                IF (Solver % Matrix % RowOwner(pRow) == ParEnv % MyPE) THEN
+                  CALL AddToMatrixElement(AuxMatrix, pRow, gidI, -s * Basis(inode) * areaCoeff)
+                  IF (nCoupled < 5 .AND. ParEnv % MyPE == 0) THEN
+                    WRITE(*,'(A,I3,A,I6,A,I6,A,ES12.4,A,ES12.4)') &
+                      '   [Forward] EP=', ep, ' A(', pRow, ',', gidI, ')=', &
+                      -s * Basis(inode) * areaCoeff, ' (areaCoeff=', areaCoeff, ')'
+                  END IF
+                  nCoupled = nCoupled + 1
+                END IF
+              ELSE
+                CALL AddToMatrixElement(AuxMatrix, pRow, gidI, -s * Basis(inode) * areaCoeff)
+                IF (nCoupled < 5) THEN
+                  WRITE(*,'(A,I3,A,I6,A,I6,A,ES12.4,A,ES12.4)') &
+                    '   [Forward] EP=', ep, ' A(', pRow, ',', gidI, ')=', &
+                    -s * Basis(inode) * areaCoeff, ' (areaCoeff=', areaCoeff, ')'
+                END IF
+                nCoupled = nCoupled + 1
+              END IF
+            END DO
+          END DO
+        END DO
+      END DO
+    END DO
+    
+    IF (ParEnv % MyPE == 0) THEN
+      WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Added boundary current coupling entries: ', nCoupled
+    END IF
 
     ! Convert AddMatrix to CRS like Circuits does
     CALL List_ToCRSMatrix(AuxMatrix)
@@ -1805,124 +1912,40 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       ELSE
         WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] WARNING: AuxMatrix % RowOwner NOT allocated'
       END IF
+      
+      ! Log some matrix statistics
+      WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Total coupling entries added: ', nCoupled
+      WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] Matrix structure summary:'
+      WRITE(*,'(A,I8)') '   Total non-zeros in AddMatrix: ', &
+        COUNT(AuxMatrix % Values /= 0.0_dp)
+      
+      ! Check a sample coupling entry by scanning constraint row entries
+      DO ep = 1, MIN(1, NumElectrodePairs)
+        gidI = NPhi + 3*(ep-1) + 3
+        WRITE(*,'(A,I3,A,I6,A)') '   Checking constraint row gidI=', gidI, &
+          ' (index ', gidI, ') for non-zero entries...'
+        ! Note: After CRS conversion, we can't easily inspect individual entries
+        ! without walking the CRS structure, so this is just informational
+      END DO      
     END IF
 
     DEALLOCATE(VrowBuf)
     DEALLOCATE( EN % x, EN % y, EN % z )
   END SUBROUTINE BuildElectrodeAddMatrix
 
-
-  SUBROUTINE LogElectrodeCktSolution(Solver, Potential, PotentialPerm, NPhi, NumPairs)
-    USE DefUtils
-    TYPE(Solver_t), TARGET :: Solver
-    REAL(dp), INTENT(IN)   :: Potential(:)
-    INTEGER, INTENT(IN)    :: PotentialPerm(:)
-    INTEGER, INTENT(IN)    :: NPhi, NumPairs
-
-    INTEGER :: ep, cidxVp, cidxVm, cidxI
-    INTEGER :: testNode, testRow
-    REAL(dp) :: phiVar
-    LOGICAL :: ok
-    INTEGER :: multiplierSize
-    TYPE(Variable_t), POINTER :: MultVar
-    REAL(dp), POINTER :: MultiplierValues(:)
-
-    IF (ParEnv % MyPE /= 0) RETURN
-
-    ! --- pick a valid potential row to sanity-check where the solution lives
-    ok = .FALSE.
-    DO testNode = 1, SIZE(PotentialPerm)
-      testRow = PotentialPerm(testNode)
-      IF (testRow > 0 .AND. testRow <= NPhi) THEN
-        phiVar = Potential(testRow)
-        ok = .TRUE.
-        EXIT
-      END IF
-    END DO
-
-    IF (ok) THEN
-      WRITE(*,'(A,ES18.10)') '[DBG] Sample potential value: phi=', phiVar
-    ELSE
-      WRITE(*,*) '[DBG] could not find a valid potential row to sanity-check'
-    END IF
-
-    ! --- Read constraint solution from Lagrange Multiplier variable
-    MultVar => VariableGet(Solver % Mesh % Variables, 'Electrode Circuit Values')
-    IF (.NOT. ASSOCIATED(MultVar)) THEN
-      WRITE(*,*) '========================================='
-      WRITE(*,*) '[Electrode Circuit Solution]'
-      WRITE(*,'(A)') ' WARNING: Electrode Circuit Values variable not found!'
-      WRITE(*,'(A)') '   Lagrange multipliers were not exported'
-      WRITE(*,*) '========================================='
-      RETURN
-    END IF
-
-    MultiplierValues => MultVar % Values
-    multiplierSize = SIZE(MultiplierValues)
-    
-    WRITE(*,*) '========================================='
-    WRITE(*,*) '[Electrode Circuit Solution]'
-    WRITE(*,'(A,I6,A,I3,A,I6)') ' NPhi=', NPhi, '  Pairs=', NumPairs, &
-        '  Multiplier size=', multiplierSize
-
-    ! Check if multiplier vector has constraint DOFs
-    IF (multiplierSize < 3*NumPairs) THEN
-      WRITE(*,'(A)') ' WARNING: Multiplier vector too small for constraint DOFs!'
-      WRITE(*,'(A,I6,A,I6)') '   Expected at least ', 3*NumPairs, &
-          ' but got ', multiplierSize
-      WRITE(*,*) '========================================='
-      RETURN
-    END IF
-
-    ! Constraint DOFs are stored in multiplier vector (indices 1 to 3*NumPairs)
-    DO ep = 1, NumPairs
-      cidxVp = 3*(ep-1) + 1
-      cidxVm = 3*(ep-1) + 2
-      cidxI  = 3*(ep-1) + 3
-
-      ! Read from Lagrange multiplier vector
-      WRITE(*,'(A,I3,A,3ES18.10)') ' EP=', ep, ' [Vp Vm I]=', &
-        MultiplierValues(cidxVp), &
-        MultiplierValues(cidxVm), &
-        MultiplierValues(cidxI)
-    END DO
-
-    WRITE(*,*) '========================================='
-  END SUBROUTINE LogElectrodeCktSolution
-
-
-  SUBROUTINE Invert3x3(A, Ainv, ok)
-    REAL(KIND=dp), INTENT(IN)  :: A(3,3)
-    REAL(KIND=dp), INTENT(OUT) :: Ainv(3,3)
-    LOGICAL, INTENT(OUT) :: ok
-    REAL(KIND=dp) :: det
-
-    det = A(1,1)*(A(2,2)*A(3,3)-A(2,3)*A(3,2)) &
-        - A(1,2)*(A(2,1)*A(3,3)-A(2,3)*A(3,1)) &
-        + A(1,3)*(A(2,1)*A(3,2)-A(2,2)*A(3,1))
-
-    IF (ABS(det) < 1.0d-30) THEN
-      ok = .FALSE.
-      Ainv = 0.0_dp
-      RETURN
-    END IF
-    ok = .TRUE.
-
-    Ainv(1,1) =  (A(2,2)*A(3,3)-A(2,3)*A(3,2))/det
-    Ainv(1,2) = -(A(1,2)*A(3,3)-A(1,3)*A(3,2))/det
-    Ainv(1,3) =  (A(1,2)*A(2,3)-A(1,3)*A(2,2))/det
-
-    Ainv(2,1) = -(A(2,1)*A(3,3)-A(2,3)*A(3,1))/det
-    Ainv(2,2) =  (A(1,1)*A(3,3)-A(1,3)*A(3,1))/det
-    Ainv(2,3) = -(A(1,1)*A(2,3)-A(1,3)*A(2,1))/det
-
-    Ainv(3,1) =  (A(2,1)*A(3,2)-A(2,2)*A(3,1))/det
-    Ainv(3,2) = -(A(1,1)*A(3,2)-A(1,2)*A(3,1))/det
-    Ainv(3,3) =  (A(1,1)*A(2,2)-A(1,2)*A(2,1))/det
-  END SUBROUTINE Invert3x3
+END SUBROUTINE StatCurrentSolver
 
 
 !------------------------------------------------------------------------------
- END SUBROUTINE StatCurrentSolver
+SUBROUTINE StatCurrentSolver_post( Model, Solver, dt, Transient )
 !------------------------------------------------------------------------------
+  USE DefUtils
+  IMPLICIT NONE
+  TYPE(Model_t) :: Model
+  TYPE(Solver_t) :: Solver
+  REAL(KIND=dp) :: dt
+  LOGICAL :: Transient
+  ! No-op: postprocessing is done inside StatCurrentSolver (GeneralCurrent).
+  RETURN
+END SUBROUTINE StatCurrentSolver_post
 

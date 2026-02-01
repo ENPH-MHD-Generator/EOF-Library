@@ -84,7 +84,6 @@ MODULE MHDDiagnostics
 
 CONTAINS
 
-  ! --- Electrode circuit (Lagrange multiplier) logging ---
   SUBROUTINE LogElectrodeCktSolution(Solver, Potential, PotentialPerm, NPhi, NumPairs)
     TYPE(Solver_t), TARGET :: Solver
     REAL(dp), INTENT(IN)   :: Potential(:)
@@ -161,7 +160,6 @@ CONTAINS
   END SUBROUTINE LogElectrodeCktSolution
 
 
-  ! --- Electrode current diagnostics (boundary J) ---
   SUBROUTINE DiagnoseElectrodeCurrents(Model, Solver, VolCurrent, CurrentPerm, Dim)
     TYPE(Model_t), INTENT(IN) :: Model
     TYPE(Solver_t), INTENT(IN) :: Solver
@@ -307,7 +305,6 @@ CONTAINS
   END SUBROUTINE ComputeElectrodeAreas
 
 
-  ! --- Electrode circuit iteration (lagged current) ---
   SUBROUTINE UpdateLaggedCurrent(Solver, CurrentLagged, NumPairs, Iteration, &
       MaxChange, Converged)
     TYPE(Solver_t), INTENT(IN) :: Solver
@@ -382,7 +379,6 @@ CONTAINS
   END SUBROUTINE UpdateLaggedCurrent
 
 
-  ! --- Boundary flux check ---
   SUBROUTINE CheckBoundaryFlux(Model, Solver, Potential, PotentialPerm)
     TYPE(Model_t), INTENT(IN) :: Model
     TYPE(Solver_t), INTENT(IN) :: Solver
@@ -486,7 +482,6 @@ CONTAINS
   END SUBROUTINE CheckBoundaryFlux
 
 
-  ! --- Geometry helper ---
   SUBROUTINE GetElementNormal(Element, Nodes, u, v, Normal)
     TYPE(Element_t) :: Element
     TYPE(Nodes_t) :: Nodes
@@ -517,7 +512,6 @@ CONTAINS
   END SUBROUTINE GetElementNormal
 
 
-  ! --- Electrode potential diagnostics (boundary phi) ---
   SUBROUTINE DiagnoseElectrodePotentials(Model, Solver, Potential, PotentialPerm, &
       ElectrodePairOfBC, ElectrodeSignOfBC, NumPairs)
     TYPE(Model_t), INTENT(IN) :: Model
@@ -575,7 +569,6 @@ CONTAINS
   END SUBROUTINE DiagnoseElectrodePotentials
 
 
-  ! --- Bulk vs boundary current diagnostics ---
   SUBROUTINE DiagnoseBulkVsBoundaryCurrents(Model, Solver, VolCurrent, PotentialPerm, Dim)
     TYPE(Model_t), INTENT(IN) :: Model
     TYPE(Solver_t), INTENT(IN) :: Solver
