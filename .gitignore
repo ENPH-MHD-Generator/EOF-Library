@@ -1,6 +1,7 @@
 **/lnInclude/
 **/Make/*/
 runs/
+out
 
 processor*
 partitioning.*
@@ -44,3 +45,6 @@ partitioning.*
 
 # IDEA
 .idea
+
+# Cursor AI
+.cursor

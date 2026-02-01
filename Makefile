@@ -55,9 +55,11 @@ else
 endif
 
 elmer: environment
-	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve.F90
-	cd /opt/elmerfem/build && \
-	sudo cmake .. $(ELMER_CMAKE_FLAGS)
+	sudo rm -f /opt/elmerfem/fem/src/modules/MHDSolve.F90
+	sudo mkdir -p /opt/elmerfem/fem/src/modules/MHDSolve
+	sudo cp libs/solvers/MHDSolve/MHDUtils.F90 /opt/elmerfem/fem/src/modules/MHDSolve/
+	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve/
+	cd /opt/elmerfem/build && sudo cmake .. $(ELMER_CMAKE_FLAGS)
 	cd /opt/elmerfem/build && sudo make MHDSolve
 	cd /opt/elmerfem/build && sudo make install MHDSolve
 	cd $(EOF_HOME)
