@@ -66,7 +66,7 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   INTEGER                 :: Dim
 !------------------------------------------------------------------------------
 
-  Params => GetSolverParams()
+  Params => GetSolverParams() 
   Dim    = CoordinateSystemDimension()
 
   !------------------------------------------------------------
@@ -916,8 +916,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
     ! hard coded hall coefficient
-    ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
-    HallCoeffAlpha = 0 ! Test turning off hall effect
+    HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
+    ! HallCoeffAlpha = 0 ! Test turning off hall effect
     ! HallCoeffAlpha = 100 ! Crazy test value
 !------------------------------------------------------------------------------
 
@@ -1294,8 +1294,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
       ! hard coded hall coefficient
-      ! HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
-      HallCoeffAlpha = 0 ! Test hall stuff off
+      HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
+      ! HallCoeffAlpha = 0 ! Test hall stuff off
       ! HallCoeffAlpha = 100 ! crazy number to test it out
 !------------------------------------------------------------------------------
 
