@@ -147,8 +147,8 @@ Solver 9
   Linear System Preconditioning = ILUT
   Linear System ILUT Tolerance = 1.0e-4
 
-  Linear System Max Iterations = 2000
-  Linear System Convergence Tolerance = 1.0e-7
+  Linear System Max Iterations = 4000
+  Linear System Convergence Tolerance = 1.0e-6
   Linear System Abort Not Converged = False
   Linear System Scaling = True
   Linear System Residual Output = 50
@@ -201,6 +201,7 @@ Boundary Condition 1
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
   Electrode Resistance = Real 0.14
+  Potential = 0.0
 End
 
 Boundary Condition 2
@@ -215,5 +216,5 @@ End
 Boundary Condition 3
   ! SideWallsZ
   Target Boundaries(1) = 5
-  Current Density BC = Logical True
+  ! Current Density BC = Logical True
 End

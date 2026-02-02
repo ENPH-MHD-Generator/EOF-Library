@@ -93,6 +93,7 @@ int main(int argc, char *argv[])
     Jy.correctBoundaryConditions();
     Jz.correctBoundaryConditions();
     JH.correctBoundaryConditions();
+    potential.correctBoundaryConditions();
 
     // Reconstruct J_dens from component fields
     // Brackets define a local scope in OF6
@@ -199,6 +200,7 @@ int main(int argc, char *argv[])
         Jy.correctBoundaryConditions();
         Jz.correctBoundaryConditions();
         JH.correctBoundaryConditions();
+        potential.correctBoundaryConditions();
         
         // Reconstruct J_dens from component fields
         // Brackets define a local scope in OF6
