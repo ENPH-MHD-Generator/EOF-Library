@@ -1,0 +1,57 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  Field         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   Operation     | Version:  dev                                   |
+|   \\  /    And           | Web:      www.OpenFOAM.org                      |
+|    \\/     Manipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      Potential;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Electric potential [V]
+dimensions [0 2 -3 0 0 0 0];
+
+// Start from zero; Elmer overwrites this during coupling
+internalField   uniform 0;
+
+boundaryField
+{
+    InletX
+    {
+        type    zeroGradient;
+    }
+
+    OutletX
+    {
+        type    zeroGradient;
+    }
+
+    FaradayMinusY
+    {
+        type    zeroGradient;
+    }
+
+    FaradayPlusY
+    {
+        type    zeroGradient;
+    }
+
+    SideWallsZ
+    {
+        type    zeroGradient;
+    }
+
+    defaultFaces
+    {
+        type    zeroGradient;
+    }
+}
+
+// ************************************************************************* //
