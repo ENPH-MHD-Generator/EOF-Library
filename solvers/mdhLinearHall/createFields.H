@@ -68,6 +68,22 @@ volVectorField B
     mesh
 );
 
+Info<< "Reading electric potential\n" << endl;
+
+volScalarField potential
+(
+    IOobject
+    (
+        "Potential",
+        runTime.timeName(),
+        mesh,
+        IOobject::MUST_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh
+);
+
+
 Info<< "Initializing current density components (Jx, Jy, Jz)\n" << endl;
 
 volScalarField Jx

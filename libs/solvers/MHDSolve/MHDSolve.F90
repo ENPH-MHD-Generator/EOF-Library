@@ -97,7 +97,12 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 
     END IF
   END IF
-
+  
+  ! Enable export of Lagrange multipliers (constraint DOF values)
+  IF (.NOT. ListCheckPresent(Solver % Values, 'Export Lagrange Multiplier')) THEN
+    CALL ListAddLogical(Solver % Values, 'Export Lagrange Multiplier', .TRUE.)
+    CALL ListAddString(Solver % Values, 'Lagrange Multiplier Name', 'Electrode Circuit Values')
+  END IF
 !------------------------------------------------------------------------------
 END SUBROUTINE StatCurrentSolver_Init
 
@@ -115,6 +120,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   USE MHDUtils
   USE MHDLog
   USE MHDDiagnostics
+  USE MHDParams, ONLY: HallCoeffAlphaDefault
 
   IMPLICIT NONE
 !------------------------------------------------------------------------------ 
@@ -333,11 +339,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !------------------------------------------------------------------------------
   IF ( .NOT. AllocationsDone .OR. Solver % Mesh % Changed ) THEN
     N = Model % MaxElementNodes
-
-    ! Reset electrode matrix flag if mesh changed
-    IF (Solver % Mesh % Changed) THEN
-      ElectrodeMatrixBuilt = .FALSE.
-    END IF
 
     IF(AllocationsDone) THEN
       DEALLOCATE( ElementNodes % x, &
@@ -607,7 +608,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           IF ( ANY( PotentialPerm(NodeIndexes) <= 0 ) ) CYCLE
 
           !------------------------------------------------------------
-          ! CURRENT ITERATION: Apply electrode current as Neumann BC
+          ! Electrode Boundary Neumann BCs
           !------------------------------------------------------------
           k = ListGetInteger(Model % BCs(i) % Values, 'Electrode Pair', gotIt)
           IF (gotIt) THEN
@@ -671,10 +672,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     CALL DefaultFinishBulkAssembly()
 
     CALL DefaultFinishAssembly()
+
     CALL DefaultDirichletBCs()
 
-    ! Build electrode AddMatrix only on first iteration (matrix structure is fixed).
-    ! CRITICAL: set NPhi before any use (needed when matrix already built).
     NPhi = Solver % Matrix % NumberOfRows
     IF (NPhi < 1) THEN
       CALL Fatal('StatCurrentSolver', 'Matrix NumberOfRows <= 0!')
@@ -914,13 +914,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       SumOfWeights = 0.0d0
     END IF
 
-!------------------------------------------------------------------------------
-    ! hard coded hall coefficient
-    HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0 B = 3
-    ! HallCoeffAlpha = 0 ! Test turning off hall effect
-    ! HallCoeffAlpha = 100 ! Crazy test value
-!------------------------------------------------------------------------------
-
+    HallCoeffAlpha = HallCoeffAlphaDefault
 
     HeatingTot = 0.0d0
     VolTot = 0.0d0
@@ -1263,12 +1257,13 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     SUBROUTINE StatCurrentCompose( StiffMatrix,Force,Conductivity, &
                             Load,Element,n,Nodes )
 !------------------------------------------------------------------------------
+      USE MHDParams, ONLY: HallCoeffAlphaDefault
+
       REAL(KIND=dp) :: StiffMatrix(:,:),Force(:),Load(:), Conductivity(:,:,:)
       INTEGER :: n
       TYPE(Nodes_t) :: Nodes
       TYPE(Element_t), POINTER :: Element
 !------------------------------------------------------------------------------
- 
       REAL(KIND=dp) :: SqrtMetric,Metric(3,3),Symb(3,3,3),dSymb(3,3,3,3)
       REAL(KIND=dp) :: Basis(n),dBasisdx(n,3)
       REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,C(3,3),x,y,z
@@ -1292,13 +1287,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         RETURN
       END IF
 
-!------------------------------------------------------------------------------
-      ! hard coded hall coefficient
-      HallCoeffAlpha = 0.013333333 ! Assuming sigma = 500, Beta = 20.0, B = 3
-      ! HallCoeffAlpha = 0 ! Test hall stuff off
-      ! HallCoeffAlpha = 100 ! crazy number to test it out
-!------------------------------------------------------------------------------
-
+      HallCoeffAlpha = HallCoeffAlphaDefault
 
 
 !------------------------------------------------------------------------------
@@ -1622,7 +1611,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     AuxMatrix % RHS = 0.0_dp
 
     ! Initialize parallel info for AddMatrix following CircuitUtils pattern
-    ! CRITICAL: Use LOCAL NPhi for array sizes to match local matrix dimensions
     IF (ParEnv % PEs > 1) THEN
       ! Allocate RowOwner and initialize to -1 (like CircuitUtils.F90:1742)
       ALLOCATE(AuxMatrix % RowOwner(NPhi + NX))

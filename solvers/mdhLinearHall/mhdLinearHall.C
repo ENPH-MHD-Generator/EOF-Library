@@ -85,6 +85,7 @@ int main(int argc, char *argv[])
     receiving.recvScalar(Jy);
     receiving.recvScalar(Jz);
     receiving.recvScalar(JH_recv);
+    receiving.recvScalar(potential);
     JH  = JH_recv;
 
     // Without this, parallel decomposition fails when writing fields with non-zero values
@@ -190,6 +191,7 @@ int main(int argc, char *argv[])
         receiving.recvScalar(Jy);
         receiving.recvScalar(Jz);
         receiving.recvScalar(JH_recv);
+        receiving.recvScalar(potential);
         JH  = JH_recv;
 
         // Without this, parallel decomposition fails when writing fields with non-zero values

@@ -49,6 +49,22 @@ CONTAINS
 END MODULE MHDUtils
 
 
+!------------------------------------------------------------------------------
+! MHDParams – central knobs for MHD solver behaviour
+!
+! This module collects tunable scalar parameters that should be shared by
+! multiple MHD-related solvers. Keeping them here guarantees there is a
+! single, well-documented “source of truth” instead of copy-pasted literals.
+!------------------------------------------------------------------------------
+MODULE MHDParams
+  USE DefUtils, ONLY: dp
+  IMPLICIT NONE
+
+  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.013333333_dp
+
+END MODULE MHDParams
+
+
 MODULE MHDLog
   IMPLICIT NONE
 

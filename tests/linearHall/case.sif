@@ -131,7 +131,7 @@ Solver 9
   ! --------------------------------------------------
   Nonlinear System Max Iterations = 100
   Nonlinear System Convergence Tolerance = 1.0e-5
-  Nonlinear System Relaxation Factor = 0.8
+  ! Nonlinear System Relaxation Factor = 0.8
 
   ! Force Picard only (no Newton)
   Nonlinear System Newton After Iterations = 0
@@ -147,7 +147,7 @@ Solver 9
   Linear System Preconditioning = ILUT
   Linear System ILUT Tolerance = 1.0e-4
 
-  Linear System Max Iterations = 300
+  Linear System Max Iterations = 2000
   Linear System Convergence Tolerance = 1.0e-7
   Linear System Abort Not Converged = False
   Linear System Scaling = True
@@ -168,6 +168,7 @@ Solver 10
   Target Variable 2 = String "Volume Current 2"
   Target Variable 3 = String "Volume Current 3"
   Target Variable 4 = String "Joule Heating"
+  Target Variable 5 = String "Potential"
 End
 
 
@@ -199,8 +200,7 @@ Boundary Condition 1
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.00014
-
+  Electrode Resistance = Real 0.14
 End
 
 Boundary Condition 2
@@ -209,12 +209,11 @@ Boundary Condition 2
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.00014
+  Electrode Resistance = Real 0.14
 End
 
 Boundary Condition 3
   ! SideWallsZ
   Target Boundaries(1) = 5
   Current Density BC = Logical True
-  Current Density = Real 0.0
 End
