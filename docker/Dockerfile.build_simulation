@@ -47,6 +47,6 @@ RUN echo 'alias run_sim="cd ~/EOF-Library/runs/linearHall && mpirun -n 2 mdhLine
  && echo 'alias finish_up="reconstructPar -case . && foamToVTK -case ."' >> /home/openfoam/.bashrc \
  && echo 'alias prepare_dir="rm -r ~/EOF-Library/runs/linearHall && mkdir -p ~/EOF-Library/runs/linearHall && cp -r ~/EOF-Library/tests/linearHall ~/EOF-Library/runs/"' >> /home/openfoam/.bashrc \
  && echo 'alias run_all="prepare_dir && run_sim && finish_up"' >> /home/openfoam/.bashrc \
- && echo 'alias clean_results="rm -rf [0-9]* VTK"' >> /home/openfoam/.bashrc \
+ && echo 'alias clean_results="rm -r VTK/ O2E* [0-9].* processor*/[0-9].*"' >> /home/openfoam/.bashrc \
  && echo 'alias rebuild_elmer="sudo rm -f /opt/elmerfem/fem/src/modules/MHDSolve.F90 && sudo mkdir -p /opt/elmerfem/fem/src/modules/MHDSolve && sudo cp ~/EOF-Library/libs/solvers/MHDSolve/MHDUtils.F90 ~/EOF-Library/libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve/ && cd /opt/elmerfem/build && sudo make MHDSolve && sudo make install MHDSolve && cd ~/EOF-Library && echo \"MHDSolve rebuilt successfully!\""' >> /home/openfoam/.bashrc
 
