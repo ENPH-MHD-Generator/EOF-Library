@@ -131,7 +131,13 @@ Solver 9
   ! --------------------------------------------------
   Nonlinear System Max Iterations = 100
   Nonlinear System Convergence Tolerance = 1.0e-5
-  ! Nonlinear System Relaxation Factor = 0.8
+  Nonlinear System Relaxation Factor = 0.8
+  Nonlinear System Convergence Without Constraints = Logical True
+  
+  ! Force collections matrix to be rebuilt every iteration
+  Linear System Refactorize = Logical True
+
+
 
   ! Force Picard only (no Newton)
   Nonlinear System Newton After Iterations = 0
@@ -200,7 +206,7 @@ Boundary Condition 1
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.14
+  Electrode Resistance = Real 0.014
 End
 
 Boundary Condition 2
@@ -209,7 +215,7 @@ Boundary Condition 2
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.14
+  Electrode Resistance = Real 0.014
 End
 
 Boundary Condition 3
@@ -224,7 +230,7 @@ Boundary Condition 4
 
   Electrode Pair = Integer 2
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.14
+  Electrode Resistance = Real 60
 End
  
 Boundary Condition 5
@@ -233,6 +239,6 @@ Boundary Condition 5
 
   Electrode Pair = Integer 2
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.14
+  Electrode Resistance = Real 60
 End
  

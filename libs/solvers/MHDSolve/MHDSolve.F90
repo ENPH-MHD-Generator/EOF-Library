@@ -182,7 +182,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CHARACTER(len=32) :: SignStr
   INTEGER :: NumElectrodePairs
   INTEGER :: sign
-  LOGICAL, SAVE :: ElectrodeMatrixBuilt = .FALSE.
   
   ! For lagged Neumann BC iteration
   REAL(KIND=dp), ALLOCATABLE, SAVE :: ElectrodeCurrentLagged(:)
@@ -197,10 +196,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   TYPE(GaussIntegrationPoints_t) :: Integ
   INTEGER :: tGP
 
-  ! Auxiliary matrix dataptrs
+  ! Auxiliary matrix for electrode constraints
   TYPE(Matrix_t), POINTER, SAVE :: AuxMatrix => NULL()
-  LOGICAL, SAVE :: AuxBuilt = .FALSE.
-  INTEGER, SAVE :: AuxNPhi = -1, AuxNEP = -1
   INTEGER :: NPhi, PermMax, GlobalNPhi
 
   ! Diagnostics for solution change (variables declared below in main declarations)
@@ -680,48 +677,47 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       CALL Fatal('StatCurrentSolver', 'Matrix NumberOfRows <= 0!')
     END IF
     
-    IF (.NOT. ElectrodeMatrixBuilt) THEN
-      
-      ! CRITICAL: Ensure ParallelInfo matches current matrix size
-      ! SolverUtils only checks ASSOCIATED(ParMatrix); we must reinit when matrix grows.
-      IF (ParEnv % PEs > 1) THEN
-        IF (ASSOCIATED(Solver % Matrix % ParallelInfo)) THEN
-          IF (ASSOCIATED(Solver % Matrix % ParallelInfo % NeighbourList)) THEN
-            IF (SIZE(Solver % Matrix % ParallelInfo % NeighbourList) /= NPhi) THEN
-              IF (ParEnv % MyPE == 0) THEN
-                WRITE(*,'(A,I0,A,I0,A)') '[StatCurrentSolver] ParallelInfo size ', &
-                  SIZE(Solver % Matrix % ParallelInfo % NeighbourList), ' /= ', NPhi, ', reinitializing'
-              END IF
-              CALL ParallelInitMatrix(Solver, Solver % Matrix)
+    IF (ParEnv % PEs > 1) THEN
+      IF (ASSOCIATED(Solver % Matrix % ParallelInfo)) THEN
+        IF (ASSOCIATED(Solver % Matrix % ParallelInfo % NeighbourList)) THEN
+          IF (SIZE(Solver % Matrix % ParallelInfo % NeighbourList) /= NPhi) THEN
+            IF (ParEnv % MyPE == 0) THEN
+              WRITE(*,'(A,I0,A,I0,A)') '[StatCurrentSolver] ParallelInfo size ', &
+                SIZE(Solver % Matrix % ParallelInfo % NeighbourList), ' /= ', NPhi, ', reinitializing'
             END IF
+            CALL ParallelInitMatrix(Solver, Solver % Matrix)
           END IF
         END IF
       END IF
+    END IF
 
-      PermMax = MAXVAL(PotentialPerm, MASK=(PotentialPerm > 0))
-      IF (ParEnv % PEs > 1) THEN
-        GlobalNPhi = NINT(ParallelReduction(REAL(NPhi, dp), 2))  ! MPI_MAX
-      ELSE
-        GlobalNPhi = NPhi
-      END IF
-
-      CALL BuildElectrodeAddMatrix( Model, Solver, AuxMatrix, &
-          PotentialPerm, ElectrodePairOfBC, ElectrodeSignOfBC, &
-          ElectrodeResistance, NumElectrodePairs, NPhi )
-
-      Solver % Matrix % AddMatrix => AuxMatrix
-      ElectrodeMatrixBuilt = .TRUE.
-      
-      ! Enable export of Lagrange multipliers (constraint DOF values)
-      IF (.NOT. ListCheckPresent(Solver % Values, 'Export Lagrange Multiplier')) THEN
-        CALL ListAddLogical(Solver % Values, 'Export Lagrange Multiplier', .TRUE.)
-        CALL ListAddString(Solver % Values, 'Lagrange Multiplier Name', 'Electrode Circuit Values')
-      END IF
+    PermMax = MAXVAL(PotentialPerm, MASK=(PotentialPerm > 0))
+    IF (ParEnv % PEs > 1) THEN
+      GlobalNPhi = NINT(ParallelReduction(REAL(NPhi, dp), 2))  ! MPI_MAX
     ELSE
-      ! On subsequent iterations, just reset RHS (though it is constant anyways)
-      IF (ASSOCIATED(AuxMatrix)) THEN
-        AuxMatrix % RHS = 0.0_dp
-      END IF
+      GlobalNPhi = NPhi
+    END IF
+
+    ! Disconnect the old AddMatrix pointer before creating a new one.
+    ! The old matrix is left for Elmer's memory management system to handle.
+    ! Do NOT attempt to free it manually - Elmer has modified its internal
+    ! structure and freeing it causes "invalid pointer" crashes.
+    IF (ASSOCIATED(Solver % Matrix % AddMatrix)) THEN
+      Solver % Matrix % AddMatrix => NULL()
+    END IF
+
+    ! Build a fresh electrode constraint matrix for this iteration.
+    ! BuildElectrodeAddMatrix will allocate a new matrix structure.
+    CALL BuildElectrodeAddMatrix( Model, Solver, AuxMatrix, &
+        PotentialPerm, ElectrodePairOfBC, ElectrodeSignOfBC, &
+        ElectrodeResistance, NumElectrodePairs, NPhi )
+
+    Solver % Matrix % AddMatrix => AuxMatrix
+    
+    ! Enable export of Lagrange multipliers (constraint DOF values)
+    IF (.NOT. ListCheckPresent(Solver % Values, 'Export Lagrange Multiplier')) THEN
+      CALL ListAddLogical(Solver % Values, 'Export Lagrange Multiplier', .TRUE.)
+      CALL ListAddString(Solver % Values, 'Lagrange Multiplier Name', 'Electrode Circuit Values')
     END IF
 
     at = CPUTime() - at
@@ -1446,7 +1442,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           ! Add forcing terms from the hall and motional EMF
           DO i=1,dim
             DO j=1, dim
-              Force(p) = Force(p) + S * dBasisdx(p,i) * Minv(i,j) * UxBgp(j)
+              Force(p) = Force(p) - S * dBasisdx(p,i) * Minv(i,j) * UxBgp(j)
             END DO
           END DO
         END DO
@@ -1590,18 +1586,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
     NX = 3 * NumElectrodePairs
 
-    ! Guard against memory leak of the AuxMatrix
-    IF (ASSOCIATED(AuxMatrix)) THEN
-      ! Manually free Gorder - FreeMatrix has a bug and doesn't deallocate it
-      IF (ASSOCIATED(AuxMatrix % ParallelInfo)) THEN
-        IF (ASSOCIATED(AuxMatrix % ParallelInfo % Gorder)) THEN
-          DEALLOCATE(AuxMatrix % ParallelInfo % Gorder)
-        END IF
-      END IF
-      CALL FreeMatrix(AuxMatrix)
-    END IF
 
-    
     AuxMatrix => AllocateMatrix()
     AuxMatrix % FORMAT = MATRIX_LIST
     AuxMatrix % Symmetric = .FALSE.

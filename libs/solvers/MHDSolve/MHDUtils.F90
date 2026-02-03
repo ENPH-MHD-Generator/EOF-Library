@@ -60,7 +60,11 @@ MODULE MHDParams
   USE DefUtils, ONLY: dp
   IMPLICIT NONE
 
-  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.013333333_dp
+  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.070266_dp
+  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.013333_dp
+  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.0_dp
+
+
 
 END MODULE MHDParams
 
