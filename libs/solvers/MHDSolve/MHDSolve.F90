@@ -183,18 +183,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   INTEGER :: NumElectrodePairs
   INTEGER :: sign
   
-  ! For lagged Neumann BC iteration
-  REAL(KIND=dp), ALLOCATABLE, SAVE :: ElectrodeCurrentLagged(:)
-  REAL(KIND=dp), ALLOCATABLE, SAVE :: ElectrodeAreaPlus(:), ElectrodeAreaMinus(:)
-  INTEGER :: NLiter
-  REAL(KIND=dp) :: MaxCurrentChange
-  LOGICAL :: ElectrodeConverged
-  INTEGER :: Vrow
-  REAL(dp) :: s, Basis(MAX_ELEMENT_NODES)
-  REAL(dp) :: dBasisdx(MAX_ELEMENT_NODES,3)
-  REAL(dp) :: SqrtElementMetric
-  TYPE(GaussIntegrationPoints_t) :: Integ
-  INTEGER :: tGP
+  ! Lagged iteration removed: current injection via circuit DOFs only
 
   ! Auxiliary matrix for electrode constraints
   TYPE(Matrix_t), POINTER, SAVE :: AuxMatrix => NULL()
@@ -456,40 +445,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
   CALL DefaultStart()
   
-  ! Initialize lagged iteration arrays for electrode Neumann BC
-  IF (.NOT. ALLOCATED(ElectrodeCurrentLagged)) THEN
-    ALLOCATE(ElectrodeCurrentLagged(NumElectrodePairs))
-    ALLOCATE(ElectrodeAreaPlus(NumElectrodePairs))
-    ALLOCATE(ElectrodeAreaMinus(NumElectrodePairs))
-    ElectrodeCurrentLagged = 0.0_dp
-    
-    ! Compute electrode areas (needed for current density = I/A)
-    CALL ComputeElectrodeAreas(Model, Solver, ElectrodePairOfBC, ElectrodeSignOfBC, &
-      NumElectrodePairs, ElectrodeAreaPlus, ElectrodeAreaMinus)
-  END IF
-  
-  ! Initialize convergence flags
-  ElectrodeConverged = .FALSE.
-  MaxCurrentChange = HUGE(MaxCurrentChange)
-  
-  IF (ParEnv % MyPE == 0) THEN
-    CALL LogSection('[LAGGED ITERATION] Starting electrode-current coupling')
-    WRITE(LogMsg,'(A,I0,A)') ' Max nonlinear iterations: ', NonlinearIter
-    CALL LogLine(TRIM(LogMsg))
-    CALL LogLine(' Iterating: I_lagged → solve φ → extract I_new → repeat')
-    CALL LogSectionEnd()
-  END IF
-  
   DO iter = 1, NonlinearIter
-    NLiter = iter
-    
-    IF (ParEnv % MyPE == 0 .AND. iter > 1) THEN
-      CALL LogLine('')
-      CALL LogSectionEnd()
-      WRITE(LogMsg,'(A,I0)') ' [LAGGED ITERATION] Starting iteration ', iter
-      CALL LogLine(TRIM(LogMsg))
-      CALL LogSectionEnd()
-    END IF
     at  = CPUTime()
     at0 = RealTime()
 
@@ -609,40 +565,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           !------------------------------------------------------------
           k = ListGetInteger(Model % BCs(i) % Values, 'Electrode Pair', gotIt)
           IF (gotIt) THEN
-            ! This is an electrode boundary - apply lagged current as Neumann BC
-            IF (ALLOCATED(ElectrodeCurrentLagged) .AND. k <= SIZE(ElectrodeCurrentLagged)) THEN
-              ! Get electrode sign
-              SignStr = ListGetString(Model % BCs(i) % Values, 'Electrode Sign', gotIt)
-              IF (gotIt) THEN
-                IF (TRIM(SignStr) == 'plus' .OR. TRIM(SignStr) == '+') THEN
-                  sign = +1
-                ELSE
-                  sign = -1
-                END IF
-                
-                ! Current density = I/Area (positive = outward, negative = inward)
-                ! For plus electrode: +I means current OUT (positive Neumann)
-                ! For minus electrode: -I means current IN (negative Neumann)
-                Load = 0.0d0
-                IF (sign == +1 .AND. ElectrodeAreaPlus(k) > 1.0e-20_dp) THEN
-                  Load(1:n) = ElectrodeCurrentLagged(k) / ElectrodeAreaPlus(k)
-                ELSE IF (sign == -1 .AND. ElectrodeAreaMinus(k) > 1.0e-20_dp) THEN
-                  Load(1:n) = -ElectrodeCurrentLagged(k) / ElectrodeAreaMinus(k)
-                END IF
-                
-                ! Apply the Neumann BC
-                IF (MAXVAL(ABS(Load(1:n))) > 1.0e-20_dp) THEN
-                  ElementNodes % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes)
-                  ElementNodes % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes)
-                  ElementNodes % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes)
-                  
-                  CALL StatCurrentBoundary( LocalStiffMatrix, LocalForce,  &
-                      Load, CurrentElement, n, ElementNodes )
-                  CALL DefaultUpdateEquations( LocalStiffMatrix, LocalForce )
-                END IF
-              END IF
-            END IF
-            CYCLE  ! Skip standard Neumann handling for electrodes
+            ! This is an electrode boundary - skip explicit Neumann BC application
+            ! Current is injected through circuit DOFs only
+            CYCLE  ! Skip all Neumann handling for electrodes
           END IF
 
           FluxBC = ListGetLogical(Model % BCs(i) % Values, &
@@ -750,10 +675,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     
     ! Log electrode circuit solution
     CALL LogElectrodeCktSolution(Solver, Potential, PotentialPerm, NPhi, NumElectrodePairs)
-    
-    ! Update lagged current for next iteration and check convergence
-    CALL UpdateLaggedCurrent(Solver, ElectrodeCurrentLagged, NumElectrodePairs, NLiter, &
-      MaxCurrentChange, ElectrodeConverged)
 
 !------------------------------------------------------------------------------
 !    Compute the electric field from the potential: E = -grad Phi
@@ -769,7 +690,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       CALL GeneralCurrent( Model, Potential, PotentialPerm )
       
       ! Check current at electrode boundaries (only on last iteration)
-      IF (CalculateCurrent .AND. ElectrodeConverged) THEN
+      IF (CalculateCurrent .AND. iter == NonlinearIter) THEN
         CALL DiagnoseElectrodeCurrents(Model, Solver, VolCurrent, PotentialPerm, DIM)
         CALL DiagnoseBulkVsBoundaryCurrents(Model, Solver, VolCurrent, PotentialPerm, DIM)
       END IF
@@ -823,23 +744,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     END IF
 
 
-    IF (NumElectrodePairs > 0 .AND. ALLOCATED(ElectrodeCurrentLagged)) THEN
-      ! Use electrode current convergence criterion
-      IF (ElectrodeConverged) THEN
-        IF (ParEnv % MyPE == 0) THEN
-          CALL LogSectionEnd()
-          WRITE(LogMsg,'(A,I0,A)') ' ✓ ELECTRODE ITERATION CONVERGED after ', iter, ' iterations'
-          CALL LogLine(TRIM(LogMsg))
-          WRITE(LogMsg,'(A,ES12.4,A)') ' Max current change: ', MaxCurrentChange, ' A'
-          CALL LogLine(TRIM(LogMsg))
-          CALL LogSectionEnd()
-        END IF
-        EXIT
-      END IF
-    ELSE
-      ! Standard convergence check (for non-electrode problems)
-      IF( Solver % Variable % NonlinConverged > 0 ) EXIT
-    END IF
+    ! Standard convergence check
+    IF( Solver % Variable % NonlinConverged > 0 ) EXIT
   END DO
 
   CALL InvalidateVariable( Model % Meshes, Solver % Mesh, 'Potential')
@@ -1117,13 +1023,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             RHS(j) = -Grad(j) + UxBgp(j)
           END DO
 
-          ! Log RHS
-          ! WRITE(*,'(A,I4,A,I2,A,3ES12.4,A,3ES12.4)') &
-          !   '[GeneralCurrent][RHS] Elem=', Element % BodyId, &
-          !   ' GP=', tg, &
-          !   '  -GradPhi=', -Grad(1), -Grad(2), -Grad(3), &
-          !   '  RHS=', RHS(1), RHS(2), RHS(3)
-
 
           VolTot = VolTot + s
 
@@ -1158,11 +1057,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
                 Jgp(i) = Jgp(i) + Minv(i,j) * RHS(j)
               END DO
             END DO
-            ! Log Jgp
-            ! WRITE(*,'(A,I4,A,I2,A,3ES12.4)') &
-            !   '[GeneralCurrent][Jgp] Elem=', Element % BodyId, &
-            !   ' GP=', tg, &
-            !   '  Jgp=', Jgp(1), Jgp(2), Jgp(3)
 
             DO j=1,dim
               Current(j) = Current(j) + Jgp(j) * s
@@ -1417,13 +1311,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
         UxBgp(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
         UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
-
-        ! WRITE(*,'(A,I6,A,I3,A,3ES12.4,A,3ES12.4,A,3ES12.4)') &
-        !   '[SCC][Fields] Elem=', Element % BodyId, &
-        !   ' GP=', t, &
-        !   ' Ugp=', Ugp(1), Ugp(2), Ugp(3), &
-        !   ' Bgp=', Bgp(1), Bgp(2), Bgp(3), &
-        !   ' UxB=', UxBgp(1), UxBgp(2), UxBgp(3)
 
 !------------------------------------------------------------------------------
 !        The Poisson equation

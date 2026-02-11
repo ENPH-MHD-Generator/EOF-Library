@@ -26,7 +26,7 @@ boundaryField
     InletX
     {
         type    fixedValue;
-        value   uniform (343 0 0);   // Mach 1 inflow
+        value   uniform (391 0 0);   // Mach 1 inflow
     }
 
     OutletX

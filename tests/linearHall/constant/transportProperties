@@ -28,7 +28,7 @@ kappa 0.0866;  // Thermal conductivity (W/m/K) at 2500 K
 
 // Electrical conductivity (S/m) - for argon plasma at 2500 K, 1 atm
 // At this temperature, argon is partially ionized with σ ≈ 100-1000 S/m
-elcond_melt  500.0;  // Representative value for weakly ionized argon plasma
+elcond_melt  11.9;  // JÜLICH, ARGAS II FACILITY
 maxRelDiff 0; // Call elmer on very time step
 
 // ************************************************************************* //

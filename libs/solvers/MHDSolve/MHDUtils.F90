@@ -61,10 +61,13 @@ MODULE MHDParams
   IMPLICIT NONE
 
   ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.070266_dp
-  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.013333_dp
+  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.013333_dp
+
+  ! https://pure.tue.nl/ws/files/4331881/7207091.pdf
+  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = -0.0403361_dp
+
+  ! Off
   ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.0_dp
-
-
 
 END MODULE MHDParams
 
@@ -326,15 +329,16 @@ CONTAINS
 
 
   SUBROUTINE UpdateLaggedCurrent(Solver, CurrentLagged, NumPairs, Iteration, &
-      MaxChange, Converged)
+      MaxChange, Converged, DampingFactor)
     TYPE(Solver_t), INTENT(IN) :: Solver
     REAL(dp), INTENT(INOUT) :: CurrentLagged(:)
     INTEGER, INTENT(IN) :: NumPairs, Iteration
     REAL(dp), INTENT(OUT) :: MaxChange
     LOGICAL, INTENT(OUT) :: Converged
+    REAL(dp), INTENT(IN) :: DampingFactor
 
     INTEGER :: ep, cidxI, ierr, ConvergedInt
-    REAL(dp) :: NewCurrent, Change
+    REAL(dp) :: NewCurrent, NewCurrentDamped, Change
     TYPE(Variable_t), POINTER :: MultVar
     REAL(dp), POINTER :: MultiplierValues(:)
     REAL(KIND=dp) :: tolerance
@@ -358,15 +362,23 @@ CONTAINS
         ELSE
           WRITE(*,*) '========================================'
           WRITE(*,'(A,I0)') '[UpdateLaggedCurrent] Iteration ', Iteration
+          WRITE(*,'(A,F6.3)') ' Damping factor: ', DampingFactor
           WRITE(*,*) 'Updating electrode currents for next iteration:'
           DO ep = 1, NumPairs
             cidxI = 3*(ep-1) + 3
             NewCurrent = MultiplierValues(cidxI)
-            Change = ABS(NewCurrent - CurrentLagged(ep))
+            
+            ! Apply damping: I_new_damped = I_old + damping * (I_new - I_old)
+            NewCurrentDamped = CurrentLagged(ep) + DampingFactor * (NewCurrent - CurrentLagged(ep))
+            
+            Change = ABS(NewCurrentDamped - CurrentLagged(ep))
             MaxChange = MAX(MaxChange, Change)
-            WRITE(*,'(A,I2,A,ES12.4,A,ES12.4,A,ES12.4,A)') '  Pair ', ep, ': I_old = ', &
-              CurrentLagged(ep), ' → I_new = ', NewCurrent, ' (ΔI = ', Change, ' A)'
-            CurrentLagged(ep) = NewCurrent
+            WRITE(*,'(A,I2,A,ES12.4,A,ES12.4,A,ES12.4,A,ES12.4,A)') '  Pair ', ep, &
+              ': I_old = ', CurrentLagged(ep), &
+              ' → I_raw = ', NewCurrent, &
+              ' → I_damped = ', NewCurrentDamped, &
+              ' (ΔI = ', Change, ' A)'
+            CurrentLagged(ep) = NewCurrentDamped
           END DO
           tolerance = 1.0_dp
           IF (MAXVAL(ABS(CurrentLagged)) > 10.0_dp) THEN

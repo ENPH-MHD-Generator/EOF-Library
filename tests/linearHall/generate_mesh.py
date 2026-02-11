@@ -10,12 +10,12 @@ def main(out_msh: str):
     # ----------------------------
     # Geometry parameters
     # ----------------------------
-    L, H, W = 1.0, 0.1, 0.1
+    L, H, W = 0.16, 0.08, 0.08
     Nx, Ny, Nz = 40, 10, 10
 
     dom = max(L, H, W)
     # Be a bit generous; OCC bbox values can be slightly fuzzy
-    tol = 1e-6 * dom
+    tol = 1e-5 * dom
 
     occ = gmsh.model.occ
 
