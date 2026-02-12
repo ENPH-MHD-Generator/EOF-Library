@@ -83,6 +83,21 @@ volScalarField potential
     mesh
 );
 
+Info<< "Initializing electric field (E = -grad(potential))\n" << endl;
+
+volVectorField electric_field
+(
+    IOobject
+    (
+        "electric_field",
+        runTime.timeName(),
+        mesh,
+        IOobject::MUST_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh
+);
+
 
 Info<< "Initializing current density components (Jx, Jy, Jz)\n" << endl;
 

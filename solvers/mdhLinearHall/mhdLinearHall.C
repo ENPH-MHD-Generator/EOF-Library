@@ -95,6 +95,10 @@ int main(int argc, char *argv[])
     JH.correctBoundaryConditions();
     potential.correctBoundaryConditions();
 
+    // Compute electric field E = -grad(potential)
+    electric_field = -fvc::grad(potential);
+    electric_field.correctBoundaryConditions();
+
     // Reconstruct J_dens from component fields
     // Brackets define a local scope in OF6
     {
@@ -201,6 +205,10 @@ int main(int argc, char *argv[])
         Jz.correctBoundaryConditions();
         JH.correctBoundaryConditions();
         potential.correctBoundaryConditions();
+
+        // Compute electric field E = -grad(potential)
+        electric_field = -fvc::grad(potential);
+        electric_field.correctBoundaryConditions();
         
         // Reconstruct J_dens from component fields
         // Brackets define a local scope in OF6

@@ -9,17 +9,17 @@ FoamFile
 {
     version     2.0;
     format      ascii;
-    class       volScalarField;
+    class       volVectorField;
     location    "0";
-    object      Potential;
+    object      electric_field;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Electric potential [V]
-dimensions [1 2 -3 0 0 -1 0];
+// Electric field E = -grad(Potential) [V/m]
+dimensions [1 1 -3 0 0 -1 0];
 
-// Start from zero; Elmer overwrites this during coupling
-internalField   uniform 0;
+// Start from zero; computed from potential gradient during coupling
+internalField   uniform (0 0 0);
 
 boundaryField
 {
