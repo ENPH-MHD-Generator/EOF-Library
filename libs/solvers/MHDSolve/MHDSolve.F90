@@ -1033,17 +1033,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             
             ! Invert the hall matrix
             CALL Invert3x3(M, Minv, Stat)
-
-            ! Temporary debug block for debugging inversion issue
-            ! WRITE(*,*) 'General Curerrent ============================'
-            ! WRITE(*,*) 'EtaGP     = ', EtaGP
-            ! WRITE(*,*) 'HallCoeff = ', HallCoeffAlpha
-            ! WRITE(*,*) 'Bgp       = ', Bgp(1), Bgp(2), Bgp(3)
-            ! WRITE(*,*) 'M matrix:'
-            ! WRITE(*,'(3ES20.12)') M(1,1), M(1,2), M(1,3)
-            ! WRITE(*,'(3ES20.12)') M(2,1), M(2,2), M(2,3)
-            ! WRITE(*,'(3ES20.12)') M(3,1), M(3,2), M(3,3)
-            ! WRITE(*,*) '=============================================='
               
             IF (.NOT. Stat) THEN
               WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
@@ -1220,13 +1209,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         CALL CoordinateSystemInfo( Metric,SqrtMetric,Symb,dSymb,x,y,z )
 
         S = S * SqrtElementMetric * SqrtMetric
-
-        ! WRITE(*,'(A,I6,A,I3,A,ES12.4,A,ES12.4,A,ES12.4)') &
-        !   '[SCC][Metric] Elem=', Element % BodyId, &
-        !   ' GP=', t, &
-        !   ' SqrtElementMetric=', SqrtElementMetric, &
-        !   ' SqrtMetric=', SqrtMetric, &
-        !   ' S(weight)=', S
 
         L = SUM( Load(1:n) * Basis )
 
