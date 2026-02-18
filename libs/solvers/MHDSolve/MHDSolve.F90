@@ -680,10 +680,10 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !    Compute the electric field from the potential: E = -grad Phi
 !------------------------------------------------------------------------------
 !------------------------------------------------------------------------------
-!    Compute the volume current: J = cond (-grad Phi)
+!    Compute the volume current from generalized Ohm law
 !------------------------------------------------------------------------------
 !------------------------------------------------------------------------------
-!    Compute the Joule heating: H,tot = Integral (E . D)dV
+!    Compute the Joule heating from the Hall/EMF current model
 !------------------------------------------------------------------------------
     IF ( Control .OR. CalculateCurrent .OR. CalculateHeating .OR. &
         CalculateNodalHeating ) THEN 
@@ -792,7 +792,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     REAL(KIND=DP) :: SqrtElementMetric, ElemVol
     REAL(KIND=dp) :: ElementPot(Model % MaxElementNodes)
     REAL(KIND=dp) :: Current(3)
-    REAL(KIND=dp) :: s, ug, vg, wg, Grad(3), EpsGrad(3)
+    REAL(KIND=dp) :: s, ug, vg, wg, Grad(3)
     REAL(KIND=dp) :: SqrtMetric, Metric(3,3), Symb(3,3,3), dSymb(3,3,3,3)
     REAL(KIND=dp) :: HeatingDensity, x, y, z
     INTEGER, POINTER :: NodeIndexes(:)
@@ -803,7 +803,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     INTEGER :: ip
     REAL(KIND=dp) :: Cgp(3,3)
 
-    REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso
+    REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso, JouleGp
     REAL(KIND=dp) :: RHS(3), Jgp(3)
     REAL(KIND=dp) :: M(3,3), Minv(3,3)
 
@@ -937,22 +937,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
 
-          EpsGrad = 0.0d0
-          IF( GetCondAtIp ) THEN
-            CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = tg )
-            DO j = 1, DIM
-              Grad(j) = SUM( dBasisdx(1:n,j) * ElementPot(1:n) )
-            END DO
-            EpsGrad(1:dim) = CondAtIp * Grad(1:dim)
-          ELSE
-            DO j = 1, DIM
-              Grad(j) = SUM( dBasisdx(1:n,j) * ElementPot(1:n) )
-              DO i = 1, DIM
-                EpsGrad(j) = EpsGrad(j) + SUM( Conductivity(j,i,1:n) * &
-                    Basis(1:n) ) * SUM( dBasisdx(1:n,i) * ElementPot(1:n) )
-              END DO
-            END DO
-          END IF
+          DO j = 1, DIM
+            Grad(j) = SUM( dBasisdx(1:n,j) * ElementPot(1:n) )
+          END DO
 
           Ugp = 0.0_dp
           Bgp = 0.0_dp
@@ -991,11 +978,18 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 
           Cgp = 0.0_dp
-          DO i = 1, dim
-            DO j = 1, dim
-              Cgp(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
+          IF( GetCondAtIp ) THEN
+            CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = tg )
+            DO i = 1, dim
+              Cgp(i,i) = CondAtIp
             END DO
-          END DO
+          ELSE
+            DO i = 1, dim
+              DO j = 1, dim
+                Cgp(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
+              END DO
+            END DO
+          END IF
         
           ! Caluclate resistivity from conductivity
           SigmaIso = (Cgp(1,1) + Cgp(2,2) + Cgp(3,3)) / REAL(dim,dp)
@@ -1026,11 +1020,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
           VolTot = VolTot + s
 
-          HeatingTot = HeatingTot + s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
-
-          IF( CalculateHeating .OR. CalculateCurrent .OR. CalculateNodalHeating ) THEN
-            HeatingDensity = HeatingDensity + s * SUM( Grad(1:DIM) * EpsGrad(1:DIM) )
-            
+          IF( Control .OR. CalculateHeating .OR. CalculateCurrent .OR. CalculateNodalHeating ) THEN
             ! Invert the hall matrix
             CALL Invert3x3(M, Minv, Stat)
               
@@ -1046,6 +1036,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
                 Jgp(i) = Jgp(i) + Minv(i,j) * RHS(j)
               END DO
             END DO
+
+            ! Resistive Joule heating for generalized Ohm law:
+            ! J·(E + UxB) = eta*|J|^2 since Hall term is non-dissipative.
+            JouleGp = EtaGP * SUM( Jgp(1:DIM) * Jgp(1:DIM) )
+            HeatingTot = HeatingTot + s * JouleGp
+            HeatingDensity = HeatingDensity + s * JouleGp
 
             DO j=1,dim
               Current(j) = Current(j) + Jgp(j) * s
