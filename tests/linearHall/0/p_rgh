@@ -19,36 +19,43 @@ dimensions      [1 -1 -2 0 0 0 0];
 
 internalField   uniform 0;
 
+
 boundaryField
 {
     InletX
     {
         type    zeroGradient;
     }
+
     OutletX
     {
         type fixedValue;
         value uniform 0;
     }
-    FaradayMinusY
-    {
-        type    zeroGradient;
-    }
-    FaradayPlusY
+
+    InsulatorSurface
     {
         type    zeroGradient;
     }
 
-    SideWallsZ
+    CathodeSurface
     {
         type    zeroGradient;
     }
+
+    AnodeSurface
+    {
+        type    zeroGradient;
+    }
+
 
     defaultFaces
     {
         type    zeroGradient;
     }
+
 }
+
 
 
 // ************************************************************************* //

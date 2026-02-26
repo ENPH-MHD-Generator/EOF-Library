@@ -38,7 +38,7 @@ solver: environment
 simulation: environment 
 	cd $(EOF_HOME)/tests/linearHall
 	rm -rf processor* 
-	. $(EOF_HOME)/etc/bashrc && . $(OPENFOAM_HOME)/etc/bashrc && blockMesh && potentialFoam && decomposePar
+	. $(EOF_HOME)/etc/bashrc && . $(OPENFOAM_HOME)/etc/bashrc && gmshToFoam channel.msh && potentialFoam && decomposePar
 	ElmerGrid 14 2 channel.msh -out meshElmer -autoclean -merge 1e-8 -removeunused
 	ElmerGrid 2 2 meshElmer -metis 2
 	echo \"case.sif\" > ELMERSOLVER_STARTINFO

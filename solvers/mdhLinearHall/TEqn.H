@@ -6,10 +6,9 @@
     (
         fvm::ddt(rho, T)
       + fvm::div(rhoPhi, T)
-      - (
-            fvm::laplacian(kappaf, T)
-          // + JH/cp
-        )
+      - fvm::laplacian(kappaf, T)
+     ==
+        JH/cp
     );
 
     TEqn.relax();

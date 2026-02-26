@@ -53,7 +53,12 @@ if [ -d "$CASE_DIR/constant" ]; then
     docker cp "$item" "$CONTAINER_ID:$RUN_DIR/constant/"
   done
 fi
-[ -d "$CASE_DIR/system" ]   && docker cp "$CASE_DIR/system"   "$CONTAINER_ID:$RUN_DIR/"
+
+# Replace system directory fully so removed files (e.g. fvOptions) are not left behind
+if [ -d "$CASE_DIR/system" ]; then
+  docker exec "$CONTAINER_ID" rm -rf "$RUN_DIR/system"
+  docker cp "$CASE_DIR/system" "$CONTAINER_ID:$RUN_DIR/"
+fi
 
 # Mesh input for ElmerGrid (needed if you run generate_mesh again)
 [ -f "$CASE_DIR/channel.msh" ] && docker cp "$CASE_DIR/channel.msh" "$CONTAINER_ID:$RUN_DIR/channel.msh"

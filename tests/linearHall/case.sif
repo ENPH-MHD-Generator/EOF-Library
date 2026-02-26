@@ -201,8 +201,8 @@ End
 ! Boundary Conditions
 ! -------------------------
 Boundary Condition 1
-  ! FaradayMinusY
-  Target Boundaries(1) = 1
+  ! CathodeSurface
+  Target Boundaries(1) = 4
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
@@ -210,8 +210,8 @@ Boundary Condition 1
 End
 
 Boundary Condition 2
-  ! FaradayPlusY
-  Target Boundaries(1) = 2
+  ! AnodeSurface
+  Target Boundaries(1) = 5
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
@@ -219,26 +219,26 @@ Boundary Condition 2
 End
 
 Boundary Condition 3
-  ! SideWallsZ
-  Target Boundaries(1) = 5
+  ! InsulatorSurface
+  Target Boundaries(1) = 3
   ! Current Density BC = Logical True
 End
 
 Boundary Condition 4
   ! InletX
-  Target Boundaries(1) = 3
+  Target Boundaries(1) = 1
 
-  Electrode Pair = Integer 2
-  Electrode Sign = String "plus"
-  Electrode Resistance = Real 1.0
+  ! Electrode Pair = Integer 2
+  ! Electrode Sign = String "plus"
+  ! Electrode Resistance = Real 1.0
 End
  
 Boundary Condition 5
   ! OutletX
-  Target Boundaries(1) = 4
+  Target Boundaries(1) = 2
 
-  Electrode Pair = Integer 2
-  Electrode Sign = String "minus"
-  Electrode Resistance = Real 1.0
+  ! Electrode Pair = Integer 2
+  ! Electrode Sign = String "minus"
+  ! Electrode Resistance = Real 1.0
 End
  

@@ -21,6 +21,7 @@ dimensions [1 1 -3 0 0 -1 0];
 // Start from zero; computed from potential gradient during coupling
 internalField   uniform (0 0 0);
 
+
 boundaryField
 {
     InletX
@@ -33,25 +34,28 @@ boundaryField
         type    zeroGradient;
     }
 
-    FaradayMinusY
+    InsulatorSurface
     {
         type    zeroGradient;
     }
 
-    FaradayPlusY
+    CathodeSurface
     {
         type    zeroGradient;
     }
 
-    SideWallsZ
+    AnodeSurface
     {
         type    zeroGradient;
     }
+
 
     defaultFaces
     {
         type    zeroGradient;
     }
+
 }
+
 
 // ************************************************************************* //

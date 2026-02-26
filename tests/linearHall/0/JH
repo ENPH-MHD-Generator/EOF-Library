@@ -21,6 +21,7 @@ dimensions      [1 -1 -3 0 0 0 0];
 // Start from zero; Elmer overwrites this during coupling
 internalField   uniform 0;
 
+
 boundaryField
 {
     InletX
@@ -32,26 +33,30 @@ boundaryField
     {
         type    zeroGradient;
     }
-    FaradayMinusY
+
+    InsulatorSurface
     {
         type    zeroGradient;
     }
 
-    FaradayPlusY
+    CathodeSurface
     {
         type    zeroGradient;
     }
 
-    SideWallsZ
+    AnodeSurface
     {
         type    zeroGradient;
     }
+
 
     defaultFaces
     {
         type    zeroGradient;
     }
+
 }
+
 
 
 // ************************************************************************* //
