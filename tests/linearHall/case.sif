@@ -130,8 +130,9 @@ Solver 9
   ! Nonlinear system (Picard, damped)
   ! --------------------------------------------------
   Nonlinear System Max Iterations = 100
-  Nonlinear System Convergence Tolerance = 1.0e-5
-  Nonlinear System Relaxation Factor = 0.8
+  Nonlinear System Convergence Tolerance = 1.0e-3
+  ! Stronger damping helps when linear solves are inexact.
+  Nonlinear System Relaxation Factor = 0.5
   Nonlinear System Convergence Without Constraints = Logical True
   
   ! Force collections matrix to be rebuilt every iteration
@@ -144,20 +145,18 @@ Solver 9
   Nonlinear System Newton After Tolerance  = 1.0e-3
 
   ! --------------------------------------------------
-  ! Linear system (inexact solves, robust Krylov)
+  ! Linear system (robust iterative fallback, no external direct solver)
   ! --------------------------------------------------
   Linear System Solver = Iterative
-  Linear System Iterative Method = FGMRES
-
+  Linear System Iterative Method = GCR
+  Linear System GCR Restart = 400
   Linear System Symmetric = False
-  Linear System Preconditioning = ILUT
-  Linear System ILUT Tolerance = 1.0e-4
-
-  Linear System Max Iterations = 7000
-  Linear System Convergence Tolerance = 1.0e-6
+  Linear System Preconditioning = ILU0
+  Linear System Max Iterations = 25000
+  Linear System Convergence Tolerance = 1.0e-3
   Linear System Abort Not Converged = False
-  Linear System Scaling = True
-  Linear System Residual Output = 500
+  Linear System Scaling = False
+  Linear System Residual Output = 200
 End
 
 
@@ -228,17 +227,17 @@ Boundary Condition 4
   ! InletX
   Target Boundaries(1) = 1
 
-  ! Electrode Pair = Integer 2
-  ! Electrode Sign = String "plus"
-  ! Electrode Resistance = Real 1.0
+  Electrode Pair = Integer 2
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 1.0
 End
  
 Boundary Condition 5
   ! OutletX
   Target Boundaries(1) = 2
 
-  ! Electrode Pair = Integer 2
-  ! Electrode Sign = String "minus"
-  ! Electrode Resistance = Real 1.0
+  Electrode Pair = Integer 2
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 1.0
 End
  

@@ -1427,6 +1427,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     INTEGER,        INTENT(IN)    :: NPhi       ! Local Solver % Matrix % NumberOfRows
 
     INTEGER :: NX, ep, sgn, be, i, n, inode, pRow, gidV, gidVp, gidVm, gidI, p
+    INTEGER :: nSides, sideIdx, gidC, NumNodeConstraints, globalSideCount, globalNPhi
     TYPE(Element_t), POINTER :: Elem
     INTEGER, POINTER :: NodeIndexes(:)
     INTEGER :: maxN
@@ -1439,8 +1440,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     REAL(dp) :: SqrtElementMetric, s
     LOGICAL :: stat
 
-    REAL(dp), ALLOCATABLE :: VrowBuf(:)
-    REAL(dp) :: VdiagLocal, VdiagGlobal
+    REAL(dp), ALLOCATABLE :: SideRowBuf(:)
+    INTEGER, ALLOCATABLE :: SideConstraintCount(:), SideIsElectrodeRow(:,:)
     
     ! Variables for boundary current coupling
     REAL(dp) :: AreaPlus, AreaMinus, areaCoeff
@@ -1449,7 +1450,103 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     maxN = Model % MaxElementNodes
     ALLOCATE( EN % x(maxN), EN % y(maxN), EN % z(maxN) )
 
-    NX = 3 * NumElectrodePairs
+    ! Keep legacy electrode circuit indices first:
+    !   Vp(ep) = NPhi + 3*(ep-1) + 1
+    !   Vm(ep) = NPhi + 3*(ep-1) + 2
+    !   I(ep)  = NPhi + 3*(ep-1) + 3
+    !
+    ! Append nodal equipotential constraints after these 3*NumElectrodePairs rows.
+    nSides = 2 * NumElectrodePairs
+    ALLOCATE(SideConstraintCount(nSides))
+    SideConstraintCount = 0
+    ALLOCATE(SideIsElectrodeRow(nSides, NPhi))
+    SideIsElectrodeRow = 0
+    ALLOCATE(SideRowBuf(NPhi))
+
+    NumNodeConstraints = 0
+    DO ep = 1, NumElectrodePairs
+      DO sgn = -1, +1, 2
+        SideRowBuf = 0.0_dp
+
+        DO be = 1, Solver % Mesh % NumberOfBoundaryElements
+          Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
+          NodeIndexes => Elem % NodeIndexes
+
+          DO i = 1, Model % NumberOfBCs
+            IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
+            IF (ElectrodePairOfBC(i) /= ep) CYCLE
+            IF (ElectrodeSignOfBC(i) /= sgn) CYCLE
+
+            n = Elem % TYPE % NumberOfNodes
+            DO inode = 1, n
+              pRow = PotentialPerm(NodeIndexes(inode))
+              IF (pRow > 0) SideRowBuf(pRow) = 1.0_dp
+            END DO
+          END DO
+        END DO
+
+        IF (ParEnv % PEs > 1) THEN
+          CALL ParallelSumVector(Solver % Matrix, SideRowBuf)
+        END IF
+
+        IF (sgn == -1) THEN
+          sideIdx = 2*(ep-1) + 1
+        ELSE
+          sideIdx = 2*(ep-1) + 2
+        END IF
+
+        DO pRow = 1, NPhi
+          IF (SideRowBuf(pRow) > 0.5_dp) THEN
+            NumNodeConstraints = NumNodeConstraints + 1
+            SideConstraintCount(sideIdx) = SideConstraintCount(sideIdx) + 1
+            SideIsElectrodeRow(sideIdx, pRow) = 1
+          END IF
+        END DO
+      END DO
+    END DO
+    ! Sanity check (GLOBAL in MPI): each electrode side must contribute
+    ! at least one constrained potential DOF across all ranks.
+    DO sideIdx = 1, nSides
+      IF (ParEnv % PEs > 1) THEN
+        globalSideCount = NINT(ParallelReduction(REAL(SideConstraintCount(sideIdx), dp)))
+      ELSE
+        globalSideCount = SideConstraintCount(sideIdx)
+      END IF
+
+      IF (ParEnv % PEs > 1 .AND. SideConstraintCount(sideIdx) <= 0) THEN
+        WRITE(*,'(A,I4,A,I4,A,I8)') ' [BuildElectrodeAddMatrix][rank ', ParEnv % MyPE, &
+          '] local side ', sideIdx, ' has zero constrained DOFs (global=', globalSideCount
+      END IF
+
+      IF (ParEnv % MyPE == 0) THEN
+        WRITE(*,'(A,I4,A,I8)') ' [BuildElectrodeAddMatrix] side ', sideIdx, &
+          ' global constrained DOFs = ', globalSideCount
+      END IF
+
+      IF (globalSideCount <= 0) THEN
+        CALL Fatal('BuildElectrodeAddMatrix', 'Electrode side has zero constrained potential DOFs')
+      END IF
+    END DO
+
+
+    IF (ParEnv % PEs > 1) THEN
+      globalNPhi = NINT(ParallelReduction(REAL(NPhi, dp), 2))  ! MPI_MAX
+    ELSE
+      globalNPhi = NPhi
+    END IF
+
+    ! Use a deterministic constraint index range on all ranks:
+    ! reserve one nodal row per (sideIdx, pRow). Non-electrode rows are
+    ! later set to identity on rank 0 so they do not affect physics.
+    NX = 3 * NumElectrodePairs + nSides * globalNPhi
+
+    IF (ParEnv % PEs > 1) THEN
+      WRITE(*,'(A,I4,A,I8,A,I8,A,I8)') ' [BuildElectrodeAddMatrix][rank ', ParEnv % MyPE, &
+        '] active local nodal constraints=', NumNodeConstraints, ' local NPhi=', NPhi, &
+        ' globalNPhi=', globalNPhi
+      WRITE(*,'(A,I4,A,I8)') ' [BuildElectrodeAddMatrix][rank ', ParEnv % MyPE, &
+        '] local NX=', NX
+    END IF
 
 
     AuxMatrix => AllocateMatrix()
@@ -1488,93 +1585,53 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       END DO
     END IF
 
-    ! Buffer for reduced circuit-row coefficients
-    ALLOCATE(VrowBuf(NPhi))
-    VrowBuf = 0.0_dp
-
     !------------------------------------------------------------
-    !    Equipotential constraints for each electrode: integral(phi - V) dS = 0
-    !    Row is gidV, columns are phi dofs and gidV.
-    !    Also add transpose coupling (phiRow, gidV) for saddle-point coupling.
+    ! Exact nodal equipotential constraints for each electrode boundary DOF:
+    !   phi(pRow) - Vside = 0
+    !
+    ! For each constraint row gidC:
+    !   A(gidC, pRow) = +1
+    !   A(gidC, gidV) = -1
+    !
+    ! And the transpose coupling for saddle-point symmetry:
+    !   A(pRow, gidC) = +1
     !------------------------------------------------------------
     DO ep = 1, NumElectrodePairs
       DO sgn = -1, +1, 2
 
         IF (sgn == +1) THEN
           gidV = NPhi + 3*(ep-1) + 1   ! Vp (use local NPhi for local matrix indexing)
+          sideIdx = 2*(ep-1) + 2
         ELSE
           gidV = NPhi + 3*(ep-1) + 2   ! Vm (use local NPhi for local matrix indexing)
+          sideIdx = 2*(ep-1) + 1
         END IF
 
-        VrowBuf    = 0.0_dp
-        VdiagLocal = 0.0_dp
+        DO pRow = 1, NPhi
+          gidC = NPhi + 3*NumElectrodePairs + (sideIdx-1)*globalNPhi + pRow
 
-        DO be = 1, Solver % Mesh % NumberOfBoundaryElements
-          Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
-          NodeIndexes => Elem % NodeIndexes
-
-          ! Match this boundary element to the electrode BC (pair=ep, sign=sgn)
-          DO i = 1, Model % NumberOfBCs
-            IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
-            IF (ElectrodePairOfBC(i) /= ep) CYCLE
-            IF (ElectrodeSignOfBC(i) /= sgn) CYCLE
-
-            n = Elem % TYPE % NumberOfNodes
-
-            EN % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes(1:n))
-            EN % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes(1:n))
-            EN % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes(1:n))
-
-            Integ = GaussPoints(Elem)
-
-            DO gp = 1, Integ % n
-              stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &
-                                SqrtElementMetric, Basis, dBasisdx)
-              s = SqrtElementMetric * Integ % s(gp)
-
-              DO inode = 1, n
-                pRow = PotentialPerm(NodeIndexes(inode))
-                IF (pRow <= 0) CYCLE
-
-                ! Transpose coupling: phi-row gets column gidV.
-                IF (ParEnv % PEs > 1 .AND. ALLOCATED(Solver % Matrix % RowOwner)) THEN
-                  IF (Solver % Matrix % RowOwner(pRow) == ParEnv % MyPE) THEN
-                    CALL AddToMatrixElement(AuxMatrix, pRow, gidV, s * Basis(inode))
-                  END IF
-                ELSE
-                  ! serial (or no RowOwner info): just add it
-                  CALL AddToMatrixElement(AuxMatrix, pRow, gidV, s * Basis(inode))
-                END IF
-
-
-                ! Circuit-row accumulation: (gidV, pRow)
-                VrowBuf(pRow) = VrowBuf(pRow) + s * Basis(inode)
-              END DO
-
-              ! Diagonal term for -V * integral(1)dS
-              VdiagLocal = VdiagLocal - s
-            END DO
-
-          END DO
-        END DO
-
-        ! Reduce the circuit-row coefficients to rank 0
-        IF (ParEnv % PEs > 1) THEN
-          CALL ParallelSumVector(Solver % Matrix, VrowBuf)
-          VdiagGlobal = ParallelReduction(VdiagLocal)
-        ELSE
-          VdiagGlobal = VdiagLocal
-        END IF
-
-        ! Rank 0 writes circuit row (gidV, :)
-        IF (ParEnv % MyPE == 0) THEN
-          DO pRow = 1, NPhi
-            IF (VrowBuf(pRow) /= 0.0_dp) THEN
-              CALL AddToMatrixElement(AuxMatrix, gidV, pRow, VrowBuf(pRow))
+          IF (SideIsElectrodeRow(sideIdx, pRow) == 1) THEN
+            IF (ParEnv % PEs > 1 .AND. ALLOCATED(Solver % Matrix % RowOwner)) THEN
+              IF (Solver % Matrix % RowOwner(pRow) == ParEnv % MyPE) THEN
+                CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
+              END IF
+            ELSE
+              CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
             END IF
-          END DO
-          CALL AddToMatrixElement(AuxMatrix, gidV, gidV, VdiagGlobal)
-        END IF
+
+            IF (ParEnv % MyPE == 0) THEN
+              CALL AddToMatrixElement(AuxMatrix, gidC, pRow, 1.0_dp)
+              CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp)
+              CALL AddToMatrixElement(AuxMatrix, gidV, gidC, -1.0_dp)
+            END IF
+          ELSE
+            ! This reserved row is not part of the current electrode side;
+            ! keep it harmless and non-singular.
+            IF (ParEnv % MyPE == 0) THEN
+              CALL AddToMatrixElement(AuxMatrix, gidC, gidC, 1.0_dp)
+            END IF
+          END IF
+        END DO
       END DO
     END DO
 
@@ -1589,19 +1646,22 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         CALL AddToMatrixElement(AuxMatrix, gidI, gidVp,  1.0_dp)
         CALL AddToMatrixElement(AuxMatrix, gidI, gidVm, -1.0_dp)
         CALL AddToMatrixElement(AuxMatrix, gidI, gidI,  -ElectrodeResistance(ep))
-      ELSE
-        ! Add dummy diagonal entries on other ranks to prevent List_ToCRSMatrix
-        ! from trimming empty constraint rows
-        CALL AddToMatrixElement(AuxMatrix, NPhi + 3*(ep-1) + 1, NPhi + 3*(ep-1) + 1, 0.0_dp)
-        CALL AddToMatrixElement(AuxMatrix, NPhi + 3*(ep-1) + 2, NPhi + 3*(ep-1) + 2, 0.0_dp)
-        CALL AddToMatrixElement(AuxMatrix, NPhi + 3*(ep-1) + 3, NPhi + 3*(ep-1) + 3, 0.0_dp)
       END IF
     END DO
+
+    ! Add zero diagonals for all constraint rows on non-owner ranks
+    ! to keep row structures alive through LIST->CRS conversion.
+    IF (ParEnv % MyPE /= 0) THEN
+      DO p = NPhi + 1, NPhi + NX
+        CALL AddToMatrixElement(AuxMatrix, p, p, 0.0_dp)
+      END DO
+    END IF
     
     IF (ParEnv % MyPE == 0) THEN
       WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] Starting boundary current coupling'
       WRITE(*,'(A,I3)') '   NumElectrodePairs = ', NumElectrodePairs
       WRITE(*,'(A,I6)') '   NPhi = ', NPhi
+      WRITE(*,'(A,I8)') '   Active nodal electrode constraints = ', NumNodeConstraints
     END IF
     
     nCoupled = 0
@@ -1725,7 +1785,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
     ! Debug output
     IF (ParEnv % MyPE == 0) THEN
-      WRITE(*,'(A,I6,A,I3)') ' [BuildElectrodeAddMatrix] AuxMatrix % NumberOfRows = ', &
+      WRITE(*,'(A,I6,A,I8)') ' [BuildElectrodeAddMatrix] AuxMatrix % NumberOfRows = ', &
           AuxMatrix % NumberOfRows, '  (NPhi + NX, NX=', NX
       IF (ALLOCATED(AuxMatrix % RowOwner)) THEN
         WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] AuxMatrix % RowOwner allocated successfully'
@@ -1749,7 +1809,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       END DO      
     END IF
 
-    DEALLOCATE(VrowBuf)
+    DEALLOCATE(SideIsElectrodeRow)
+    DEALLOCATE(SideConstraintCount)
+    DEALLOCATE(SideRowBuf)
     DEALLOCATE( EN % x, EN % y, EN % z )
   END SUBROUTINE BuildElectrodeAddMatrix
 
