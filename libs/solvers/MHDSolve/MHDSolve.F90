@@ -1687,7 +1687,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
                 IF (Solver % Matrix % RowOwner(pRow) == ParEnv % MyPE) THEN
                   CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
                   CALL AddToMatrixElement(AuxMatrix, gidC, pRow, 1.0_dp)
-                  CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp) ! CHECK _______
+                  CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp)
                 END IF
               ELSE
                 CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
