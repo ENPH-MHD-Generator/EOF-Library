@@ -238,7 +238,13 @@ def _collect_material_interface_surfaces(vol_to_material):
     )
 
 
-def main(step_dir: str, out_msh: str, mesh_size_min, mesh_size_max, mesh_size_factor: float):
+def main(
+    step_dir: str,
+    out_msh: str,
+    mesh_size_min,
+    mesh_size_max,
+    mesh_size_factor: float,
+):
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 1)

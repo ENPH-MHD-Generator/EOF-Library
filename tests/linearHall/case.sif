@@ -129,10 +129,10 @@ Solver 9
   ! --------------------------------------------------
   ! Nonlinear system (Picard, damped)
   ! --------------------------------------------------
-  Nonlinear System Max Iterations = 100
-  Nonlinear System Convergence Tolerance = 1.0e-3
-  ! Stronger damping helps when linear solves are inexact.
-  Nonlinear System Relaxation Factor = 0.5
+  Nonlinear System Max Iterations = 40
+  Nonlinear System Convergence Tolerance = 5.0e-3
+  ! Slightly higher relaxation speeds convergence for this weakly nonlinear coupling.
+  Nonlinear System Relaxation Factor = 0.7
   Nonlinear System Convergence Without Constraints = Logical True
   
   ! Force collections matrix to be rebuilt every iteration
@@ -149,14 +149,14 @@ Solver 9
   ! --------------------------------------------------
   Linear System Solver = Iterative
   Linear System Iterative Method = GCR
-  Linear System GCR Restart = 400
+  Linear System GCR Restart = 120
   Linear System Symmetric = False
-  Linear System Preconditioning = ILU0
-  Linear System Max Iterations = 25000
+  Linear System Preconditioning = ILU1
+  Linear System Max Iterations = 12000
   Linear System Convergence Tolerance = 1.0e-3
   Linear System Abort Not Converged = False
   Linear System Scaling = False
-  Linear System Residual Output = 200
+  Linear System Residual Output = 100
 End
 
 
@@ -195,17 +195,18 @@ Body Force 1
   Name = "NoSource"
 End
 
-
 ! -------------------------
 ! Boundary Conditions
 ! -------------------------
 Boundary Condition 1
   ! CathodeSurface
   Target Boundaries(1) = 4
+  ! Reference/gauge: ground the lower-potential electrode.
+  Potential = Real 0.0
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 1.0
+  Electrode Resistance = Real 0.0001
 End
 
 Boundary Condition 2
@@ -214,7 +215,7 @@ Boundary Condition 2
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 1.0
+  Electrode Resistance = Real 0.0001
 End
 
 Boundary Condition 3
@@ -227,17 +228,17 @@ Boundary Condition 4
   ! InletX
   Target Boundaries(1) = 1
 
-  Electrode Pair = Integer 2
-  Electrode Sign = String "plus"
-  Electrode Resistance = Real 1.0
+  ! Electrode Pair = Integer 2
+  ! Electrode Sign = String "plus"
+  ! Electrode Resistance = Real 1.0
 End
  
 Boundary Condition 5
   ! OutletX
   Target Boundaries(1) = 2
 
-  Electrode Pair = Integer 2
-  Electrode Sign = String "minus"
-  Electrode Resistance = Real 1.0
+  ! Electrode Pair = Integer 2
+  ! Electrode Sign = String "minus"
+  ! Electrode Resistance = Real 1.0
 End
  

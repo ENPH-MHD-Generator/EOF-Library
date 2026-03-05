@@ -17,10 +17,9 @@ FoamFile
 
 transportModel Newtonian;
 
-// Argon gas properties at 2500 K and 1 atm
-rho  0.195;    // density (kg/m3) - from ideal gas law: P*M/(R*T)
-nu   3.85e-4;  // kinematic viscosity (m2/s) - for argon at 2500 K
-               // Dynamic viscosity mu ≈ 7.5e-5 Pa·s at 2500 K
+// Argon gas properties at 1500 K and 1 atm (aligned with inlet T)
+rho  0.325;      // kg/m3
+nu   2.13e-4;    // m2/s
 
 // Thermal properties
 cp   520.0;    // Specific heat capacity (J/kg/K) for argon
@@ -28,7 +27,8 @@ kappa 0.0866;  // Thermal conductivity (W/m/K) at 2500 K
 
 // Electrical conductivity (S/m) - for argon plasma at 2500 K, 1 atm
 // At this temperature, argon is partially ionized with σ ≈ 100-1000 S/m
-elcond_melt  11.9;  // JÜLICH, ARGAS II FACILITY
+// elcond_melt  11.9;  // JÜLICH, ARGAS II FACILITY
+elcond_melt  3.0;
 maxRelDiff 0; // Call elmer on very time step
 
 // ************************************************************************* //
