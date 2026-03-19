@@ -206,7 +206,7 @@ Boundary Condition 1
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.0001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 2
@@ -215,7 +215,7 @@ Boundary Condition 2
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.0001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 3
