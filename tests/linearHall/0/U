@@ -40,12 +40,42 @@ boundaryField
         type    noSlip;
     }
 
-    CathodeSurface
+    CathodeSurface_1
     {
         type    noSlip;
     }
 
-    AnodeSurface
+    AnodeSurface_1
+    {
+        type    noSlip;
+    }
+
+    CathodeSurface_2
+    {
+        type    noSlip;
+    }
+
+    AnodeSurface_2
+    {
+        type    noSlip;
+    }
+
+    CathodeSurface_3
+    {
+        type    noSlip;
+    }
+
+    AnodeSurface_3
+    {
+        type    noSlip;
+    }
+
+    CathodeSurface_4
+    {
+        type    noSlip;
+    }
+
+    AnodeSurface_4
     {
         type    noSlip;
     }

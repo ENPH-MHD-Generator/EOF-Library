@@ -39,12 +39,42 @@ boundaryField
         type    zeroGradient;
     }
 
-    CathodeSurface
+    CathodeSurface_1
     {
         type    zeroGradient;
     }
 
-    AnodeSurface
+    AnodeSurface_1
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_4
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_4
     {
         type    zeroGradient;
     }

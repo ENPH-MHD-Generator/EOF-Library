@@ -198,47 +198,91 @@ End
 ! -------------------------
 ! Boundary Conditions
 ! -------------------------
-Boundary Condition 1
-  ! CathodeSurface
-  Target Boundaries(1) = 4
-  ! Reference/gauge: ground the lower-potential electrode.
-  ! Potential = Real 0.0
+! Elmer boundary indices (from sorted Gmsh physical-group tags):
+!   InletX (20)           -> 1
+!   OutletX (21)          -> 2
+!   InsulatorSurface (30) -> 3
+!   CathodeSurface_1 (40) -> 4    AnodeSurface_1 (41) -> 5
+!   CathodeSurface_2 (42) -> 6    AnodeSurface_2 (43) -> 7
+!   CathodeSurface_3 (44) -> 8    AnodeSurface_3 (45) -> 9
+!   CathodeSurface_4 (46) -> 10   AnodeSurface_4 (47) -> 11
 
+Boundary Condition 1
+  ! CathodeSurface_1
+  Target Boundaries(1) = 4
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
   Electrode Resistance = Real 0.001
 End
 
 Boundary Condition 2
-  ! AnodeSurface
+  ! AnodeSurface_1
   Target Boundaries(1) = 5
-  
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
   Electrode Resistance = Real 0.001
 End
 
 Boundary Condition 3
-  ! InsulatorSurface
-  Target Boundaries(1) = 3
-  ! Current Density BC = Logical True
+  ! CathodeSurface_2
+  Target Boundaries(1) = 6
+  Electrode Pair = Integer 2
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 0.001
 End
 
 Boundary Condition 4
+  ! AnodeSurface_2
+  Target Boundaries(1) = 7
+  Electrode Pair = Integer 2
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 0.001
+End
+
+Boundary Condition 5
+  ! CathodeSurface_3
+  Target Boundaries(1) = 8
+  Electrode Pair = Integer 3
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 0.001
+End
+
+Boundary Condition 6
+  ! AnodeSurface_3
+  Target Boundaries(1) = 9
+  Electrode Pair = Integer 3
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 0.001
+End
+
+Boundary Condition 7
+  ! CathodeSurface_4
+  Target Boundaries(1) = 10
+  Electrode Pair = Integer 4
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 0.001
+End
+
+Boundary Condition 8
+  ! AnodeSurface_4
+  Target Boundaries(1) = 11
+  Electrode Pair = Integer 4
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 0.001
+End
+
+Boundary Condition 9
+  ! InsulatorSurface
+  Target Boundaries(1) = 3
+End
+
+Boundary Condition 10
   ! InletX
   Target Boundaries(1) = 1
-
-  ! Electrode Pair = Integer 2
-  ! Electrode Sign = String "plus"
-  ! Electrode Resistance = Real 1.0
 End
- 
-Boundary Condition 5
+
+Boundary Condition 11
   ! OutletX
   Target Boundaries(1) = 2
-
-  ! Electrode Pair = Integer 2
-  ! Electrode Sign = String "minus"
-  ! Electrode Resistance = Real 1.0
 End
- 
+
