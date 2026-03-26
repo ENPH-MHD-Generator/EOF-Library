@@ -1315,7 +1315,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           ! Add forcing terms from the hall and motional EMF
           DO i=1,dim
             DO j=1, dim
-              Force(p) = Force(p) - S * dBasisdx(p,i) * Minv(i,j) * UxBgp(j)
+              Force(p) = Force(p) + S * dBasisdx(p,i) * Minv(i,j) * UxBgp(j)
             END DO
           END DO
         END DO
@@ -1436,7 +1436,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
     INTEGER :: NX, ep, sgn, be, i, n, inode, pRow, gidV, gidVp, gidVm, gidI, p, gPhi
     INTEGER :: nSides, sideIdx, gidC, NumNodeConstraints, globalSideCount, globalNPhi
-    LOGICAL :: UseNodalConstraints
+    INTEGER :: gaugeRow, gaugeNodeId
+    LOGICAL :: UseNodalConstraints, gotIt
     TYPE(Element_t), POINTER :: Elem
     INTEGER, POINTER :: NodeIndexes(:)
     INTEGER :: maxN
@@ -1723,6 +1724,28 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         CALL AddToMatrixElement(AuxMatrix, gidI, gidI,  -ElectrodeResistance(ep))
       END IF
     END DO
+
+    ! Pin potential=0 at one mesh node on the first cathode surface.
+    ! One gauge point removes the 1D null space for any number of pairs.
+    gaugeRow = 0
+    IF (UseNodalConstraints) THEN
+      DO pRow = 1, NPhi
+        IF (SideIsElectrodeRow(1, pRow) == 1) THEN
+          gaugeRow = pRow
+          EXIT
+        END IF
+      END DO
+    END IF
+    IF (gaugeRow > 0) THEN
+      CALL AddToMatrixElement(AuxMatrix, gaugeRow, gaugeRow, 1.0e8_dp)
+      WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Gauge: pinning Phi=0 at mesh DOF ', gaugeRow
+    ELSE
+      gidVm = NPhi + 2
+      IF (ParEnv % MyPE == 0) THEN
+        CALL AddToMatrixElement(AuxMatrix, gidVm, gidVm, 1.0e8_dp)
+        WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Gauge: fallback pinning Vm=0 at row ', gidVm
+      END IF
+    END IF
 
     ! Add zero diagonals for all constraint rows on non-owner ranks
     ! to keep row structures alive through LIST->CRS conversion.

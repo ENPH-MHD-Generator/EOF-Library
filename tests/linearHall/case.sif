@@ -202,11 +202,11 @@ Boundary Condition 1
   ! CathodeSurface
   Target Boundaries(1) = 4
   ! Reference/gauge: ground the lower-potential electrode.
-  Potential = Real 0.0
+  ! Potential = Real 0.0
 
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 1.0
+  Electrode Resistance = Real 0.001
 End
 
 Boundary Condition 2
@@ -215,7 +215,7 @@ Boundary Condition 2
   
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 1.0
+  Electrode Resistance = Real 0.001
 End
 
 Boundary Condition 3
