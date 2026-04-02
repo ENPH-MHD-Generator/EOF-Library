@@ -145,18 +145,18 @@ Solver 9
   Nonlinear System Newton After Tolerance  = 1.0e-3
 
   ! --------------------------------------------------
-  ! Linear system (robust iterative fallback, no external direct solver)
+  ! Linear system
   ! --------------------------------------------------
   Linear System Solver = Iterative
   Linear System Iterative Method = GCR
-  Linear System GCR Restart = 120
+  Linear System GCR Restart = 200
   Linear System Symmetric = False
   Linear System Preconditioning = ILU1
   Linear System Max Iterations = 12000
   Linear System Convergence Tolerance = 1.0e-3
   Linear System Abort Not Converged = False
   Linear System Scaling = False
-  Linear System Residual Output = 100
+  Linear System Residual Output = 500
 End
 
 

@@ -1437,6 +1437,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     INTEGER :: NX, ep, sgn, be, i, n, inode, pRow, gidV, gidVp, gidVm, gidI, p, gPhi
     INTEGER :: nSides, sideIdx, gidC, NumNodeConstraints, globalSideCount, globalNPhi
     INTEGER :: gaugeRow, gaugeNodeId
+    INTEGER :: extraIdxC, extraIdxV, extraIdxVp, extraIdxVm, extraIdxI
     LOGICAL :: UseNodalConstraints, gotIt
     TYPE(Element_t), POINTER :: Elem
     INTEGER, POINTER :: NodeIndexes(:)
@@ -1561,8 +1562,10 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     END IF
 
 
-    IF (ParEnv % PEs > 1) THEN
-      globalNPhi = NINT(ParallelReduction(REAL(NPhi, dp), 2))  ! MPI_MAX
+    IF (ParEnv % PEs > 1 .AND. ASSOCIATED(Solver % Matrix % ParallelInfo) .AND. &
+        ASSOCIATED(Solver % Matrix % ParallelInfo % GlobalDOFs)) THEN
+      globalNPhi = MAXVAL(Solver % Matrix % ParallelInfo % GlobalDOFs(1:NPhi))
+      globalNPhi = NINT(ParallelReduction(REAL(globalNPhi, dp), 2))  ! MPI_MAX
     ELSE
       globalNPhi = NPhi
     END IF
@@ -1591,63 +1594,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     ALLOCATE(AuxMatrix % RHS(AuxMatrix % NumberOfRows))
     AuxMatrix % RHS = 0.0_dp
 
-    ! Initialize parallel info for AddMatrix following CircuitUtils pattern
+    ! Initialize parallel info for AddMatrix.
+    ! All extra DOFs owned by rank 0.  Elmer's ParallelInitMatrix builds
+    ! consistent NeighbourLists from RowOwner via the OwnersGiven path.
     IF (ParEnv % PEs > 1) THEN
-      ! Allocate RowOwner and initialize to -1 (like CircuitUtils.F90:1742)
       ALLOCATE(AuxMatrix % RowOwner(NPhi + NX))
-      AuxMatrix % RowOwner = -1
-      
-      ! Set base circuit row ownership (Vp/Vm/I): owned by rank 0
-      DO i = 1, NX
-        IF (i <= 3*NumElectrodePairs) THEN
-          AuxMatrix % RowOwner(NPhi + i) = 0
-        ELSE
-          AuxMatrix % RowOwner(NPhi + i) = 0
-        END IF
-      END DO
-
-      ! Re-own nodal constraint rows by owner of each corresponding potential DOF.
-      ! This avoids rank-local row index aliasing in MPI.
-      IF (UseNodalConstraints .AND. ASSOCIATED(Solver % Matrix % ParallelInfo) .AND. &
-          ASSOCIATED(Solver % Matrix % ParallelInfo % GlobalDOFs) .AND. &
-          ALLOCATED(Solver % Matrix % RowOwner)) THEN
-        DO ep = 1, NumElectrodePairs
-          DO sgn = -1, +1, 2
-            IF (sgn == -1) THEN
-              sideIdx = 2*(ep-1) + 1
-            ELSE
-              sideIdx = 2*(ep-1) + 2
-            END IF
-            DO pRow = 1, NPhi
-              IF (SideIsElectrodeRow(sideIdx, pRow) /= 1) CYCLE
-              IF (Solver % Matrix % RowOwner(pRow) /= ParEnv % MyPE) CYCLE
-              gPhi = Solver % Matrix % ParallelInfo % GlobalDOFs(pRow)
-              IF (gPhi < 1 .OR. gPhi > globalNPhi) CYCLE
-              gidC = NPhi + 3*NumElectrodePairs + (sideIdx-1)*globalNPhi + gPhi
-              AuxMatrix % RowOwner(gidC) = ParEnv % MyPE
-            END DO
-          END DO
-        END DO
-      END IF
-      
-      ! Allocate ParallelInfo structure
-      ALLOCATE(AuxMatrix % ParallelInfo)
-      ALLOCATE(AuxMatrix % ParallelInfo % NeighbourList(NPhi + NX))
-      
-      ! Initialize phi rows (1:NPhi) - set to NULL since we use Solver%Matrix for phi
-      DO i = 1, NPhi
-        AuxMatrix % ParallelInfo % NeighbourList(i) % Neighbours => NULL()
-      END DO
-      
-      ! Initialize constraint DOF neighbor lists (NPhi+1:NPhi+NX)
-      DO i = NPhi+1, NPhi+NX
-        ALLOCATE(AuxMatrix % ParallelInfo % NeighbourList(i) % Neighbours(1))
-        IF (ALLOCATED(AuxMatrix % RowOwner) .AND. AuxMatrix % RowOwner(i) >= 0) THEN
-          AuxMatrix % ParallelInfo % NeighbourList(i) % Neighbours(1) = AuxMatrix % RowOwner(i)
-        ELSE
-          AuxMatrix % ParallelInfo % NeighbourList(i) % Neighbours(1) = 0
-        END IF
-      END DO
+      AuxMatrix % RowOwner = 0
     END IF
 
     !------------------------------------------------------------
@@ -1661,15 +1613,18 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     ! And the transpose coupling for saddle-point symmetry:
     !   A(pRow, gidC) = +1
     !------------------------------------------------------------
+    n = 0
     IF (UseNodalConstraints) THEN
       DO ep = 1, NumElectrodePairs
         DO sgn = -1, +1, 2
 
           IF (sgn == +1) THEN
-            gidV = NPhi + 3*(ep-1) + 1   ! Vp (use local NPhi for local matrix indexing)
+            extraIdxV = 3*(ep-1) + 1
+            gidV = NPhi + extraIdxV
             sideIdx = 2*(ep-1) + 2
           ELSE
-            gidV = NPhi + 3*(ep-1) + 2   ! Vm (use local NPhi for local matrix indexing)
+            extraIdxV = 3*(ep-1) + 2
+            gidV = NPhi + extraIdxV
             sideIdx = 2*(ep-1) + 1
           END IF
 
@@ -1681,28 +1636,24 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
               gPhi = pRow
             END IF
             IF (gPhi < 1 .OR. gPhi > globalNPhi) CYCLE
-            gidC = NPhi + 3*NumElectrodePairs + (sideIdx-1)*globalNPhi + gPhi
+            extraIdxC = 3*NumElectrodePairs + (sideIdx-1)*globalNPhi + gPhi
+            gidC = NPhi + extraIdxC
 
             IF (SideIsElectrodeRow(sideIdx, pRow) == 1) THEN
+              CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
+              CALL AddToMatrixElement(AuxMatrix, gidC, pRow, 1.0_dp)
+              CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp)
+              CALL AddToMatrixElement(AuxMatrix, gidV, gidC, -1.0_dp)
+              n = n + 1
+            ELSE
+              ! Identity for inactive constraint rows: only the phi-DOF owner
+              ! sets it, preventing double-counting and avoiding clobbering
+              ! real constraints assembled by another rank for shared DOFs.
               IF (ParEnv % PEs > 1 .AND. ALLOCATED(Solver % Matrix % RowOwner)) THEN
                 IF (Solver % Matrix % RowOwner(pRow) == ParEnv % MyPE) THEN
-                  CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
-                  CALL AddToMatrixElement(AuxMatrix, gidC, pRow, 1.0_dp)
-                  CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp)
+                  CALL AddToMatrixElement(AuxMatrix, gidC, gidC, 1.0_dp)
                 END IF
               ELSE
-                CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
-                CALL AddToMatrixElement(AuxMatrix, gidC, pRow, 1.0_dp)
-                CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp)
-              END IF
-
-              IF (ParEnv % MyPE == 0) THEN
-                CALL AddToMatrixElement(AuxMatrix, gidV, gidC, -1.0_dp)
-              END IF
-            ELSE
-              ! This reserved row is not part of the current electrode side;
-              ! keep it harmless and non-singular.
-              IF (ParEnv % MyPE == 0) THEN
                 CALL AddToMatrixElement(AuxMatrix, gidC, gidC, 1.0_dp)
               END IF
             END IF
@@ -1710,13 +1661,18 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         END DO
       END DO
     END IF
+    WRITE(*,'(A,I1,A,I6)') &
+      ' [Constraints][rank ', ParEnv % MyPE, '] nodal constraint entries assembled=', n
 
     !    Ohm law per pair: (Vp - Vm) - R * I = 0   (row gidI)
     !    Keep these rows on rank 0 (simple and stable).
     DO ep = 1, NumElectrodePairs
-      gidVp = NPhi + 3*(ep-1) + 1  ! Use local NPhi for local matrix indexing
-      gidVm = NPhi + 3*(ep-1) + 2  
-      gidI  = NPhi + 3*(ep-1) + 3  ! Use local NPhi for local matrix indexing
+      extraIdxVp = 3*(ep-1) + 1
+      extraIdxVm = 3*(ep-1) + 2
+      extraIdxI  = 3*(ep-1) + 3
+      gidVp = NPhi + extraIdxVp
+      gidVm = NPhi + extraIdxVm
+      gidI  = NPhi + extraIdxI
 
       IF (ParEnv % MyPE == 0) THEN
         CALL AddToMatrixElement(AuxMatrix, gidI, gidVp,  1.0_dp)
@@ -1747,13 +1703,11 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       END IF
     END IF
 
-    ! Add zero diagonals for all constraint rows on non-owner ranks
-    ! to keep row structures alive through LIST->CRS conversion.
-    IF (ParEnv % MyPE /= 0) THEN
-      DO p = NPhi + 1, NPhi + NX
-        CALL AddToMatrixElement(AuxMatrix, p, p, 0.0_dp)
-      END DO
-    END IF
+    ! Zero diagonals on all ranks to keep row structures alive through
+    ! LIST->CRS conversion. Real entries are added on top by the owning rank.
+    DO p = NPhi + 1, NPhi + NX
+      CALL AddToMatrixElement(AuxMatrix, p, p, 0.0_dp)
+    END DO
     
     IF (ParEnv % MyPE == 0) THEN
       WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] Starting boundary current coupling'
@@ -1764,7 +1718,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     
     nCoupled = 0
     DO ep = 1, NumElectrodePairs
-      gidI = NPhi + 3*(ep-1) + 3
+      extraIdxI = 3*(ep-1) + 3
+      gidI = NPhi + extraIdxI
       
       IF (ParEnv % MyPE == 0) THEN
         WRITE(*,'(A,I3,A,I6)') '   Processing electrode pair ', ep, ', gidI = ', gidI
@@ -1849,25 +1804,13 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
               ! FORWARD coupling: phi equation gets I contribution
               ! Weak form: K·φ = ∫(I/A)ψ dS  -->  K·φ - B·I = 0
               ! So: A(pRow, gidI) = -∫ψ/A dS  (NEGATIVE!)
-              IF (ParEnv % PEs > 1 .AND. ALLOCATED(Solver % Matrix % RowOwner)) THEN
-                IF (Solver % Matrix % RowOwner(pRow) == ParEnv % MyPE) THEN
-                  CALL AddToMatrixElement(AuxMatrix, pRow, gidI, -s * Basis(inode) * areaCoeff)
-                  IF (nCoupled < 5 .AND. ParEnv % MyPE == 0) THEN
-                    WRITE(*,'(A,I3,A,I6,A,I6,A,ES12.4,A,ES12.4)') &
-                      '   [Forward] EP=', ep, ' A(', pRow, ',', gidI, ')=', &
-                      -s * Basis(inode) * areaCoeff, ' (areaCoeff=', areaCoeff, ')'
-                  END IF
-                  nCoupled = nCoupled + 1
-                END IF
-              ELSE
-                CALL AddToMatrixElement(AuxMatrix, pRow, gidI, -s * Basis(inode) * areaCoeff)
-                IF (nCoupled < 5) THEN
-                  WRITE(*,'(A,I3,A,I6,A,I6,A,ES12.4,A,ES12.4)') &
-                    '   [Forward] EP=', ep, ' A(', pRow, ',', gidI, ')=', &
-                    -s * Basis(inode) * areaCoeff, ' (areaCoeff=', areaCoeff, ')'
-                END IF
-                nCoupled = nCoupled + 1
+              CALL AddToMatrixElement(AuxMatrix, pRow, gidI, -s * Basis(inode) * areaCoeff)
+              IF (nCoupled < 5) THEN
+                WRITE(*,'(A,I3,A,I6,A,I6,A,ES12.4,A,ES12.4)') &
+                  '   [Forward] EP=', ep, ' A(', pRow, ',', gidI, ')=', &
+                  -s * Basis(inode) * areaCoeff, ' (areaCoeff=', areaCoeff, ')'
               END IF
+              nCoupled = nCoupled + 1
             END DO
           END DO
         END DO
