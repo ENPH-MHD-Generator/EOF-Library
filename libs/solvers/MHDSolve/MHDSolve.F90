@@ -1436,9 +1436,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
     INTEGER :: NX, ep, sgn, be, i, n, inode, pRow, gidV, gidVp, gidVm, gidI, p, gPhi
     INTEGER :: nSides, sideIdx, gidC, NumNodeConstraints, globalSideCount, globalNPhi
-    INTEGER :: gaugeRow, gaugeNodeId
+    INTEGER :: gaugeRow
     INTEGER :: extraIdxC, extraIdxV, extraIdxVp, extraIdxVm, extraIdxI
-    LOGICAL :: UseNodalConstraints, gotIt
+    LOGICAL :: UseNodalConstraints
     TYPE(Element_t), POINTER :: Elem
     INTEGER, POINTER :: NodeIndexes(:)
     INTEGER :: maxN
@@ -1454,9 +1454,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     REAL(dp), ALLOCATABLE :: SideRowBuf(:)
     INTEGER, ALLOCATABLE :: SideConstraintCount(:), SideIsElectrodeRow(:,:), RowMembershipCount(:)
     
-    ! Variables for boundary current coupling
     REAL(dp) :: AreaPlus, AreaMinus, areaCoeff
-    INTEGER :: nCoupled
 
     ! Defensive no-op path: no electrode circuit DOFs requested.
     IF (NumElectrodePairs <= 0) THEN
@@ -1545,11 +1543,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           globalSideCount = SideConstraintCount(sideIdx)
         END IF
 
-        IF (ParEnv % PEs > 1 .AND. SideConstraintCount(sideIdx) <= 0) THEN
-          WRITE(*,'(A,I4,A,I4,A,I8)') ' [BuildElectrodeAddMatrix][rank ', ParEnv % MyPE, &
-            '] local side ', sideIdx, ' has zero constrained DOFs (global=', globalSideCount
-        END IF
-
         IF (ParEnv % MyPE == 0) THEN
           WRITE(*,'(A,I4,A,I8)') ' [BuildElectrodeAddMatrix] side ', sideIdx, &
             ' global constrained DOFs = ', globalSideCount
@@ -1576,15 +1569,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     ELSE
       NX = 3 * NumElectrodePairs
     END IF
-
-    IF (ParEnv % PEs > 1) THEN
-      WRITE(*,'(A,I4,A,I8,A,I8,A,I8)') ' [BuildElectrodeAddMatrix][rank ', ParEnv % MyPE, &
-        '] active local nodal constraints=', NumNodeConstraints, ' local NPhi=', NPhi, &
-        ' globalNPhi=', globalNPhi
-      WRITE(*,'(A,I4,A,I8)') ' [BuildElectrodeAddMatrix][rank ', ParEnv % MyPE, &
-        '] local NX=', NX
-    END IF
-
 
     AuxMatrix => AllocateMatrix()
     AuxMatrix % FORMAT = MATRIX_LIST
@@ -1613,7 +1597,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     ! And the transpose coupling for saddle-point symmetry:
     !   A(pRow, gidC) = +1
     !------------------------------------------------------------
-    n = 0
     IF (UseNodalConstraints) THEN
       DO ep = 1, NumElectrodePairs
         DO sgn = -1, +1, 2
@@ -1644,7 +1627,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
               CALL AddToMatrixElement(AuxMatrix, gidC, pRow, 1.0_dp)
               CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp)
               CALL AddToMatrixElement(AuxMatrix, gidV, gidC, -1.0_dp)
-              n = n + 1
             ELSE
               ! Identity for inactive constraint rows: only the phi-DOF owner
               ! sets it, preventing double-counting and avoiding clobbering
@@ -1661,8 +1643,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         END DO
       END DO
     END IF
-    WRITE(*,'(A,I1,A,I6)') &
-      ' [Constraints][rank ', ParEnv % MyPE, '] nodal constraint entries assembled=', n
 
     !    Ohm law per pair: (Vp - Vm) - R * I = 0   (row gidI)
     !    Keep these rows on rank 0 (simple and stable).
@@ -1708,27 +1688,14 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     DO p = NPhi + 1, NPhi + NX
       CALL AddToMatrixElement(AuxMatrix, p, p, 0.0_dp)
     END DO
-    
-    IF (ParEnv % MyPE == 0) THEN
-      WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] Starting boundary current coupling'
-      WRITE(*,'(A,I3)') '   NumElectrodePairs = ', NumElectrodePairs
-      WRITE(*,'(A,I6)') '   NPhi = ', NPhi
-      WRITE(*,'(A,I8)') '   Active nodal electrode constraints = ', NumNodeConstraints
-    END IF
-    
-    nCoupled = 0
+
     DO ep = 1, NumElectrodePairs
       extraIdxI = 3*(ep-1) + 3
       gidI = NPhi + extraIdxI
-      
-      IF (ParEnv % MyPE == 0) THEN
-        WRITE(*,'(A,I3,A,I6)') '   Processing electrode pair ', ep, ', gidI = ', gidI
-      END IF
-      
-      ! Compute electrode areas (same as earlier area computation)
+
       AreaPlus = 0.0_dp
       AreaMinus = 0.0_dp
-      
+
       DO be = 1, Solver % Mesh % NumberOfBoundaryElements
         Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
         NodeIndexes => Elem % NodeIndexes
@@ -1761,13 +1728,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         AreaPlus = ParallelReduction(AreaPlus)
         AreaMinus = ParallelReduction(AreaMinus)
       END IF
-      
-      IF (ParEnv % MyPE == 0) THEN
-        WRITE(*,'(A,I3,A,ES12.4,A,ES12.4)') ' [BoundaryCoupling] Pair ', ep, &
-          ': AreaPlus=', AreaPlus, ' AreaMinus=', AreaMinus
-        WRITE(*,'(A,I6)') '   gidI (current DOF index) = ', gidI
-      END IF
-      
 
       DO be = 1, Solver % Mesh % NumberOfBoundaryElements
         Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
@@ -1805,50 +1765,14 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
               ! Weak form: K·φ = ∫(I/A)ψ dS  -->  K·φ - B·I = 0
               ! So: A(pRow, gidI) = -∫ψ/A dS  (NEGATIVE!)
               CALL AddToMatrixElement(AuxMatrix, pRow, gidI, -s * Basis(inode) * areaCoeff)
-              IF (nCoupled < 5) THEN
-                WRITE(*,'(A,I3,A,I6,A,I6,A,ES12.4,A,ES12.4)') &
-                  '   [Forward] EP=', ep, ' A(', pRow, ',', gidI, ')=', &
-                  -s * Basis(inode) * areaCoeff, ' (areaCoeff=', areaCoeff, ')'
-              END IF
-              nCoupled = nCoupled + 1
             END DO
           END DO
         END DO
       END DO
     END DO
-    
-    IF (ParEnv % MyPE == 0) THEN
-      WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Added boundary current coupling entries: ', nCoupled
-    END IF
 
     ! Convert AddMatrix to CRS like Circuits does
     CALL List_ToCRSMatrix(AuxMatrix)
-
-    ! Debug output
-    IF (ParEnv % MyPE == 0) THEN
-      WRITE(*,'(A,I6,A,I8)') ' [BuildElectrodeAddMatrix] AuxMatrix % NumberOfRows = ', &
-          AuxMatrix % NumberOfRows, '  (NPhi + NX, NX=', NX
-      IF (ALLOCATED(AuxMatrix % RowOwner)) THEN
-        WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] AuxMatrix % RowOwner allocated successfully'
-      ELSE
-        WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] WARNING: AuxMatrix % RowOwner NOT allocated'
-      END IF
-      
-      ! Log some matrix statistics
-      WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Total coupling entries added: ', nCoupled
-      WRITE(*,'(A)') ' [BuildElectrodeAddMatrix] Matrix structure summary:'
-      WRITE(*,'(A,I8)') '   Total non-zeros in AddMatrix: ', &
-        COUNT(AuxMatrix % Values /= 0.0_dp)
-      
-      ! Check a sample coupling entry by scanning constraint row entries
-      DO ep = 1, MIN(1, NumElectrodePairs)
-        gidI = NPhi + 3*(ep-1) + 3
-        WRITE(*,'(A,I3,A,I6,A)') '   Checking constraint row gidI=', gidI, &
-          ' (index ', gidI, ') for non-zero entries...'
-        ! Note: After CRS conversion, we can't easily inspect individual entries
-        ! without walking the CRS structure, so this is just informational
-      END DO      
-    END IF
 
     IF (UseNodalConstraints) THEN
       DEALLOCATE(RowMembershipCount)

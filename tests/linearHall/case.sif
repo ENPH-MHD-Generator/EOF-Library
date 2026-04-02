@@ -198,7 +198,6 @@ End
 ! -------------------------
 ! Boundary Conditions
 ! -------------------------
-! Elmer boundary indices (from sorted Gmsh physical-group tags):
 !   InletX (20)           -> 1
 !   OutletX (21)          -> 2
 !   InsulatorSurface (30) -> 3
