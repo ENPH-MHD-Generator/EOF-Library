@@ -1,9 +1,9 @@
 /*--------------------------------*- C++ -*----------------------------------*\
 | =========                 |                                                 |
-| \\      /  Field         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\    /   Operation     | Version:  dev                                   |
-|   \\  /    And           | Web:      www.OpenFOAM.org                      |
-|    \\/     Manipulation  |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  dev                                   |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
 FoamFile
 {
@@ -18,7 +18,6 @@ FoamFile
 // Electric potential [V]
 dimensions [1 2 -3 0 0 -1 0];
 
-// Start from zero; Elmer overwrites this during coupling
 internalField   uniform 0;
 
 
@@ -79,12 +78,10 @@ boundaryField
         type    zeroGradient;
     }
 
-
     defaultFaces
     {
         type    zeroGradient;
     }
-
 }
 
 

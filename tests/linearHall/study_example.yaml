@@ -1,0 +1,51 @@
+# Example parametric study definition
+#
+# Run with:
+#   python run_study.py study_example.yaml --dry-run   # preview
+#   python run_study.py study_example.yaml              # generate files only
+#   python run_study.py study_example.yaml --mesh       # also rebuild meshes
+
+base_config: electrodes.yaml
+output_dir: "studies/{sweep}/{index:03d}"
+
+sweeps:
+  # ── Sweep 1: vary number of electrode pairs (auto-spaced) ──
+  - name: "pair_count"
+    parameter: "electrodes.count"
+    values: [2, 4, 6, 8]
+
+  # ── Sweep 2: vary electrode resistance ──
+  - name: "resistance"
+    cases:
+      - electrodes:
+          pairs:
+            - { x_center: 0.040, length: 0.010, resistance: 0.1 }
+            - { x_center: 0.080, length: 0.010, resistance: 0.1 }
+            - { x_center: 0.120, length: 0.010, resistance: 0.1 }
+            - { x_center: 0.160, length: 0.010, resistance: 0.1 }
+      - electrodes:
+          pairs:
+            - { x_center: 0.040, length: 0.010, resistance: 1.0 }
+            - { x_center: 0.080, length: 0.010, resistance: 1.0 }
+            - { x_center: 0.120, length: 0.010, resistance: 1.0 }
+            - { x_center: 0.160, length: 0.010, resistance: 1.0 }
+      - electrodes:
+          pairs:
+            - { x_center: 0.040, length: 0.010, resistance: 10.0 }
+            - { x_center: 0.080, length: 0.010, resistance: 10.0 }
+            - { x_center: 0.120, length: 0.010, resistance: 10.0 }
+            - { x_center: 0.160, length: 0.010, resistance: 10.0 }
+
+  # ── Sweep 3: custom asymmetric electrode layouts ──
+  - name: "asymmetric"
+    cases:
+      - electrodes:
+          pairs:
+            - { x_center: 0.050, length: 0.010, resistance: 1.0 }
+            - { x_center: 0.150, length: 0.010, resistance: 1.0 }
+      - electrodes:
+          pairs:
+            - { x_center: 0.030, length: 0.010, resistance: 1.0 }
+            - { x_center: 0.060, length: 0.010, resistance: 1.0 }
+            - { x_center: 0.140, length: 0.010, resistance: 1.0 }
+            - { x_center: 0.170, length: 0.010, resistance: 1.0 }

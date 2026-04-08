@@ -1,11 +1,10 @@
 /*--------------------------------*- C++ -*----------------------------------*\
 | =========                 |                                                 |
 | \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\    /   O peration     | Version:  6                                     |
-|   \\  /    A nd           |                                                 |
+|  \\    /   O peration     | Version:  dev                                   |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
 |    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
-
 FoamFile
 {
     version     2.0;
@@ -14,14 +13,13 @@ FoamFile
     location    "0";
     object      B;
 }
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 // Magnetic flux density [Tesla]
-dimensions      [1 0 -2 0 0 -1 0];
+dimensions [1 0 -2 0 0 -1 0];
 
-// Uniform magnetic field in +z direction
 internalField   uniform (0 0 1.5);
 
-// Boundary conditions, zero at boundaries
 
 boundaryField
 {
@@ -80,11 +78,11 @@ boundaryField
         type    zeroGradient;
     }
 
-
     defaultFaces
     {
         type    zeroGradient;
     }
-
 }
 
+
+// ************************************************************************* //

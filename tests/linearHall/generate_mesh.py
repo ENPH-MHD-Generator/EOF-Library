@@ -4,15 +4,17 @@ from pathlib import Path
 import gmsh
 
 
-# ─── Geometry constants (edit these to change the channel layout) ─
-NUM_ELECTRODE_PAIRS = 4
-CHANNEL_LENGTH      = 0.200    # m  (200 mm)
-CHANNEL_HEIGHT      = 0.050    # m  (10 mm)
-CHANNEL_WIDTH       = 0.050    # m  (10 mm)
-ELECTRODE_LENGTH    = 0.010    # m  (10 mm along flow direction)
-WALL_THICKNESS      = 0.005    # m  (2 mm, used for insulator / electrode shells)
+# ─── Default geometry constants ────────────────────────────────────
+DEFAULTS = {
+    "num_pairs": 4,
+    "channel_length": 0.200,    # m
+    "channel_height": 0.050,    # m
+    "channel_width": 0.050,     # m
+    "electrode_length": 0.010,  # m
+    "wall_thickness": 0.005,    # m
+}
 
-# ─── Material tags (3-D physical groups) ──────────────────────────
+# ─── Material tags (3-D physical groups) ───────────────────────────
 MATERIAL_TAGS = {
     "Plasma": 1,
     "Cathode": 2,
@@ -20,7 +22,6 @@ MATERIAL_TAGS = {
     "Insulator": 4,
 }
 
-# Higher rank wins when OCC fragment maps a volume to multiple source materials.
 MATERIAL_PRIORITY = {
     "Plasma": 0,
     "Insulator": 1,
@@ -28,26 +29,35 @@ MATERIAL_PRIORITY = {
     "Anode": 3,
 }
 
-# ─── Boundary tags (2-D physical groups) ──────────────────────────
 
-def _build_boundary_tags():
+# ─── Public helpers (used by configure.py) ─────────────────────────
+
+def build_boundary_tags(num_pairs):
+    """Return the boundary-name -> physical-group-tag mapping."""
     tags = {
         "InletX": 20,
         "OutletX": 21,
         "InsulatorSurface": 30,
     }
-    for i in range(NUM_ELECTRODE_PAIRS):
+    for i in range(num_pairs):
         tags[f"CathodeSurface_{i + 1}"] = 40 + 2 * i
         tags[f"AnodeSurface_{i + 1}"] = 41 + 2 * i
     return tags
 
-BOUNDARY_TAGS = _build_boundary_tags()
+
+def compute_electrode_centers(channel_length, num_pairs, explicit_centers=None):
+    """Return list of x-coordinates for electrode-pair centers."""
+    if explicit_centers is not None:
+        if len(explicit_centers) != num_pairs:
+            raise ValueError(
+                f"Expected {num_pairs} electrode centers, got {len(explicit_centers)}"
+            )
+        return list(explicit_centers)
+    spacing = channel_length / (num_pairs + 1)
+    return [(i + 1) * spacing for i in range(num_pairs)]
 
 
-def _electrode_centers():
-    spacing = CHANNEL_LENGTH / (NUM_ELECTRODE_PAIRS + 1)
-    return [(i + 1) * spacing for i in range(NUM_ELECTRODE_PAIRS)]
-
+# ─── Internal helpers (unchanged logic) ────────────────────────────
 
 def _entity_bbox(dim: int, tag: int):
     return gmsh.model.getBoundingBox(dim, tag)
@@ -61,7 +71,6 @@ def _collect_external_surfaces(volume_tags):
                 continue
             up, _ = gmsh.model.getAdjacencies(2, stag)
             surface_to_n_up[stag] = len(up)
-    # Exterior surface belongs to exactly one volume.
     return sorted(stag for stag, n_up in surface_to_n_up.items() if n_up == 1)
 
 
@@ -124,11 +133,14 @@ def _configure_mesh_sizing(mesh_size_min, mesh_size_max, mesh_size_factor):
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size_max)
 
 
-def _build_geometry_and_assign_materials():
+def _build_geometry_and_assign_materials(cfg, centers):
     """Build a rectangular Hall channel with evenly-spaced electrode pairs."""
     occ = gmsh.model.occ
-    L, H, W, t = CHANNEL_LENGTH, CHANNEL_HEIGHT, CHANNEL_WIDTH, WALL_THICKNESS
-    el = ELECTRODE_LENGTH
+    L = cfg["channel_length"]
+    H = cfg["channel_height"]
+    W = cfg["channel_width"]
+    t = cfg["wall_thickness"]
+    el = cfg["electrode_length"]
 
     plasma = occ.addBox(0, 0, 0, L, H, W)
     imported = [(3, plasma)]
@@ -144,7 +156,6 @@ def _build_geometry_and_assign_materials():
         imported.append((3, tag))
         imported_materials.append("Insulator")
 
-    centers = _electrode_centers()
     for xc in centers:
         x0 = xc - el / 2
         cat = occ.addBox(x0, -t, 0, el, t, W)
@@ -220,12 +231,8 @@ def _build_geometry_and_assign_materials():
     return sorted(new_vols), vol_to_material
 
 
-def _collect_material_interface_surfaces(vol_to_material):
-    """Find interface surfaces between plasma and surrounding materials.
-
-    Returns (insulator_surfs, cathode_groups, anode_groups) where the
-    electrode groups are dicts mapping pair index (0-based) to surface tags.
-    """
+def _collect_material_interface_surfaces(vol_to_material, num_pairs, centers):
+    """Find interface surfaces between plasma and surrounding materials."""
     insulator_surfs = []
     cathode_surfs = []
     anode_surfs = []
@@ -242,49 +249,72 @@ def _collect_material_interface_surfaces(vol_to_material):
         elif mats == {"Plasma", "Cathode"}:
             cathode_surfs.append(stag)
 
-    centers = _electrode_centers()
-    cathode_groups = {i: [] for i in range(NUM_ELECTRODE_PAIRS)}
-    anode_groups = {i: [] for i in range(NUM_ELECTRODE_PAIRS)}
+    cathode_groups = {i: [] for i in range(num_pairs)}
+    anode_groups = {i: [] for i in range(num_pairs)}
 
     for stag in cathode_surfs:
         xmin, _, _, xmax, _, _ = gmsh.model.getBoundingBox(2, stag)
         x_mid = (xmin + xmax) / 2
-        pair_idx = min(range(NUM_ELECTRODE_PAIRS),
+        pair_idx = min(range(num_pairs),
                        key=lambda j: abs(x_mid - centers[j]))
         cathode_groups[pair_idx].append(stag)
 
     for stag in anode_surfs:
         xmin, _, _, xmax, _, _ = gmsh.model.getBoundingBox(2, stag)
         x_mid = (xmin + xmax) / 2
-        pair_idx = min(range(NUM_ELECTRODE_PAIRS),
+        pair_idx = min(range(num_pairs),
                        key=lambda j: abs(x_mid - centers[j]))
         anode_groups[pair_idx].append(stag)
 
     return sorted(set(insulator_surfs)), cathode_groups, anode_groups
 
 
-def main(
-    out_msh: str,
-    mesh_size_min,
-    mesh_size_max,
-    mesh_size_factor: float,
+# ─── Public entry point ────────────────────────────────────────────
+
+def generate(
+    out_msh="channel.msh",
+    mesh_size_min=None,
+    mesh_size_max=None,
+    mesh_size_factor=1.0,
+    channel_config=None,
 ):
+    """Generate the Gmsh mesh.
+
+    Parameters
+    ----------
+    channel_config : dict, optional
+        Keys: num_pairs, channel_length, channel_height, channel_width,
+        electrode_length, wall_thickness, electrode_centers (list or None).
+        Missing keys fall back to DEFAULTS.
+
+    Returns
+    -------
+    boundary_tags : dict
+        Mapping of boundary name -> physical group tag.
+    """
+    cfg = {**DEFAULTS, **(channel_config or {})}
+    num_pairs = cfg["num_pairs"]
+    centers = compute_electrode_centers(
+        cfg["channel_length"], num_pairs, cfg.get("electrode_centers"),
+    )
+    boundary_tags = build_boundary_tags(num_pairs)
+
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 1)
         _configure_mesh_sizing(mesh_size_min, mesh_size_max, mesh_size_factor)
         gmsh.model.add("linear_hall_channel")
 
-        volume_tags, vol_to_material = _build_geometry_and_assign_materials()
+        volume_tags, vol_to_material = _build_geometry_and_assign_materials(cfg, centers)
 
         ins_surfs, cathode_groups, anode_groups = _collect_material_interface_surfaces(
-            vol_to_material
+            vol_to_material, num_pairs, centers,
         )
         if not ins_surfs:
             raise RuntimeError("No Plasma-Insulator interface surfaces found.")
 
         interface_set = set(ins_surfs)
-        for i in range(NUM_ELECTRODE_PAIRS):
+        for i in range(num_pairs):
             if not cathode_groups[i]:
                 raise RuntimeError(f"No cathode surfaces found for electrode pair {i + 1}.")
             if not anode_groups[i]:
@@ -308,7 +338,7 @@ def main(
         dom = max(gxmax - gxmin, gymax - gymin, gzmax - gzmin)
         tol = max(1e-9, 1e-6 * dom)
 
-        groups = {name: [] for name in BOUNDARY_TAGS}
+        groups = {name: [] for name in boundary_tags}
         exterior_surfs = _collect_external_surfaces(plasma_vols)
         ins_set = set(ins_surfs)
 
@@ -326,7 +356,7 @@ def main(
                 continue
 
             matched = False
-            for i in range(NUM_ELECTRODE_PAIRS):
+            for i in range(num_pairs):
                 if stag in cathode_groups[i]:
                     groups[f"CathodeSurface_{i + 1}"].append(stag)
                     matched = True
@@ -340,7 +370,7 @@ def main(
                     f"Plasma exterior surface not classified: {stag}"
                 )
 
-        for bname, ptag in BOUNDARY_TAGS.items():
+        for bname, ptag in boundary_tags.items():
             stags = sorted(set(groups[bname]))
             if not stags:
                 raise RuntimeError(f"Boundary group '{bname}' is empty.")
@@ -358,11 +388,14 @@ def main(
     finally:
         gmsh.finalize()
 
+    return boundary_tags
+
+
+# ─── CLI entry point ───────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate tetrahedral MSH 2.2 mesh for a linear Hall channel "
-        f"with {NUM_ELECTRODE_PAIRS} electrode pairs."
+        description="Generate tetrahedral MSH 2.2 mesh for a linear Hall channel."
     )
     parser.add_argument(
         "--out",
@@ -373,13 +406,13 @@ if __name__ == "__main__":
         "--mesh-size-min",
         type=float,
         default=None,
-        help="Global minimum tetra edge length (smaller -> finer mesh).",
+        help="Global minimum tetra edge length.",
     )
     parser.add_argument(
         "--mesh-size-max",
         type=float,
         default=None,
-        help="Global maximum tetra edge length (smaller -> finer mesh).",
+        help="Global maximum tetra edge length.",
     )
     parser.add_argument(
         "--mesh-size-factor",
@@ -388,7 +421,7 @@ if __name__ == "__main__":
         help="Global size scale factor (>1 coarser, <1 finer).",
     )
     args = parser.parse_args()
-    main(
+    generate(
         args.out,
         args.mesh_size_min,
         args.mesh_size_max,

@@ -10,12 +10,13 @@ FoamFile
     version     2.0;
     format      ascii;
     class       volScalarField;
+    location    "0";
     object      p_rgh;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 // Dynamic pressure (p - rho*g*h)
-dimensions      [1 -1 -2 0 0 0 0];
+dimensions [1 -1 -2 0 0 0 0];
 
 internalField   uniform 0;
 
@@ -29,8 +30,8 @@ boundaryField
 
     OutletX
     {
-        type fixedValue;
-        value uniform 0;
+        type    fixedValue;
+        value   uniform 0;
     }
 
     InsulatorSurface
@@ -78,16 +79,11 @@ boundaryField
         type    zeroGradient;
     }
 
-
     defaultFaces
     {
         type    zeroGradient;
     }
-
 }
 
 
-
 // ************************************************************************* //
-
-

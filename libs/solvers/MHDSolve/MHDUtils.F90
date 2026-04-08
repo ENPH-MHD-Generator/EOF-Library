@@ -64,7 +64,9 @@ MODULE MHDParams
   ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.013333_dp
 
   ! https://pure.tue.nl/ws/files/4331881/7207091.pdf
-  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = -0.0403361_dp
+  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = -0.0403361_dp
+  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.403361_dp
+
 
   ! Off
   ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.0_dp

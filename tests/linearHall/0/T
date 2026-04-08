@@ -1,7 +1,10 @@
 /*--------------------------------*- C++ -*----------------------------------*\
-  Temperature field for mhdThermoInterFoam5 (argon plasma)
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  dev                                   |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
-
 FoamFile
 {
     version     2.0;
@@ -10,9 +13,10 @@ FoamFile
     location    "0";
     object      T;
 }
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 // Temperature [K]
-dimensions      [0 0 0 1 0 0 0];
+dimensions [0 0 0 1 0 0 0];
 
 internalField   uniform 100;
 
@@ -75,11 +79,11 @@ boundaryField
         type    zeroGradient;
     }
 
-
     defaultFaces
     {
         type    zeroGradient;
     }
-
 }
 
+
+// ************************************************************************* //

@@ -15,10 +15,9 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Volume current desnity, J / m^2
+// Volume current density [A/m^2]
 dimensions [0 -2 0 0 0 1 0];
 
-// Start from zero; Elmer overwrites this during coupling
 internalField   uniform (0 0 0);
 
 
@@ -79,16 +78,11 @@ boundaryField
         type    zeroGradient;
     }
 
-
     defaultFaces
     {
         type    zeroGradient;
     }
-
 }
 
 
-
 // ************************************************************************* //
-
-

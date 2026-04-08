@@ -1,0 +1,51 @@
+# ============================================================================
+# Centralized electrode & case configuration for linearHall
+#
+# This file is the single source of truth for electrode placement, channel
+# geometry, mesh sizing, and physics parameters.  Run:
+#
+#     python configure.py                  # generate case.sif + OpenFOAM 0/ files
+#     python configure.py --mesh           # also regenerate the Gmsh mesh
+#     python configure.py --dry-run        # preview without writing files
+#
+# ============================================================================
+
+channel:
+  length: 0.200            # m  (200 mm)
+  height: 0.050            # m  ( 50 mm)
+  width:  0.050            # m  ( 50 mm)
+  wall_thickness: 0.005    # m  (  5 mm insulator / electrode shell)
+
+mesh:
+  size_min: null            # global minimum edge length (null = Gmsh default)
+  size_max: null            # global maximum edge length
+  size_factor: 0.2          # >1 coarser, <1 finer
+
+# ---------------------------------------------------------------------------
+# Electrode pairs — two supported formats:
+#
+#   Format A – explicit pairs (full control over each electrode):
+#     electrodes:
+#       pairs:
+#         - { x_center: 0.040, length: 0.010, resistance: 1.0 }
+#         - { x_center: 0.120, length: 0.010, resistance: 1.0 }
+#
+#   Format B – auto-spaced (evenly distributed along the channel):
+#     electrodes:
+#       count: 4
+#       length: 0.010
+#       resistance: 1.0
+#
+# When "pairs" is present it takes precedence over "count".
+# ---------------------------------------------------------------------------
+electrodes:
+  pairs:
+    - { x_center: 0.040, length: 0.010, resistance: 1.0 }
+    - { x_center: 0.080, length: 0.010, resistance: 1.0 }
+    - { x_center: 0.120, length: 0.010, resistance: 1.0 }
+    - { x_center: 0.160, length: 0.010, resistance: 1.0 }
+
+physics:
+  B_field: [0, 0, 1.5]          # Tesla – initial / boundary magnetic flux density
+  inlet_velocity: [391, 0, 0]   # m/s  – inlet velocity (Mach-1 argon at ~1500 K)
+  inlet_temperature: 1500       # K    – inlet static temperature

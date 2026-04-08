@@ -7,7 +7,6 @@ Simulation
   Coordinate System = String "Cartesian 3D"
   Simulation Type = Steady
 
-  ! One steady-state iteration per coupling step (avoids blocking on 2nd recv from OpenFOAM)
   Steady State Max Iterations = 1000
   Steady State Min Iterations = 1000
 
@@ -16,9 +15,6 @@ Simulation
 End
 
 
-! -------------------------
-! Body / One master equation (like your working pattern)
-! -------------------------
 Body 1
   Name = "fluid"
   Target Bodies(1) = 1
@@ -126,27 +122,16 @@ Solver 9
   Calculate Volume Current = Logical True
   Calculate Joule Heating  = Logical True
 
-  ! --------------------------------------------------
-  ! Nonlinear system (Picard, damped)
-  ! --------------------------------------------------
   Nonlinear System Max Iterations = 40
   Nonlinear System Convergence Tolerance = 5.0e-3
-  ! Slightly higher relaxation speeds convergence for this weakly nonlinear coupling.
   Nonlinear System Relaxation Factor = 0.7
   Nonlinear System Convergence Without Constraints = Logical True
-  
-  ! Force collections matrix to be rebuilt every iteration
+
   Linear System Refactorize = Logical True
 
-
-
-  ! Force Picard only (no Newton)
   Nonlinear System Newton After Iterations = 0
   Nonlinear System Newton After Tolerance  = 1.0e-3
 
-  ! --------------------------------------------------
-  ! Linear system
-  ! --------------------------------------------------
   Linear System Solver = Iterative
   Linear System Iterative Method = GCR
   Linear System GCR Restart = 200
@@ -177,9 +162,6 @@ Solver 10
 End
 
 
-! -------------------------
-! Material
-! -------------------------
 Material 1
   Name = "Conducting Fluid"
 
@@ -188,9 +170,6 @@ Material 1
 End
 
 
-! -------------------------
-! Body Force: none
-! -------------------------
 Body Force 1
   Name = "NoSource"
 End
@@ -198,20 +177,25 @@ End
 ! -------------------------
 ! Boundary Conditions
 ! -------------------------
-!   InletX (20)           -> 1
-!   OutletX (21)          -> 2
-!   InsulatorSurface (30) -> 3
-!   CathodeSurface_1 (40) -> 4    AnodeSurface_1 (41) -> 5
-!   CathodeSurface_2 (42) -> 6    AnodeSurface_2 (43) -> 7
-!   CathodeSurface_3 (44) -> 8    AnodeSurface_3 (45) -> 9
-!   CathodeSurface_4 (46) -> 10   AnodeSurface_4 (47) -> 11
+!   Boundary name            Elmer index
+!   InletX                     1
+!   OutletX                    2
+!   InsulatorSurface           3
+!   CathodeSurface_1           4
+!   AnodeSurface_1             5
+!   CathodeSurface_2           6
+!   AnodeSurface_2             7
+!   CathodeSurface_3           8
+!   AnodeSurface_3             9
+!   CathodeSurface_4           10
+!   AnodeSurface_4             11
 
 Boundary Condition 1
   ! CathodeSurface_1
   Target Boundaries(1) = 4
   Electrode Pair = Integer 1
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 2
@@ -219,7 +203,7 @@ Boundary Condition 2
   Target Boundaries(1) = 5
   Electrode Pair = Integer 1
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 3
@@ -227,7 +211,7 @@ Boundary Condition 3
   Target Boundaries(1) = 6
   Electrode Pair = Integer 2
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 4
@@ -235,7 +219,7 @@ Boundary Condition 4
   Target Boundaries(1) = 7
   Electrode Pair = Integer 2
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 5
@@ -243,7 +227,7 @@ Boundary Condition 5
   Target Boundaries(1) = 8
   Electrode Pair = Integer 3
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 6
@@ -251,7 +235,7 @@ Boundary Condition 6
   Target Boundaries(1) = 9
   Electrode Pair = Integer 3
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 7
@@ -259,7 +243,7 @@ Boundary Condition 7
   Target Boundaries(1) = 10
   Electrode Pair = Integer 4
   Electrode Sign = String "minus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 8
@@ -267,7 +251,7 @@ Boundary Condition 8
   Target Boundaries(1) = 11
   Electrode Pair = Integer 4
   Electrode Sign = String "plus"
-  Electrode Resistance = Real 0.001
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 9
@@ -284,4 +268,3 @@ Boundary Condition 11
   ! OutletX
   Target Boundaries(1) = 2
 End
-
