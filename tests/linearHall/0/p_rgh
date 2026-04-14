@@ -28,7 +28,7 @@ boundaryField
     OutletX
     {
         type fixedValue;
-        value uniform 0;
+        value uniform 50000;
     }
     FaradayMinusY
     {

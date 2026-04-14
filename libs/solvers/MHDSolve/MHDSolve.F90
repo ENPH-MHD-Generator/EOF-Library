@@ -367,8 +367,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
   CALL DefaultStart()
 
-  ! CALL UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PPerm, &
-  !                           SigVals, SigPerm)
+  CALL UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PPerm, SigVals, SigPerm)
   DO iter = 1, NonlinearIter
     at  = CPUTime()
     at0 = RealTime()
@@ -661,6 +660,20 @@ SUBROUTINE UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PP
   REAL(KIND=dp), PARAMETER :: qe = 1.602176634d-19
   REAL(KIND=dp), PARAMETER :: h  = 6.62607015d-34
   REAL(KIND=dp), PARAMETER :: eV_to_J = 1.602176634d-19
+  REAL(KIND=dp), PARAMETER :: Pref = 101325.0_dp   ! Pa
+  REAL(KIND=dp) :: Pabs
+
+  INTEGER :: n_ok, n_bad_perm, n_bad_P, n_bad_T, n_bad_nu
+  REAL(KIND=dp) :: Tmin, Tmax, Pmin, Pmax, sigmin_seen, sigmax_seen
+  LOGICAL :: first
+
+  n_ok = 0
+  n_bad_perm = 0
+  n_bad_P = 0
+  n_bad_T = 0
+  n_bad_nu = 0
+
+  first = .TRUE.
 
   ! For now: assume Body 1 material is used (same as your case)
   matId = ListGetInteger(Model % Bodies(1) % Values, 'Material', gotIt, minv=1, maxv=Model % NumberOfMaterials)
@@ -684,10 +697,42 @@ SUBROUTINE UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PP
     ipP = PPerm(i)
     ipS = SigPerm(i)
 
+    IF (ipT <= 0 .OR. ipP <= 0 .OR. ipS <= 0) THEN
+      n_bad_perm = n_bad_perm + 1
+      CYCLE
+    END IF
+
     IF (ipT <= 0 .OR. ipP <= 0 .OR. ipS <= 0) CYCLE
 
     Te = TgasVals(ipT)   ! equilibrium assumption Te := Tg at nodes
     P  = PVals(ipP)
+
+    IF (first) THEN
+      Tmin = Te; Tmax = Te
+      Pmin = P;  Pmax = P
+      sigmin_seen = SigVals(ipS); sigmax_seen = SigVals(ipS)
+      first = .FALSE.
+    ELSE
+      Tmin = MIN(Tmin, Te); Tmax = MAX(Tmax, Te)
+      Pmin = MIN(Pmin, P);  Pmax = MAX(Pmax, P)
+    END IF
+
+    ! sanity checks
+    IF (.NOT.(Te > 0.0_dp) .OR. Te /= Te) THEN   ! Te/=Te catches NaN
+      n_bad_T = n_bad_T + 1
+      SigVals(ipS) = sigmaMin
+      CYCLE
+    END IF
+
+    Pabs = P + Pref
+
+    IF (Pabs <= 0.0_dp) THEN
+      n_bad_P = n_bad_P + 1
+      SigVals(ipS) = sigmaMin
+      CYCLE
+    END IF
+
+    ng = Pabs / (kB * Tp)
 
     Tp = Te
 
@@ -698,9 +743,6 @@ SUBROUTINE UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PP
       SigVals(ipS) = sigmaMin
       CYCLE
     END IF
-
-    ! primary gas number density
-    ng = P / (kB * Tp)
 
     ! --- Saha (single ionization, Te = Tp assumed) ---
     ! SahaRHS = (2/ng) * (2*pi*me*kB*Te/h^2)^(3/2) * exp(-chi/(kB*Te))
@@ -722,6 +764,13 @@ SUBROUTINE UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PP
     vth = SQRT( 8.0d0*kB*Te/(pi*me) )
     nu_en = ng * sigma_en * vth
 
+    IF (nu_en <= 0.0_dp .OR. nu_en /= nu_en) THEN
+      n_bad_nu = n_bad_nu + 1
+      sigma = sigmaMin
+    ELSE
+      sigma = ne * qe*qe / (me * nu_en)
+    END IF
+
     IF (nu_en <= 0.0d0) THEN
       sigma = sigmaMin
     ELSE
@@ -733,9 +782,26 @@ SUBROUTINE UpdateConductivityFromTe(Model, Solver, TgasVals, TgasPerm, PVals, PP
     IF (sigma > sigmaMax) sigma = sigmaMax
 
     SigVals(ipS) = sigma
+
+    sigmin_seen = MIN(sigmin_seen, sigma)
+    sigmax_seen = MAX(sigmax_seen, sigma)
+    n_ok = n_ok + 1
   END DO
 
+!  WRITE(Message,'(A, I0, A, I0, A, I0, A, I0, A, I0)') &
+!          'SigmaUpdate: ok=', n_ok, ' bad_perm=', n_bad_perm, &
+!          ' badP=', n_bad_P, ' badT=', n_bad_T, ' badNu=', n_bad_nu
+!  WRITE(*,'(A)') TRIM(Message)
+!
+!  WRITE(Message,'(A, ES12.4, A, ES12.4, A, ES12.4, A, ES12.4)') &
+!          'Ranges: T=[', Tmin, ',', Tmax, ']  P=[', Pmin, ',', Pmax, ']'
+!  WRITE(*,'(A)') TRIM(Message)
+!
+!  WRITE(Message,'(A, ES12.4, A, ES12.4)') 'Sigma seen: [', sigmin_seen, ',', sigmax_seen, ']'
+!  WRITE(*,'(A)') TRIM(Message)
+
 END SUBROUTINE UpdateConductivityFromTe
+
 !------------------------------------------------------------------------------
 !> Compute the Current and Joule Heating at model nodes.
 !------------------------------------------------------------------------------
