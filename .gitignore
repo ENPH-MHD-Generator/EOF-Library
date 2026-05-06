@@ -48,3 +48,7 @@ partitioning.*
 
 # Cursor AI
 .cursor
+
+
+# Saved Runs
+saved_runs/
