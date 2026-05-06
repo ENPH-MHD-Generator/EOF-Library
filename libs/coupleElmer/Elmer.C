@@ -39,6 +39,12 @@ Web:       http://eof-library.com
 #include "dynamicFvMesh.H"
 #endif
 
+#if FOAM_MAJOR_VERSION >= 2412
+#define EOF_MPI_COMM Foam::PstreamGlobals::MPICommunicators_[Foam::UPstream::worldComm]
+#else
+#define EOF_MPI_COMM Foam::PstreamGlobals::MPI_COMM_FOAM
+#endif
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 template <class meshT>
@@ -70,14 +76,14 @@ void Foam::Elmer<meshT>::initialize()
     MPI_Comm_rank(MPI_COMM_WORLD, &myGlobalRank);
     MPI_Comm_size(MPI_COMM_WORLD, &totGlobalRanks);
 
-    MPI_Comm_size(PstreamGlobals::MPI_COMM_FOAM, &totLocalRanks);
-    MPI_Comm_rank(PstreamGlobals::MPI_COMM_FOAM, &myLocalRank);
+    MPI_Comm_size(EOF_MPI_COMM, &totLocalRanks);
+    MPI_Comm_rank(EOF_MPI_COMM, &myLocalRank);
 
     totElmerRanks = totGlobalRanks-totLocalRanks;
 
     if (myLocalRank==0) OFRanksStart = myGlobalRank;
 
-    MPI_Bcast(&OFRanksStart, 1, MPI_INT, 0, PstreamGlobals::MPI_COMM_FOAM);
+    MPI_Bcast(&OFRanksStart, 1, MPI_INT, 0, EOF_MPI_COMM);
 
     if (OFRanksStart==0) {
         ElmerRanksStart = totLocalRanks;
@@ -317,7 +323,7 @@ void Foam::Elmer<meshT>::initialize()
             MPI_Test_Sleep(ELp[i].reqSend);
         }
 
-        MPI_Barrier(PstreamGlobals::MPI_COMM_FOAM);
+        MPI_Barrier(EOF_MPI_COMM);
         Info<< "OpenFOAM2Elmer Init = " << MPI_Wtime()-commTime << " s" << nl << endl;
     }
 }
@@ -497,7 +503,7 @@ void Foam::Elmer<meshT>::findOverlappingBoxes()
                  MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     }
 
-    MPI_Bcast(ELboundBoxes, totElmerRanks*2*3, MPI_DOUBLE, 0, PstreamGlobals::MPI_COMM_FOAM);
+    MPI_Bcast(ELboundBoxes, totElmerRanks*2*3, MPI_DOUBLE, 0, EOF_MPI_COMM);
 
     for (int i=0; i<totElmerRanks; i++ ) {
         point tmpPointMin;
@@ -517,7 +523,7 @@ void Foam::Elmer<meshT>::findOverlappingBoxes()
     }
 
     MPI_Allgather(&OF_EL_overlap[OFoffset], totElmerRanks, MPI_INT,
-        OF_EL_overlap, totElmerRanks, MPI_INT, PstreamGlobals::MPI_COMM_FOAM);
+        OF_EL_overlap, totElmerRanks, MPI_INT, EOF_MPI_COMM);
 
     if ( myLocalRank==0 ) {
         MPI_Send(OF_EL_overlap, totLocalRanks*totElmerRanks, MPI_INT, ELp[0].globalRank, 1002,
@@ -543,9 +549,12 @@ void Foam::Elmer<meshT>::MPI_Test_Sleep(MPI_Request& req)
 }
 
 // explicit instantiations
-template class Elmer<fvMesh>;
-#if (FOAM_MAJOR_VERSION == v1812 || FOAM_MAJOR_VERSION < 10)
-template class Elmer<dynamicFvMesh>;
-#endif
+namespace Foam {
+    template class Elmer<fvMesh>;
+    #if (FOAM_MAJOR_VERSION == v1812 || FOAM_MAJOR_VERSION < 10)
+    template class Elmer<dynamicFvMesh>;
+    #endif
+}
+
 
 // ************************************************************************* //

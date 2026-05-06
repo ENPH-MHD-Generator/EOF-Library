@@ -1,22 +1,28 @@
 sinclude $(GENERAL_RULES)/mplib$(WM_MPLIB)
 sinclude $(RULES)/mplib$(WM_MPLIB)
 
+FOAM_VERSION_RAW   = $(firstword $(subst ., ,$(WM_PROJECT_VERSION)))
+FOAM_VERSION_NUM   = $(patsubst v%,%,$(FOAM_VERSION_RAW))
+FOAM_MAJOR_VERSION = $(FOAM_VERSION_NUM)
+
 ifeq ($(EOF_SRC),)
     $(info EOF_SRC is not set, trying default location..)
-    EOF_INC = -I../../libs/coupleElmer/lnInclude  \
-              -I../../libs/commSplit/lnInclude
+    EOF_BASE = ../../libs
 else
-    EOF_INC = -I$(EOF_SRC)/coupleElmer/lnInclude \
-              -I$(EOF_SRC)/commSplit/lnInclude
+    EOF_BASE = $(EOF_SRC)
 endif
 
-FOAM_MAJOR_VERSION=$(firstword $(subst ., ,$(WM_PROJECT_VERSION)))
+EOF_INC = \
+    -I$(EOF_BASE)/coupleElmer/lnInclude
 
-ifeq ($(shell test $(FOAM_MAJOR_VERSION) -lt 6; echo $$?),0)
+ifeq ($(shell test $(FOAM_VERSION_NUM) -lt 6; echo $$?),0)
     $(info ************  OF version <6 ************)
     EOF_LIBS = -lPstream
+    EOF_INC += -I$(EOF_BASE)/commSplit/lnInclude
 else
+    $(info ************  OF version $(FOAM_VERSION_RAW) / numeric $(FOAM_VERSION_NUM) ************)
     EOF_LIBS =
+    EOF_INC += -I$(LIB_SRC)/Pstream/mpi/lnInclude
 endif
 
 EXE_INC = \

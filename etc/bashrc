@@ -1,7 +1,10 @@
-export EOF_HOME="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"/..
+export EOF_HOME="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export EOF_SRC=$EOF_HOME/libs
 export LD_LIBRARY_PATH=$EOF_SRC:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=$FOAM_USER_LIBBIN:$LD_LIBRARY_PATH
+export PATH=$HOME/eof/attempt2/elmer-mpi-install/bin:$PATH
+export DYLD_LIBRARY_PATH=$HOME/eof/attempt2/elmer-mpi-install/lib:$DYLD_LIBRARY_PATH
+
 
 eofPull() {
     git -C $EOF_HOME pull
@@ -11,6 +14,7 @@ eofCompile() {
     wmake $EOF_SRC/coupleElmer
     elmerf90 -o $EOF_SRC/Elmer2OpenFOAM.so -J$EOF_SRC $EOF_SRC/Elmer2OpenFOAM.F90
     elmerf90 -o $EOF_SRC/OpenFOAM2Elmer.so -J$EOF_SRC $EOF_SRC/OpenFOAM2Elmer.F90
+    elmerf90 -o $EOF_SRC/MHDSolve.so  -J$EOF_SRC $EOF_SRC/solvers/MHDSolve/MHDUtils.F90 $EOF_SRC/solvers/MHDSolve/MHDSolve.F90
 }
 
 eofUpdate() {
