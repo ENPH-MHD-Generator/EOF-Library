@@ -71,7 +71,7 @@ MODULE OpenFOAM2ElmerSolverUtils
 END MODULE OpenFOAM2ElmerSolverUtils
 
 !------------------------------------------------------------------------------
-SUBROUTINE MPI_TEST_SLEEP( req, ierr )
+SUBROUTINE MPI_TEST_SLEEP_O2E( req, ierr )
 
   USE ISO_C_BINDING
   USE OpenFOAM2ElmerSolverUtils
@@ -96,10 +96,10 @@ SUBROUTINE MPI_TEST_SLEEP( req, ierr )
     CALL usleep(1000_c_int32_t)
   END DO
 
-END SUBROUTINE MPI_TEST_SLEEP
+END SUBROUTINE MPI_TEST_SLEEP_O2E
 
 !------------------------------------------------------------------------------
-SUBROUTINE findOverlappingBoxes(s)
+SUBROUTINE findOverlappingBoxes_O2E(s)
 
   USE OpenFOAM2ElmerSolverUtils
 
@@ -120,10 +120,10 @@ SUBROUTINE findOverlappingBoxes(s)
   CALL MPI_Bcast(OF_EL_overlap(:,:,s), totOFRanks*totLocalRanks, MPI_INTEGER, 0, ELMER_COMM_WORLD, ierr)
 
   DO i=0,totOFRanks-1
-    OFp(i,s) % boxOverlap = (OF_EL_overlap(myLocalRank,i,s)==1)
+    OFp(i,s) % boxOverlap = (OF_EL_overlap(i,myLocalRank,s)==1)
   END DO
 
-END SUBROUTINE findOverlappingBoxes
+END SUBROUTINE findOverlappingBoxes_O2E
 
 !------------------------------------------------------------------------------
 SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
@@ -246,7 +246,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
     END IF
 
     CALL Info('OpenFOAM2ElmerSolver', 'Allocating OpenFOAM data structures',Level=3)
-    ALLOCATE( OF_EL_overlap(0:totLocalRanks-1,0:totOFRanks-1,nBodiesToComm) )
+    ALLOCATE( OF_EL_overlap(0:totOFRanks-1,0:totLocalRanks-1,nBodiesToComm) )
     ALLOCATE( ELboundBoxes(3,2,0:totLocalRanks-1,nBodiesToComm) )
     ALLOCATE( OFp(0:totOFRanks-1,nBodiesToComm) )
 
@@ -360,7 +360,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
         ALLOCATE( OFp(i,s) % OFMesh )
         OFp(i,s) % globalRank = i + OFRanksStart
       END DO
-      CALL findOverlappingBoxes(s)
+      CALL findOverlappingBoxes_O2E(s)
 
       ! Starting communication
       !------------------------------------------------------------------------
@@ -377,7 +377,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
       DO i = 0, totOFRanks - 1
         IF(.NOT.OFp(i,s) % boxOverlap) CYCLE
         ! Number of Elmer elements
-        CALL MPI_TEST_SLEEP(OFp(i,s) % reqSend, ierr)
+        CALL MPI_TEST_SLEEP_O2E(OFp(i,s) % reqSend, ierr)
         ! Element X coords
         CALL MPI_ISEND(commElementX, nElements, MPI_DOUBLE, &
             OFp(i,s) % globalRank, 897, MPI_COMM_WORLD, OFp(i,s) % reqSend, ierr)
@@ -393,7 +393,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
         OFp(i,s) % nFoundElements = 0 ! keep this
         IF(.NOT.OFp(i,s) % boxOverlap) CYCLE
         ! Element Z coords
-        CALL MPI_TEST_SLEEP(OFp(i,s) % reqSend, ierr)
+        CALL MPI_TEST_SLEEP_O2E(OFp(i,s) % reqSend, ierr)
         ! Number of found elements
         CALL MPI_IRECV(OFp(i,s) % nFoundElements, 1, MPI_INTEGER, &
             OFp(i,s) % globalRank, 895, MPI_COMM_WORLD, OFp(i,s) % reqRecv, ierr)
@@ -402,7 +402,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
       DO i = 0, totOFRanks - 1
         IF(.NOT.OFp(i,s) % boxOverlap) CYCLE
         ! Number of found elements
-        CALL MPI_TEST_SLEEP(OFp(i,s) % reqRecv, ierr)
+        CALL MPI_TEST_SLEEP_O2E(OFp(i,s) % reqRecv, ierr)
 
         IF (OFp(i,s) % nFoundElements == 0) CYCLE
         totElementsFound = totElementsFound + OFp(i,s) % nFoundElements
@@ -418,7 +418,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
       DO i = 0, totOFRanks - 1
         IF (OFp(i,s) % nFoundElements == 0) CYCLE
         ! Indexes of found elements
-        CALL MPI_TEST_SLEEP(OFp(i,s) % reqRecv, ierr)
+        CALL MPI_TEST_SLEEP_O2E(OFp(i,s) % reqRecv, ierr)
         OFp(i,s) % foundElementIndx = OFp(i,s) % foundElementIndx + 1
       END DO
 
@@ -439,7 +439,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
   DO s=1,nBodiesToComm
     ! Receive simulation status
     CALL MPI_IRECV( OFstatus, 1, MPI_INTEGER, OFp(0,s) % globalRank, 799, MPI_COMM_WORLD, OFp(0,s) % reqRecv, ierr)
-    CALL MPI_TEST_SLEEP(OFp(0,s) % reqRecv, ierr)
+    CALL MPI_TEST_SLEEP_O2E(OFp(0,s) % reqRecv, ierr)
 
     IF (OFstatus.NE.1) THEN
       CALL Info('OpenFOAM2ElmerSolver','Elmer has last iteration!', Level=3 )
@@ -460,7 +460,7 @@ SUBROUTINE OpenFOAM2ElmerSolver( Model,Solver,dt,TransientSimulation )
 
       DO i = 0, totOFRanks - 1
         IF (OFp(i,s) % nFoundElements == 0) CYCLE
-        CALL MPI_TEST_SLEEP(OFp(i,s) % reqRecv, ierr)
+        CALL MPI_TEST_SLEEP_O2E(OFp(i,s) % reqRecv, ierr)
 
 #ifndef SKIP_FP_FIX
         ! Fix floating point exception

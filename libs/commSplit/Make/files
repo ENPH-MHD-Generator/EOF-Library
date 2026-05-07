@@ -1,8 +1,16 @@
-FOAM_MAJOR_VERSION=$(firstword $(subst ., ,$(WM_PROJECT_VERSION)))
+FOAM_VERSION_RAW = $(firstword $(subst ., ,$(WM_PROJECT_VERSION)))
 
-$(FOAM_MAJOR_VERSION)/UOPwrite.C
-$(FOAM_MAJOR_VERSION)/UIPread.C
-$(FOAM_MAJOR_VERSION)/UPstream.C
-$(FOAM_MAJOR_VERSION)/PstreamGlobals.C
+$(FOAM_VERSION_RAW)/UIPstreamRead.C
+$(FOAM_VERSION_RAW)/UIPBstreamRead.C
+$(FOAM_VERSION_RAW)/UOPstreamWrite.C
+$(FOAM_VERSION_RAW)/UOPBstreamWrite.C
+$(FOAM_VERSION_RAW)/UPstream.C
+$(FOAM_VERSION_RAW)/UPstreamCommunicator.C
+$(FOAM_VERSION_RAW)/UPstreamRequest.C
+$(FOAM_VERSION_RAW)/UPstreamBroadcast.C
+$(FOAM_VERSION_RAW)/UPstreamReduce.C
+$(FOAM_VERSION_RAW)/UPstreamAllToAll.C
+$(FOAM_VERSION_RAW)/UPstreamGatherScatter.C
+$(FOAM_VERSION_RAW)/PstreamGlobals.C
 
 LIB = $(FOAM_USER_LIBBIN)/libPstream

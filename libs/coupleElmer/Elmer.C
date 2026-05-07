@@ -38,12 +38,18 @@ Web:       http://eof-library.com
 #if (FOAM_MAJOR_VERSION == v1812 || FOAM_MAJOR_VERSION < 10)
 #include "dynamicFvMesh.H"
 #endif
+#include <vector>
 
 #if FOAM_MAJOR_VERSION >= 2412
 #define EOF_MPI_COMM Foam::PstreamGlobals::MPICommunicators_[Foam::UPstream::worldComm]
 #else
 #define EOF_MPI_COMM Foam::PstreamGlobals::MPI_COMM_FOAM
 #endif
+
+#define MPI_LOG(msg) \
+    Pout<< "[OF global=" << myGlobalRank \
+        << " local=" << myLocalRank \
+        << "] " << msg << nl << endl;
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -130,61 +136,96 @@ void Foam::Elmer<meshT>::initialize()
 
         Info<< "Sending data to Elmer.." << endl;
 
-        for ( i=0; i<totElmerRanks; i++ ) {
+        std::vector<MPI_Request> sendReqs;
+        std::vector<MPI_Request> recvReqs;
+
+        for (i = 0; i < totElmerRanks; i++)
+        {
+            ELp[i].nFoundCells = 0;
             if (!ELp[i].boxOverlap) continue;
-            MPI_Isend(&nCells, 1, MPI_INT, ELp[i].globalRank, 999, MPI_COMM_WORLD, &ELp[i].reqSend);
+
+            MPI_LOG("SEND nCells tag=999 to " << ELp[i].globalRank << " count=" << nCells);
+            MPI_Send(&nCells, 1, MPI_INT, ELp[i].globalRank, 999, MPI_COMM_WORLD);
+
+            MPI_LOG("SEND x tag=997 to " << ELp[i].globalRank << " count=" << nCells);
+            MPI_Send(cellCentres_x, nCells, MPI_DOUBLE, ELp[i].globalRank, 997, MPI_COMM_WORLD);
+
+            MPI_LOG("SEND y tag=998 to " << ELp[i].globalRank << " count=" << nCells);
+            MPI_Send(cellCentres_y, nCells, MPI_DOUBLE, ELp[i].globalRank, 998, MPI_COMM_WORLD);
+
+            MPI_LOG("SEND z tag=9997 to " << ELp[i].globalRank << " count=" << nCells);
+            MPI_Send(cellCentres_z, nCells, MPI_DOUBLE, ELp[i].globalRank, 9997, MPI_COMM_WORLD);
+
+            MPI_LOG("RECV nFoundCells tag=995 from " << ELp[i].globalRank);
+            MPI_Recv(&ELp[i].nFoundCells, 1, MPI_INT, ELp[i].globalRank, 995, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+            MPI_LOG("GOT nFoundCells=" << ELp[i].nFoundCells << " from " << ELp[i].globalRank);
         }
-        for ( i=0; i<totElmerRanks; i++ ) {
-            if (!ELp[i].boxOverlap) continue;
-            MPI_Test_Sleep(ELp[i].reqSend);
-            MPI_Isend(cellCentres_x, nCells, MPI_DOUBLE, ELp[i].globalRank, 997, MPI_COMM_WORLD, &ELp[i].reqSend);
-            MPI_Request_free(&ELp[i].reqSend);
-            MPI_Isend(cellCentres_y, nCells, MPI_DOUBLE, ELp[i].globalRank, 997, MPI_COMM_WORLD, &ELp[i].reqSend);
-            MPI_Request_free(&ELp[i].reqSend);
-            MPI_Isend(cellCentres_z, nCells, MPI_DOUBLE, ELp[i].globalRank, 997, MPI_COMM_WORLD, &ELp[i].reqSend);
-        }
-        for ( i=0; i<totElmerRanks; i++ ) {
-            ELp[i].nFoundCells = 0; // keep this
-            if (!ELp[i].boxOverlap) continue;
-            MPI_Test_Sleep(ELp[i].reqSend);
-            MPI_Irecv(&ELp[i].nFoundCells, 1, MPI_INT, ELp[i].globalRank, 995,
-                      MPI_COMM_WORLD, &ELp[i].reqRecv);
+
+        std::vector<MPI_Request> allReqs;
+        allReqs.reserve(sendReqs.size() + recvReqs.size());
+
+        allReqs.insert(allReqs.end(), sendReqs.begin(), sendReqs.end());
+        allReqs.insert(allReqs.end(), recvReqs.begin(), recvReqs.end());
+
+        if (!allReqs.empty())
+        {
+            MPI_Waitall(allReqs.size(), allReqs.data(), MPI_STATUSES_IGNORE);
         }
 
         int totCellsFound = 0;
-        for ( i=0; i<totElmerRanks; i++ ) {
+        for (i = 0; i < totElmerRanks; i++)
+        {
             if (!ELp[i].boxOverlap) continue;
-            MPI_Test_Sleep(ELp[i].reqRecv);
             totCellsFound += ELp[i].nFoundCells;
         }
 
-        if (totCellsFound < nCells) {
-            if (continueOnElementsNotFound_) {
+        if (totCellsFound < nCells)
+        {
+            if (continueOnElementsNotFound_)
+            {
                 WarningInFunction << "OpenFOAM #" << myLocalRank << " has " << nCells
-                                 << " cells, Elmer found " << totCellsFound << endl;
+                                << " cells, Elmer found " << totCellsFound << endl;
             }
-            else {
-            FatalErrorInFunction << "OpenFOAM #" << myLocalRank << " has " << nCells
-                                 << " cells, Elmer found " << totCellsFound << Foam::abort(FatalError);
+            else
+            {
+                FatalErrorInFunction << "OpenFOAM #" << myLocalRank << " has " << nCells
+                                    << " cells, Elmer found " << totCellsFound
+                                    << Foam::abort(FatalError);
             }
         }
 
-        for ( i=0; i<totElmerRanks; i++ ) {
-            if ( ELp[i].nFoundCells == 0 ) continue;
+        recvReqs.clear();
+
+        for (i = 0; i < totElmerRanks; i++)
+        {
+            if (ELp[i].nFoundCells == 0) continue;
+
             ELp[i].foundCellsIndx = new int[ELp[i].nFoundCells];
             ELp[i].recvBuffer0 = new double[ELp[i].nFoundCells];
 
-            if (ELp[i].foundCellsIndx == nullptr || ELp[i].recvBuffer0 == nullptr) {
+            if (ELp[i].foundCellsIndx == nullptr || ELp[i].recvBuffer0 == nullptr)
+            {
                 FatalErrorInFunction << "Failed to allocate memory" << Foam::abort(FatalError);
             }
 
-            MPI_Irecv(ELp[i].foundCellsIndx, ELp[i].nFoundCells, MPI_INT, ELp[i].globalRank, 994,
-                      MPI_COMM_WORLD, &ELp[i].reqRecv);
+            MPI_Request r;
+            MPI_Irecv
+            (
+                ELp[i].foundCellsIndx,
+                ELp[i].nFoundCells,
+                MPI_INT,
+                ELp[i].globalRank,
+                994,
+                MPI_COMM_WORLD,
+                &r
+            );
+            recvReqs.push_back(r);
         }
 
-        for ( i=0; i<totElmerRanks; i++ ) {
-            if ( ELp[i].nFoundCells == 0 ) continue;
-            MPI_Test_Sleep(ELp[i].reqRecv);
+        if (!recvReqs.empty())
+        {
+            MPI_Waitall(recvReqs.size(), recvReqs.data(), MPI_STATUSES_IGNORE);
         }
     }
 
@@ -525,9 +566,42 @@ void Foam::Elmer<meshT>::findOverlappingBoxes()
     MPI_Allgather(&OF_EL_overlap[OFoffset], totElmerRanks, MPI_INT,
         OF_EL_overlap, totElmerRanks, MPI_INT, EOF_MPI_COMM);
 
-    if ( myLocalRank==0 ) {
-        MPI_Send(OF_EL_overlap, totLocalRanks*totElmerRanks, MPI_INT, ELp[0].globalRank, 1002,
-                 MPI_COMM_WORLD);
+    Info<< "[OF local=" << myLocalRank << "] overlap matrix:" << nl;
+    for (int of=0; of<totLocalRanks; ++of)
+    {
+        Info<< "  OF " << of << ": ";
+        for (int el=0; el<totElmerRanks; ++el)
+        {
+            Info<< OF_EL_overlap[of*totElmerRanks + el] << " ";
+        }
+        Info<< nl;
+    }
+
+    if (myLocalRank == 0)
+    {
+        std::vector<int> overlapInts(totLocalRanks*totElmerRanks);
+
+        for (int ii = 0; ii < totLocalRanks*totElmerRanks; ++ii)
+        {
+            overlapInts[ii] = static_cast<int>(OF_EL_overlap[ii]);
+        }
+
+        Info<< "[OF local=0] sending overlapInts:";
+        for (int ii = 0; ii < totLocalRanks*totElmerRanks; ++ii)
+        {
+            Info<< " " << overlapInts[ii];
+        }
+        Info<< nl << endl;
+
+        MPI_Send
+        (
+            overlapInts.data(),
+            totLocalRanks*totElmerRanks,
+            MPI_INT,
+            ELp[0].globalRank,
+            1002,
+            MPI_COMM_WORLD
+        );
     }
 }
 
