@@ -27,6 +27,7 @@ eof: environment
 	. $(OPENFOAM_HOME)/etc/bashrc && wmake $(EOF_SRC)/coupleElmer
 	elmerf90 -o $(EOF_SRC)/Elmer2OpenFOAM.so -J $(nproc) $(EOF_SRC) $(EOF_SRC)/Elmer2OpenFOAM.F90
 	elmerf90 -o $(EOF_SRC)/OpenFOAM2Elmer.so -J $(nproc) $(EOF_SRC) $(EOF_SRC)/OpenFOAM2Elmer.F90
+	elmerf90 -o $(EOF_SRC)/MHDSolve.so       -J $(nproc) $(EOF_SRC) $(EOF_SRC)/solvers/MHDSolve/MHDUtils.F90 $(EOF_SRC)/solvers/MHDSolve/MHDSolve.F90
 
 solver: environment
 	. $(OPENFOAM_HOME)/etc/bashrc && wclean solvers/mdhLinearHall
@@ -43,12 +44,7 @@ else
 endif
 
 elmer: environment
-	sudo rm -f /opt/elmerfem/fem/src/modules/MHDSolve.F90
-	sudo mkdir -p /opt/elmerfem/fem/src/modules/MHDSolve
-	sudo cp libs/solvers/MHDSolve/MHDUtils.F90 /opt/elmerfem/fem/src/modules/MHDSolve/
-	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve/
 	cd /opt/elmerfem/build && sudo cmake .. $(ELMER_CMAKE_FLAGS)
-	cd /opt/elmerfem/build && sudo make -j"$$(nproc)" MHDSolve
 	cd /opt/elmerfem/build && sudo make install/fast
 	cd $(EOF_HOME)
 
