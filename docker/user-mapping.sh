@@ -1,31 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# docker: mapping host uid and gid to user inisde container
-# --------------------------------------------------
-# Original file obtained from:
-# https://gist.github.com/renzok/29c9e5744f1dffa392cf
+set -Eeuo pipefail
 
-# if both not set we do not need to do anything
-if [ -z "${HOST_USER_ID}" -o -z "${HOST_USER_GID}" -o -z "${USER}" ]; then
-    echo "Flags '-e HOST_USER_ID=\$(id -u) -e HOST_USER_GID=\$(id -g)' were not set. You might have permission problems."
-    /bin/bash "$@"
-else
-  # reset user_?id to either new id or if empty old (still one of above
-  # might not be set)
-  USER_ID=${HOST_USER_ID:=$USER_ID}
-  USER_GID=${HOST_USER_GID:=$USER_GID}
+CONTAINER_USER="openfoam"
+CONTAINER_HOME="/home/openfoam"
 
-  LINE=$(grep -F "${USER}" /etc/passwd)
-  # replace all ':' with a space and create array
-  array=( ${LINE//:/ } )
-
-  # home is 5th element
-  USER_HOME=${array[4]}
-
-  sed -i -e "s/^${USER}:\([^:]*\):[0-9]*:[0-9]*/${USER}:\1:${USER_ID}:${USER_GID}/"  /etc/passwd
-  sed -i -e "s/^${USER}:\([^:]*\):[0-9]*/${USER}:\1:${USER_GID}/"  /etc/group
-
-  chown -R ${USER_ID}:${USER_GID} ${USER_HOME}
-
-  exec su - "${USER}" "$@"
+if [[ $# -eq 0 ]]; then
+  set -- /bin/bash
 fi
+
+if [[ -n "${HOST_USER_ID:-}" || -n "${HOST_USER_GID:-}" ]]; then
+  if [[ -z "${HOST_USER_ID:-}" || -z "${HOST_USER_GID:-}" ]]; then
+    echo "HOST_USER_ID and HOST_USER_GID must be supplied together." >&2
+    exit 2
+  fi
+  if [[ ! "$HOST_USER_ID" =~ ^[0-9]+$ || ! "$HOST_USER_GID" =~ ^[0-9]+$ ]]; then
+    echo "HOST_USER_ID and HOST_USER_GID must be numeric." >&2
+    exit 2
+  fi
+
+  current_uid="$(id -u "$CONTAINER_USER")"
+  current_gid="$(id -g "$CONTAINER_USER")"
+  if [[ "$current_gid" != "$HOST_USER_GID" ]]; then
+    groupmod --non-unique --gid "$HOST_USER_GID" "$CONTAINER_USER"
+  fi
+  if [[ "$current_uid" != "$HOST_USER_ID" || "$current_gid" != "$HOST_USER_GID" ]]; then
+    usermod --non-unique --uid "$HOST_USER_ID" --gid "$HOST_USER_GID" "$CONTAINER_USER"
+    chown -R "$HOST_USER_ID:$HOST_USER_GID" "$CONTAINER_HOME"
+  fi
+else
+  echo "Warning: HOST_USER_ID and HOST_USER_GID are unset; /runs may contain container-owned files." >&2
+fi
+
+exec /sbin/runuser -u "$CONTAINER_USER" -- "$@"

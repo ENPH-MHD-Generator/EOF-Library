@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+# Ensure direct calls have the same solver environment as an interactive shell.
+arguments=("$@")
+set --
+source /opt/openfoam6/etc/bashrc
+source /home/openfoam/EOF-Library/etc/bashrc
+
+cd /home/openfoam/EOF-Library/tests/linearHall
+exec /opt/mhd-python/bin/python3 -m caseprep "${arguments[@]}"

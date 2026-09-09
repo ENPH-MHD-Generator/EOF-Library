@@ -1,0 +1,428 @@
+"""Render validated case models into Elmer and OpenFOAM input files."""
+
+from __future__ import annotations
+
+from typing import Dict, Iterable, List, Mapping
+
+from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
+from .config import CaseConfig
+
+
+CASE_SIF_HEADER = """\
+Header
+  CHECK KEYWORDS Warn
+  Mesh DB "." "meshElmer"
+End
+
+Simulation
+  Coordinate System = String "Cartesian 3D"
+  Simulation Type = Steady
+
+  Steady State Max Iterations = 1000
+  Steady State Min Iterations = 1000
+
+  Output Intervals = 1
+  Post File = case.ep
+End
+
+
+Body 1
+  Name = "fluid"
+  Target Bodies(1) = 1
+  Equation = 1
+  Material = 1
+  Body Force = 1
+End
+
+Equation 1
+  Name = "EOF_HallChannel"
+  Active Solvers(10) = 1 2 3 4 5 6 7 8 9 10
+End
+
+
+! --------------------------------------------------
+! 1 Scalar Solvers
+! --------------------------------------------------
+
+Solver 1
+  Exec Solver = Always
+  Equation = "DeclareConductivity"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Electric Conductivity"
+  Variable DOFs = 1
+End
+
+Solver 2
+  Exec Solver = Always
+  Equation = "DeclareUx"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Ux"
+  Variable DOFs = 1
+End
+
+Solver 3
+  Exec Solver = Always
+  Equation = "DeclareUy"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Uy"
+  Variable DOFs = 1
+End
+
+Solver 4
+  Exec Solver = Always
+  Equation = "DeclareUz"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Uz"
+  Variable DOFs = 1
+End
+
+Solver 5
+  Exec Solver = Always
+  Equation = "DeclareBx"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Bx"
+  Variable DOFs = 1
+End
+
+Solver 6
+  Exec Solver = Always
+  Equation = "DeclareBy"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "By"
+  Variable DOFs = 1
+End
+
+Solver 7
+  Exec Solver = Always
+  Equation = "DeclareBz"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Bz"
+  Variable DOFs = 1
+End
+
+
+! --------------------------------------------------
+! 2 OpenFOAM -> Elmer
+! --------------------------------------------------
+Solver 8
+  Exec Solver = Always
+  Equation = "OpenFOAM2Elmer"
+  Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
+
+  Target Variable 1 = String "Electric Conductivity"
+  Target Variable 2 = String "Ux"
+  Target Variable 3 = String "Uy"
+  Target Variable 4 = String "Uz"
+  Target Variable 5 = String "Bx"
+  Target Variable 6 = String "By"
+  Target Variable 7 = String "Bz"
+End
+
+
+! --------------------------------------------------
+! 3 Custom Elmer MHD Solver
+! --------------------------------------------------
+Solver 9
+  Exec Solver = Always
+  Equation = "Static Current Solver"
+  Procedure = "MHDSolve" "StatCurrentSolver"
+
+  Variable = Potential
+  Variable DOFs = 1
+
+  Calculate Volume Current = Logical True
+  Calculate Joule Heating  = Logical True
+
+  Nonlinear System Max Iterations = 40
+  Nonlinear System Convergence Tolerance = 5.0e-3
+  Nonlinear System Relaxation Factor = 0.7
+  Nonlinear System Convergence Without Constraints = Logical True
+
+  Linear System Refactorize = Logical True
+
+  Nonlinear System Newton After Iterations = 0
+  Nonlinear System Newton After Tolerance  = 1.0e-3
+
+  Linear System Solver = Iterative
+  Linear System Iterative Method = GCR
+  Linear System GCR Restart = 200
+  Linear System Symmetric = False
+  Linear System Preconditioning = ILU1
+  Linear System Max Iterations = 12000
+  Linear System Convergence Tolerance = 1.0e-3
+  Linear System Abort Not Converged = False
+  Linear System Scaling = False
+  Linear System Residual Output = 500
+End
+
+
+! --------------------------------------------------
+! 4 Elmer -> OpenFOAM: export computed results
+! --------------------------------------------------
+Solver 10
+  Exec Solver = Always
+  Equation = "Elmer2OpenFOAM"
+  Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
+
+  Target Variable 1 = String "Volume Current 1"
+  Target Variable 2 = String "Volume Current 2"
+  Target Variable 3 = String "Volume Current 3"
+  Target Variable 4 = String "Joule Heating"
+  Target Variable 5 = String "Potential"
+End
+
+
+Material 1
+  Name = "Conducting Fluid"
+
+  Electric Conductivity = Variable "Electric Conductivity"
+    Real MATC "tx"
+End
+
+
+Body Force 1
+  Name = "NoSource"
+End
+"""
+
+
+class ElmerCaseRenderer:
+    """Render an Elmer SIF from a resolved case model."""
+
+    def render(self, config: CaseConfig, boundary_indices: Mapping[str, int]) -> str:
+        lines = [CASE_SIF_HEADER]
+        lines.extend(
+            (
+                "! -------------------------",
+                "! Boundary Conditions",
+                "! -------------------------",
+                "!   Boundary name            Elmer index",
+            )
+        )
+        for name in sorted(boundary_indices, key=boundary_indices.get):
+            lines.append(f"!   {name:<26s} {boundary_indices[name]}")
+        lines.append("")
+
+        condition_number = 0
+        for pair_number, pair in enumerate(config.electrodes.pairs, start=1):
+            for role, sign in (("Cathode", "minus"), ("Anode", "plus")):
+                condition_number += 1
+                name = f"{role}Surface_{pair_number}"
+                lines.extend(
+                    (
+                        f"Boundary Condition {condition_number}",
+                        f"  ! {name}",
+                        f"  Target Boundaries(1) = {boundary_indices[name]}",
+                        f"  Electrode Pair = Integer {pair_number}",
+                        f'  Electrode Sign = String "{sign}"',
+                        f"  Electrode Resistance = Real {pair.resistance}",
+                        "End",
+                        "",
+                    )
+                )
+
+        for name in (INSULATOR, INLET, OUTLET):
+            condition_number += 1
+            lines.extend(
+                (
+                    f"Boundary Condition {condition_number}",
+                    f"  ! {name}",
+                    f"  Target Boundaries(1) = {boundary_indices[name]}",
+                    "End",
+                    "",
+                )
+            )
+        return "\n".join(lines)
+
+
+OPENFOAM_HEADER = """\
+/*--------------------------------*- C++ -*----------------------------------*\\
+| =========                 |                                                 |
+| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\\\    /   O peration     | Version:  dev                                   |
+|   \\\\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\\\/     M anipulation  |                                                 |
+\\*---------------------------------------------------------------------------*/
+FoamFile
+{{
+    version     2.0;
+    format      ascii;
+    class       {field_class};
+    location    "0";
+    object      {field_name};
+}}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+{comment}dimensions {dimensions};
+
+internalField   {internal_field};
+
+
+boundaryField
+{{
+{patches}}}
+
+
+// ************************************************************************* //
+"""
+
+
+FIELD_DEFINITIONS = (
+    {
+        "name": "U",
+        "class": "volVectorField",
+        "dimensions": "[0 1 -1 0 0 0 0]",
+        "internal_field": "uniform (0 0 0)",
+        "comment": None,
+        "inlet": {"type": "fixedValue", "value": "uniform {inlet_velocity}"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "noSlip"},
+    },
+    {
+        "name": "T",
+        "class": "volScalarField",
+        "dimensions": "[0 0 0 1 0 0 0]",
+        "internal_field": "uniform 100",
+        "comment": "// Temperature [K]",
+        "inlet": {"type": "fixedValue", "value": "uniform {inlet_temperature}"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "p_rgh",
+        "class": "volScalarField",
+        "dimensions": "[1 -1 -2 0 0 0 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Dynamic pressure (p - rho*g*h)",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "fixedValue", "value": "uniform 0"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "B",
+        "class": "volVectorField",
+        "dimensions": "[1 0 -2 0 0 -1 0]",
+        "internal_field": "uniform {B_field}",
+        "comment": "// Magnetic flux density [Tesla]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "Potential",
+        "class": "volScalarField",
+        "dimensions": "[1 2 -3 0 0 -1 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Electric potential [V]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "J_dens",
+        "class": "volVectorField",
+        "dimensions": "[0 -2 0 0 0 1 0]",
+        "internal_field": "uniform (0 0 0)",
+        "comment": "// Volume current density [A/m^2]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "electric_field",
+        "class": "volVectorField",
+        "dimensions": "[1 1 -3 0 0 -1 0]",
+        "internal_field": "uniform (0 0 0)",
+        "comment": "// Electric field E = -grad(Potential) [V/m]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "JH",
+        "class": "volScalarField",
+        "dimensions": "[1 -1 -3 0 0 0 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Joule heating power density [W/m^3]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+)
+
+
+def _format_vector(values: Iterable[float]) -> str:
+    return "(" + " ".join(f"{value:g}" for value in values) + ")"
+
+
+def _resolve_boundary_condition(
+    condition: Mapping[str, str], substitutions: Mapping[str, object]
+) -> Dict[str, str]:
+    return {
+        key: value.format_map(substitutions) if isinstance(value, str) else value
+        for key, value in condition.items()
+    }
+
+
+def _render_patch(name: str, condition: Mapping[str, str]) -> str:
+    lines = [f"    {name}", "    {", f"        type    {condition['type']};"]
+    if "value" in condition:
+        lines.append(f"        value   {condition['value']};")
+    lines.append("    }")
+    return "\n".join(lines)
+
+
+class OpenFoamCaseRenderer:
+    """Render all OpenFOAM initial and boundary fields."""
+
+    def render(self, config: CaseConfig) -> Dict[str, str]:
+        substitutions = {
+            "inlet_velocity": _format_vector(config.physics.inlet_velocity),
+            "inlet_temperature": f"{config.physics.inlet_temperature:g}",
+            "B_field": _format_vector(config.physics.B_field),
+        }
+        result: Dict[str, str] = {}
+        for definition in FIELD_DEFINITIONS:
+            result[str(definition["name"])] = self._render_field(
+                definition, electrode_patch_names(len(config.electrodes.pairs)), substitutions
+            )
+        return result
+
+    @staticmethod
+    def _render_field(
+        definition: Mapping[str, object],
+        electrodes: Iterable[str],
+        substitutions: Mapping[str, object],
+    ) -> str:
+        patches: List[str] = []
+        for name, condition_name in (
+            (INLET, "inlet"),
+            (OUTLET, "outlet"),
+            (INSULATOR, "wall"),
+        ):
+            condition = definition[condition_name]
+            assert isinstance(condition, Mapping)
+            patches.append(
+                _render_patch(
+                    name, _resolve_boundary_condition(condition, substitutions)
+                )
+            )
+        wall = definition["wall"]
+        assert isinstance(wall, Mapping)
+        for name in electrodes:
+            patches.append(_render_patch(name, _resolve_boundary_condition(wall, substitutions)))
+        patches.append(
+            _render_patch(
+                "defaultFaces", _resolve_boundary_condition(wall, substitutions)
+            )
+        )
+
+        comment = definition.get("comment")
+        return OPENFOAM_HEADER.format(
+            field_class=definition["class"],
+            field_name=definition["name"],
+            comment=f"{comment}\n" if comment else "",
+            dimensions=definition["dimensions"],
+            internal_field=str(definition["internal_field"]).format_map(substitutions),
+            patches="\n\n".join(patches) + "\n",
+        )

@@ -25,6 +25,10 @@ EOF-Library couples internal fields between Elmer FEM and OpenFOAM. Applications
 ## Requirements ##
 * **Both Elmer and OpenFOAM must use the same OpenMPI version!**
 
+This fork includes a configuration-driven MHD solver workflow. Its standalone
+user guide, including the YAML schema and complete build/prepare/run process,
+is in [`MHD.md`](MHD.md).
+
 ## How to ##
 There are two options to install and use this software:
 1. __Docker__ install (best for *beginners* and running on *clouds*) - **Linux, Windows, MacOS**
@@ -42,41 +46,8 @@ https://docs.docker.com/docker-for-windows/install/
 3. **MacOS** - https://docs.docker.com/docker-for-mac/install/
 
 
-Then, follow commands below to install the software & run demo simulation.
-* Create an empty folder
-```
-mkdir runs
-cd runs
-```
-* Run Docker image and bind mount current host system folder *${PWD}* to newly created *EOF-Library/runs* folder
-```
-docker run --rm -it -e HOST_USER_ID=$(id -u) -e HOST_USER_GID=$(id -g) -v ${PWD}:/home/openfoam/EOF-Library/runs eoflibrary/eof_elmer84_of6:latest
-```
-* Update EOF-Library and compile it
-```
-eofUpdate
-```
-* Compile OpenFOAM solver
-```
-cd EOF-Library
-wmake solvers/mhdInterFoam6
-```
-* Copy test simulation
-``` 
-cp -r tests/levitation2D runs
-```
-* Prepare case
-```
-cd runs/levitation2D
-setFields
-decomposePar
-ElmerGrid 2 2 meshElmer -metis 2
-```
-* Run simulation on 2 physical cores:
-```
-mpirun -n 2 mhdInterFoam -parallel : -n 2 ElmerSolver_mpi case.sif
-```
-* Simulation results will appear in host system *runs* folder
+For this fork's containerized MHD simulator, follow the independent
+[`MHD.md`](MHD.md) guide.
 
 
 #### 2. Manual installation ####

@@ -3,6 +3,8 @@ from pathlib import Path
 
 import gmsh
 
+from caseprep.boundaries import boundary_tags
+
 
 # ─── Default geometry constants ────────────────────────────────────
 DEFAULTS = {
@@ -30,19 +32,11 @@ MATERIAL_PRIORITY = {
 }
 
 
-# ─── Public helpers (used by configure.py) ─────────────────────────
+# ─── Public helpers used by the procedural mesh generator ──────────────
 
 def build_boundary_tags(num_pairs):
-    """Return the boundary-name -> physical-group-tag mapping."""
-    tags = {
-        "InletX": 20,
-        "OutletX": 21,
-        "InsulatorSurface": 30,
-    }
-    for i in range(num_pairs):
-        tags[f"CathodeSurface_{i + 1}"] = 40 + 2 * i
-        tags[f"AnodeSurface_{i + 1}"] = 41 + 2 * i
-    return tags
+    """Backward-compatible alias for the shared boundary convention."""
+    return boundary_tags(num_pairs)
 
 
 def compute_electrode_centers(channel_length, num_pairs, explicit_centers=None):

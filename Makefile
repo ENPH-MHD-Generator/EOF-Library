@@ -6,7 +6,7 @@ export PATH              := /usr/local/bin:$(PATH)
 export LD_LIBRARY_PATH   := /usr/local/lib:$(LD_LIBRARY_PATH)
 export OPENFOAM_HOME	 := /opt/openfoam6
 export ROOT_DIR			 := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST)))) # https://stackoverflow.com/a/23324703
-export IMAGE_NAME		 := eof_local
+export IMAGE_NAME		 ?= mhd-sim
 
 # ---- Build options ----
 ELMER_DEBUG ?= 0
@@ -32,18 +32,6 @@ solver: environment
 	. $(OPENFOAM_HOME)/etc/bashrc && wclean solvers/mdhLinearHall
 	. $(OPENFOAM_HOME)/etc/bashrc && wmake solvers/mdhLinearHall
 	rm -rf solvers/mdhLinearHall/processor*
-	echo "FOAM_USER_APPBIN=$FOAM_USER_APPBIN" >> log.txt
-	echo "FOAM_APPBIN=$FOAM_APPBIN" >> log.txt
-
-simulation: environment 
-	cd $(EOF_HOME)/tests/linearHall
-	rm -rf processor* 
-	. $(EOF_HOME)/etc/bashrc && . $(OPENFOAM_HOME)/etc/bashrc && gmshToFoam channel.msh && potentialFoam && decomposePar
-	ElmerGrid 14 2 channel.msh -out meshElmer -autoclean -merge 1e-8 -removeunused
-	ElmerGrid 2 2 meshElmer -metis 2
-	echo \"case.sif\" > ELMERSOLVER_STARTINFO
-	cd $(EOF_HOME) 
-
 
 # Elmer debug flag
 ifeq ($(ELMER_DEBUG),1)
@@ -60,8 +48,8 @@ elmer: environment
 	sudo cp libs/solvers/MHDSolve/MHDUtils.F90 /opt/elmerfem/fem/src/modules/MHDSolve/
 	sudo cp libs/solvers/MHDSolve/MHDSolve.F90 /opt/elmerfem/fem/src/modules/MHDSolve/
 	cd /opt/elmerfem/build && sudo cmake .. $(ELMER_CMAKE_FLAGS)
-	cd /opt/elmerfem/build && sudo make MHDSolve
-	cd /opt/elmerfem/build && sudo make install MHDSolve
+	cd /opt/elmerfem/build && sudo make -j"$$(nproc)" MHDSolve
+	cd /opt/elmerfem/build && sudo make install/fast
 	cd $(EOF_HOME)
 
 # -- Host System
@@ -70,7 +58,7 @@ build_environment:
 	cd $(ROOT_DIR)
 
 setup: build_environment
-	mkdir -p ./runs
+	mkdir -p ./experiments ./out
 
 build: setup
 	docker build \
@@ -84,4 +72,3 @@ build: setup
 clean: build_environment
 	docker ps -a --filter "ancestor=$(IMAGE_NAME)" -q | xargs -r docker rm -f
 	docker images $(IMAGE_NAME) -q | xargs -r docker rmi -f
-	rm -rf runs
