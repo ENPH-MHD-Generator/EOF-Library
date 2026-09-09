@@ -32,10 +32,52 @@ class MhdRuntime:
         self,
         base_case_directory: Path,
         runs_directory: Path = Path("/runs"),
+        *,
+        experiments_directory: Path = Path("/experiments"),
     ) -> None:
         self.base_case_directory = base_case_directory.resolve()
         self.runs_directory = runs_directory.resolve()
+        self.experiments_directory = experiments_directory.resolve()
         self.case_preparer = CasePreparer(self.base_case_directory)
+
+    def available_experiments(self) -> List[Path]:
+        """Return every YAML experiment currently visible in the input mount."""
+        if not self.experiments_directory.is_dir():
+            return []
+        return sorted(
+            path
+            for path in self.experiments_directory.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and path.suffix.lower() in {".yaml", ".yml"}
+            and not any(
+                part.startswith(".")
+                for part in path.relative_to(self.experiments_directory).parts
+            )
+        )
+
+    def available_cases(self) -> List[str]:
+        """Return prepared case names that pass the normal run preflight checks."""
+        if not self.runs_directory.is_dir():
+            return []
+
+        available: List[str] = []
+        candidates = sorted(
+            self.runs_directory.iterdir(), key=lambda path: path.name
+        )
+        for candidate in candidates:
+            if not candidate.is_dir() or not CASE_NAME_PATTERN.fullmatch(candidate.name):
+                continue
+            try:
+                case_directory = self.case_directory(candidate.name)
+                marker = self._read_marker(case_directory)
+                ranks = marker.get("ranks")
+                self._validate_ranks(ranks)
+                self._validate_prepared_case(case_directory, ranks)
+            except (OSError, PreparationError):
+                continue
+            available.append(candidate.name)
+        return available
 
     def prepare(
         self,
