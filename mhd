@@ -17,7 +17,9 @@ Commands:
   help             Show this help.
 
 Case commands are available inside the container:
+  mhd prepare --list
   mhd prepare /experiments/linear-hall.yaml [--name NAME] [--mesh]
+  mhd run --list
   mhd run NAME
 EOF
 }

@@ -166,6 +166,13 @@ silently ignored.
 
 ## Prepare one case
 
+List every `.yaml` or `.yml` experiment currently visible in the host-mounted
+`experiments/` directory:
+
+```sh
+mhd prepare --list
+```
+
 Inside the container, one command validates the YAML and produces an
 execution-ready case:
 
@@ -213,6 +220,13 @@ a letter or number.
 
 ## Run one case
 
+List prepared cases that pass the same marker, rank, and mesh preflight checks
+used by `mhd run`:
+
+```sh
+mhd run --list
+```
+
 Inside the same or a later container, execute the prepared case with one
 command:
 
@@ -250,6 +264,11 @@ Consequently, `/runs/linear-hall` in the container is the same directory as
 `out/linear-hall` on the host. Solver output appears there immediately and
 survives when the disposable container exits. A separate copy or sync step is
 not required.
+
+These are live bind mounts. Adding or editing a host file beneath
+`experiments/` is immediately reflected by `mhd prepare --list`, and a case
+created beneath host `out/` is immediately reflected by `mhd run --list`. An
+image rebuild is only required for source code or image dependency changes.
 
 A prepared case includes the resolved YAML, a generation manifest, rendered
 Elmer and OpenFOAM inputs, converted and partitioned meshes, and a hidden

@@ -12,6 +12,7 @@ from .runtime import MhdRuntime
 
 
 BASE_CASE_DIRECTORY = Path("/home/openfoam/EOF-Library/tests/linearHall")
+EXPERIMENTS_DIRECTORY = Path("/experiments")
 RUNS_DIRECTORY = Path("/runs")
 
 
@@ -25,7 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = commands.add_parser(
         "prepare", help="Compile and convert one YAML case beneath /runs."
     )
-    prepare.add_argument("config", type=Path, help="YAML experiment configuration.")
+    prepare.add_argument(
+        "config", nargs="?", type=Path, help="YAML experiment configuration."
+    )
+    prepare.add_argument(
+        "-l",
+        "--list",
+        action="store_true",
+        help="List experiment YAML files available beneath /experiments.",
+    )
     prepare.add_argument(
         "--name",
         help="Case directory name beneath /runs (default: configuration filename).",
@@ -46,7 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     run = commands.add_parser("run", help="Execute one prepared case beneath /runs.")
-    run.add_argument("name", help="Prepared case name beneath /runs.")
+    run.add_argument("name", nargs="?", help="Prepared case name beneath /runs.")
+    run.add_argument(
+        "-l",
+        "--list",
+        action="store_true",
+        help="List valid prepared cases available beneath /runs.",
+    )
     run.add_argument(
         "--no-postprocess",
         action="store_true",
@@ -62,14 +77,36 @@ def main(
     arguments: Optional[Sequence[str]] = None,
     *,
     base_case_directory: Path = BASE_CASE_DIRECTORY,
+    experiments_directory: Path = EXPERIMENTS_DIRECTORY,
     runs_directory: Path = RUNS_DIRECTORY,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(arguments)
-    runtime = MhdRuntime(base_case_directory, runs_directory)
+    runtime = MhdRuntime(
+        base_case_directory,
+        runs_directory,
+        experiments_directory=experiments_directory,
+    )
 
     try:
         if args.command == "prepare":
+            if args.list:
+                if args.config is not None:
+                    parser.error("prepare accepts either CONFIG or --list, not both")
+                experiments = runtime.available_experiments()
+                if not experiments:
+                    print(
+                        "No experiment YAML files found in "
+                        f"{runtime.experiments_directory}"
+                    )
+                    return 0
+                print("Available experiments:")
+                for experiment in experiments:
+                    relative = experiment.relative_to(runtime.experiments_directory)
+                    print(f"  {relative}  (mhd prepare {experiment})")
+                return 0
+            if args.config is None:
+                parser.error("prepare requires CONFIG or --list")
             destination = runtime.prepare(
                 args.config,
                 name=args.name,
@@ -82,6 +119,19 @@ def main(
             print(f"{action} case: {destination}")
             return 0
 
+        if args.list:
+            if args.name is not None:
+                parser.error("run accepts either NAME or --list, not both")
+            cases = runtime.available_cases()
+            if not cases:
+                print(f"No runnable prepared cases found in {runtime.runs_directory}")
+                return 0
+            print("Available prepared cases:")
+            for case_name in cases:
+                print(f"  {case_name}  (mhd run {case_name})")
+            return 0
+        if args.name is None:
+            parser.error("run requires NAME or --list")
         destination = runtime.run(
             args.name,
             postprocess=not args.no_postprocess,
