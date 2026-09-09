@@ -45,6 +45,8 @@ COPY libs/coupleElmer/ /home/openfoam/EOF-Library/libs/coupleElmer/
 COPY libs/commSplit/ /home/openfoam/EOF-Library/libs/commSplit/
 COPY libs/Elmer2OpenFOAM.F90 /home/openfoam/EOF-Library/libs/Elmer2OpenFOAM.F90
 COPY libs/OpenFOAM2Elmer.F90 /home/openfoam/EOF-Library/libs/OpenFOAM2Elmer.F90
+COPY libs/solvers/MHDSolve/MHDSolve.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDSolve.F90
+COPY libs/solvers/MHDSolve/MHDUtils.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDUtils.F90
 COPY etc/ /home/openfoam/EOF-Library/etc/
 COPY Makefile /home/openfoam/EOF-Library/Makefile
 
@@ -56,8 +58,6 @@ RUN make eof
 FROM mhd-native-base AS mhd-elmer-runtime
 
 ARG ELMER_DEBUG=0
-
-COPY libs/solvers/MHDSolve/ /home/openfoam/EOF-Library/libs/solvers/MHDSolve/
 
 RUN --mount=type=bind,from=mhd-native-base,source=/opt/elmerfem/build,target=/opt/mhd-elmer-build-seed,readonly \
     --mount=type=cache,id=mhd-elmer-build-v2,target=/opt/elmerfem/build,sharing=locked \
