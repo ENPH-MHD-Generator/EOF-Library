@@ -92,28 +92,28 @@ class ChannelConfig:
 
 @dataclass(frozen=True)
 class MeshConfig:
-    size_min: Optional[float] = None
-    size_max: Optional[float] = None
-    size_factor: float = 1.0
+    target_element_size: float
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "MeshConfig":
-        data = _mapping(raw or {}, "mesh")
-        _known_keys(data, ("size_min", "size_max", "size_factor"), "mesh")
-        size_min = (
-            None
-            if data.get("size_min") is None
-            else _number(data["size_min"], "mesh.size_min", positive=True)
+        data = _mapping(raw, "mesh")
+        legacy_keys = sorted(set(data) & {"size_min", "size_max", "size_factor"})
+        if legacy_keys:
+            legacy_names = ", ".join(f"mesh.{key}" for key in legacy_keys)
+            raise ConfigError(
+                f"{legacy_names} no longer supported; replace the legacy mesh "
+                "controls with mesh.target_element_size in metres"
+            )
+        _known_keys(data, ("target_element_size",), "mesh")
+        if "target_element_size" not in data:
+            raise ConfigError("mesh.target_element_size is required")
+        return cls(
+            target_element_size=_number(
+                data["target_element_size"],
+                "mesh.target_element_size",
+                positive=True,
+            )
         )
-        size_max = (
-            None
-            if data.get("size_max") is None
-            else _number(data["size_max"], "mesh.size_max", positive=True)
-        )
-        size_factor = _number(data.get("size_factor", 1.0), "mesh.size_factor", positive=True)
-        if size_min is not None and size_max is not None and size_min > size_max:
-            raise ConfigError("mesh.size_min cannot be greater than mesh.size_max")
-        return cls(size_min=size_min, size_max=size_max, size_factor=size_factor)
 
 
 @dataclass(frozen=True)
@@ -252,12 +252,19 @@ class CaseConfig:
         schema_version = _integer(data.get("schema_version", 1), "schema_version", positive=True)
         if schema_version != 1:
             raise ConfigError(f"Unsupported schema_version {schema_version}; expected 1")
-        if "channel" not in data or "electrodes" not in data:
-            raise ConfigError("configuration requires 'channel' and 'electrodes' sections")
+        missing_sections = [
+            section
+            for section in ("channel", "mesh", "electrodes")
+            if section not in data
+        ]
+        if missing_sections:
+            raise ConfigError(
+                "configuration requires section(s): " + ", ".join(missing_sections)
+            )
         channel = ChannelConfig.from_mapping(data["channel"])
         return cls(
             channel=channel,
-            mesh=MeshConfig.from_mapping(data.get("mesh", {})),
+            mesh=MeshConfig.from_mapping(data["mesh"]),
             electrodes=ElectrodeConfig.from_mapping(data["electrodes"], channel),
             physics=PhysicsConfig.from_mapping(data.get("physics", {})),
             schema_version=schema_version,

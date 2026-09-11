@@ -18,9 +18,7 @@ channel:
   wall_thickness: 0.005    # m  (  5 mm insulator / electrode shell)
 
 mesh:
-  size_min: null            # global minimum edge length (null = Gmsh default)
-  size_max: null            # global maximum edge length
-  size_factor: 0.2          # >1 coarser, <1 finer
+  target_element_size: 0.005  # m; uniform target characteristic length
 
 # ---------------------------------------------------------------------------
 # Electrode pairs — two supported formats:

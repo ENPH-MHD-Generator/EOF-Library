@@ -1,0 +1,22 @@
+# Temporary Testfile
+schema_version: 1
+
+channel:
+  length: 10.0
+  height: 2.0
+  width: 1.0
+  wall_thickness: 0.005
+
+mesh:
+  target_element_size: 0.2
+
+electrodes:
+  length: 1.0
+  pairs:
+    - { x_center: 3.33, resistance: 1.0 }
+    - { x_center: 6.66, resistance: 1.0 }
+
+physics:
+  B_field: [0, 0, 1.5]
+  inlet_velocity: [391, 0, 0]
+  inlet_temperature: 1500

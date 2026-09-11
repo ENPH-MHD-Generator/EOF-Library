@@ -26,9 +26,7 @@ class ProceduralMeshGenerator:
         mesh = config.mesh
         generate(
             out_msh=str(destination),
-            mesh_size_min=mesh.size_min,
-            mesh_size_max=mesh.size_max,
-            mesh_size_factor=mesh.size_factor,
+            target_element_size=mesh.target_element_size,
             channel_config={
                 "num_pairs": len(config.electrodes.pairs),
                 "channel_length": channel.length,

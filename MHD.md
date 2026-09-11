@@ -90,9 +90,7 @@ channel:
   wall_thickness: 0.005
 
 mesh:
-  size_min: null
-  size_max: null
-  size_factor: 0.2
+  target_element_size: 0.005
 
 electrodes:
   length: 0.010
@@ -122,11 +120,17 @@ electrode resistance is in ohms.
 - `wall_thickness` is the positive thickness used for the electrode and
   insulating shell geometry.
 
-`mesh` is optional:
+`mesh` is required. `target_element_size` is a positive length in metres that
+sets the uniform target characteristic length for the Gmsh tetrahedral mesh.
+The resulting edge lengths can vary around this target as Gmsh preserves the
+geometry and element quality. The same generated mesh is converted for both
+OpenFOAM and Elmer.
 
-- `size_min` and `size_max` set optional global Gmsh edge-length bounds.
-- `size_factor` scales Gmsh's characteristic lengths. Values below one refine
-  the mesh and values above one coarsen it. The default is `1.0`.
+Internally, the generator installs this value as a constant Gmsh background
+size field. Curvature sizing, geometry-point sizing, and propagation of
+boundary sizes into the volume are disabled so that they do not compete with
+the configured value. This field is a desired local length, not a strict upper
+bound on every tetrahedron edge.
 
 `electrodes` is required. Every electrode pair must have the same positive
 `length`; pair-specific lengths are rejected. Choose exactly one placement

@@ -1,4 +1,5 @@
 import argparse
+from math import isfinite
 from pathlib import Path
 
 import gmsh
@@ -51,7 +52,7 @@ def compute_electrode_centers(channel_length, num_pairs, explicit_centers=None):
     return [(i + 1) * spacing for i in range(num_pairs)]
 
 
-# ─── Internal helpers (unchanged logic) ────────────────────────────
+# ─── Internal helpers ────────────────────────────
 
 def _entity_bbox(dim: int, tag: int):
     return gmsh.model.getBoundingBox(dim, tag)
@@ -114,17 +115,20 @@ def _clear_existing_physical_groups():
         gmsh.model.removePhysicalGroups([(dim, tag)])
 
 
-def _configure_mesh_sizing(mesh_size_min, mesh_size_max, mesh_size_factor):
+def _configure_mesh_sizing(target_element_size: float):
+    """Use one uniform, geometry-independent characteristic element length."""
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
-    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1)
-    gmsh.option.setNumber("Mesh.MeshSizeFactor", mesh_size_factor)
-    if mesh_size_min is not None:
-        gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size_min)
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size_min)
-    if mesh_size_max is not None:
-        gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size_max)
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size_max)
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFactor", 1.0)
+
+    size_field = gmsh.model.mesh.field.add("MathEval")
+    gmsh.model.mesh.field.setString(
+        size_field,
+        "F",
+        format(target_element_size, ".17g"),
+    )
+    gmsh.model.mesh.field.setAsBackgroundMesh(size_field)
 
 
 def _build_geometry_and_assign_materials(cfg, centers):
@@ -267,9 +271,7 @@ def _collect_material_interface_surfaces(vol_to_material, num_pairs, centers):
 
 def generate(
     out_msh="channel.msh",
-    mesh_size_min=None,
-    mesh_size_max=None,
-    mesh_size_factor=1.0,
+    target_element_size=0.005,
     channel_config=None,
 ):
     """Generate the Gmsh mesh.
@@ -280,12 +282,24 @@ def generate(
         Keys: num_pairs, channel_length, channel_height, channel_width,
         electrode_length, wall_thickness, electrode_centers (list or None).
         Missing keys fall back to DEFAULTS.
+    target_element_size : float
+        Uniform target characteristic element length in model units (metres for
+        the supported channel geometry).
 
     Returns
     -------
     boundary_tags : dict
         Mapping of boundary name -> physical group tag.
     """
+    if (
+        not isinstance(target_element_size, (int, float))
+        or not isfinite(target_element_size)
+        or target_element_size <= 0
+    ):
+        raise ValueError(
+            "target_element_size must be a finite number greater than zero"
+        )
+
     cfg = {**DEFAULTS, **(channel_config or {})}
     num_pairs = cfg["num_pairs"]
     centers = compute_electrode_centers(
@@ -296,7 +310,6 @@ def generate(
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 1)
-        _configure_mesh_sizing(mesh_size_min, mesh_size_max, mesh_size_factor)
         gmsh.model.add("linear_hall_channel")
 
         volume_tags, vol_to_material = _build_geometry_and_assign_materials(cfg, centers)
@@ -371,6 +384,7 @@ def generate(
             gmsh.model.addPhysicalGroup(2, stags, tag=ptag)
             gmsh.model.setPhysicalName(2, ptag, bname)
 
+        _configure_mesh_sizing(target_element_size)
         gmsh.model.mesh.generate(3)
         _verify_every_boundary_has_exactly_one_physical(plasma_vols)
         _verify_all_boundary_faces_mapped(plasma_vols)
@@ -397,27 +411,13 @@ if __name__ == "__main__":
         help="Output mesh path (MSH 2.2 ASCII).",
     )
     parser.add_argument(
-        "--mesh-size-min",
+        "--target-element-size",
         type=float,
-        default=None,
-        help="Global minimum tetra edge length.",
-    )
-    parser.add_argument(
-        "--mesh-size-max",
-        type=float,
-        default=None,
-        help="Global maximum tetra edge length.",
-    )
-    parser.add_argument(
-        "--mesh-size-factor",
-        type=float,
-        default=1.0,
-        help="Global size scale factor (>1 coarser, <1 finer).",
+        default=0.005,
+        help="Uniform target tetrahedral element length in metres (default: 0.005).",
     )
     args = parser.parse_args()
     generate(
-        args.out,
-        args.mesh_size_min,
-        args.mesh_size_max,
-        args.mesh_size_factor,
+        out_msh=args.out,
+        target_element_size=args.target_element_size,
     )
