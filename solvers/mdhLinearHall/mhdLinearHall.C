@@ -24,6 +24,7 @@ Description
 #include "fvOptions.H"
 #include "CorrectPhi.H"
 #include "Elmer.H"
+#include "zeroGradientFvPatchFields.H"
 
 int main(int argc, char *argv[])
 {

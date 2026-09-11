@@ -101,6 +101,10 @@ volVectorField electric_field
 
 Info<< "Initializing current density components (Jx, Jy, Jz)\n" << endl;
 
+// Fields received from Elmer only have cell values; zeroGradient patches copy
+// them to the boundary (correctBoundaryConditions), which keeps the boundary
+// and the VTK point data from reading as zero.
+
 volScalarField Jx
 (
     IOobject
@@ -117,7 +121,8 @@ volScalarField Jx
         "zero",
         dimCurrent/dimArea,   
         0.0
-    )
+    ),
+    zeroGradientFvPatchScalarField::typeName
 );
 
 volScalarField Jy
@@ -136,7 +141,8 @@ volScalarField Jy
         "zero",
         dimCurrent/dimArea,
         0.0
-    )
+    ),
+    zeroGradientFvPatchScalarField::typeName
 );
 
 volScalarField Jz
@@ -155,7 +161,8 @@ volScalarField Jz
         "zero",
         dimCurrent/dimArea,
         0.0
-    )
+    ),
+    zeroGradientFvPatchScalarField::typeName
 );
 
 Info<< "Initializing reconstructed current vector J (from components)\n" << endl;
@@ -499,7 +506,8 @@ volScalarField elcond_elmer
         IOobject::AUTO_WRITE
     ),
     mesh,
-    dimensionedScalar("zero", dimensionSet(-1, -3, 3, 0, 0, 2, 0), 0.0)
+    dimensionedScalar("zero", dimensionSet(-1, -3, 3, 0, 0, 2, 0), 0.0),
+    zeroGradientFvPatchScalarField::typeName
 );
 
 // Electron mole fraction ne / n_heavy
@@ -514,7 +522,8 @@ volScalarField ionizationFraction
         IOobject::AUTO_WRITE
     ),
     mesh,
-    dimensionedScalar("zero", dimless, 0.0)
+    dimensionedScalar("zero", dimless, 0.0),
+    zeroGradientFvPatchScalarField::typeName
 );
 
 volScalarField Te
@@ -528,5 +537,6 @@ volScalarField Te
         IOobject::AUTO_WRITE
     ),
     mesh,
-    dimensionedScalar("zero", dimTemperature, 0.0)
+    dimensionedScalar("zero", dimTemperature, 0.0),
+    zeroGradientFvPatchScalarField::typeName
 );
