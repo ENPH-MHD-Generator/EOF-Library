@@ -1,10 +1,33 @@
-FROM eoflibrary/eof_elmer84_of6:latest
+FROM eoflibrary/eof_elmer84_of6:latest AS mhd-python-runtime
+
+ARG MINIFORGE_VERSION=24.3.0-0
 
 USER root
 
-# Tools (combine apt calls into one layer)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nano strace sudo \
+    ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Keep the legacy solver stack isolated from a supported Python runtime.
+RUN curl -fsSL \
+      "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh" \
+      -o /tmp/miniforge.sh \
+ && bash /tmp/miniforge.sh -b -p /opt/mhd-python \
+ && rm /tmp/miniforge.sh \
+ && /opt/mhd-python/bin/mamba install -y python=3.11 pyyaml \
+ && /opt/mhd-python/bin/pip install --no-cache-dir gmsh==4.11.1 \
+ && /opt/mhd-python/bin/conda clean -afy
+
+
+FROM eoflibrary/eof_elmer84_of6:latest AS mhd-native-base
+
+ARG ELMER_DEBUG=0
+
+USER root
+
+# Native build/debug tools plus the shared-library dependency of the Gmsh wheel.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglu1-mesa nano strace sudo \
  && rm -rf /var/lib/apt/lists/*
 
 # Allow openfoam user to sudo without password
@@ -17,31 +40,64 @@ WORKDIR /home/openfoam
 RUN rm -rf /home/openfoam/EOF-Library \
  && mkdir -p /home/openfoam/EOF-Library
 
-# Copy your fork into the container (preserve directory structure)
-COPY libs/     /home/openfoam/EOF-Library/libs/
-COPY etc/      /home/openfoam/EOF-Library/etc/
-COPY Makefile  /home/openfoam/EOF-Library/Makefile
+# Build the coupler in a shared layer. Only its direct sources invalidate it.
+COPY libs/coupleElmer/ /home/openfoam/EOF-Library/libs/coupleElmer/
+COPY libs/commSplit/ /home/openfoam/EOF-Library/libs/commSplit/
+COPY libs/Elmer2OpenFOAM.F90 /home/openfoam/EOF-Library/libs/Elmer2OpenFOAM.F90
+COPY libs/OpenFOAM2Elmer.F90 /home/openfoam/EOF-Library/libs/OpenFOAM2Elmer.F90
+COPY libs/solvers/MHDSolve/MHDSolve.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDSolve.F90
+COPY libs/solvers/MHDSolve/MHDUtils.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDUtils.F90
+COPY etc/ /home/openfoam/EOF-Library/etc/
+COPY Makefile /home/openfoam/EOF-Library/Makefile
 
 WORKDIR /home/openfoam/EOF-Library
 
-RUN make elmer
-
 RUN make eof
 
-COPY solvers/  /home/openfoam/EOF-Library/solvers/
+
+FROM mhd-native-base AS mhd-elmer-runtime
+
+ARG ELMER_DEBUG=0
+
+RUN --mount=type=bind,from=mhd-native-base,source=/opt/elmerfem/build,target=/opt/mhd-elmer-build-seed,readonly \
+    --mount=type=cache,id=mhd-elmer-build-v2,target=/opt/elmerfem/build,sharing=locked \
+    if [ ! -f /opt/elmerfem/build/CMakeCache.txt ]; then \
+      cp -a /opt/mhd-elmer-build-seed/. /opt/elmerfem/build/; \
+    fi \
+ && make elmer ELMER_DEBUG=${ELMER_DEBUG}
+
+
+FROM mhd-native-base AS mhd-openfoam-builder
+
+COPY solvers/mdhLinearHall/ /home/openfoam/EOF-Library/solvers/mdhLinearHall/
 
 RUN make solver
+
+
+FROM mhd-elmer-runtime AS mhd-runtime
+
+# The OpenFOAM solver builds independently so C++ changes do not rebuild Elmer.
+COPY --from=mhd-openfoam-builder \
+  /home/openfoam/platforms/linux64GccDPInt32Opt/bin/mdhLinearHall \
+  /home/openfoam/platforms/linux64GccDPInt32Opt/bin/mdhLinearHall
+
+# Retain the full source tree for inspection in interactive development shells.
+COPY libs/ /home/openfoam/EOF-Library/libs/
+COPY solvers/ /home/openfoam/EOF-Library/solvers/
+
+# Python-only dependency changes do not invalidate the native solver build.
+COPY --from=mhd-python-runtime /opt/mhd-python /opt/mhd-python
+
+ENV PATH="/opt/mhd-python/bin:${PATH}"
 
 # Ensure interactive shells know OpenFOAM + EOF env (helps aliases & PATH)
 RUN echo '. /opt/openfoam6/etc/bashrc' >> /home/openfoam/.bashrc \
  && echo '. /home/openfoam/EOF-Library/etc/bashrc' >> /home/openfoam/.bashrc
 
 COPY tests/ /home/openfoam/EOF-Library/tests/
-RUN make simulation
+COPY docker/user-mapping.sh /user-mapping.sh
 
-# Aliases (for interactive use)
-RUN echo 'alias run_sim="cd ~/EOF-Library/runs/linearHall && mpirun -n 2 mdhLinearHall -parallel : -n 2 ElmerSolver_mpi case.sif"' >> /home/openfoam/.bashrc \
- && echo 'alias finish_up="reconstructPar -case . && foamToVTK -case ."' >> /home/openfoam/.bashrc \
- && echo 'alias prepare_dir="rm -r ~/EOF-Library/runs/linearHall && mkdir -p ~/EOF-Library/runs/linearHall && cp -r ~/EOF-Library/tests/linearHall ~/EOF-Library/runs/"' >> /home/openfoam/.bashrc \
- && echo 'alias run_all="prepare_dir && run_sim && finish_up"' >> /home/openfoam/.bashrc
+RUN cp /home/openfoam/EOF-Library/tests/linearHall/mhd-command /usr/local/bin/mhd \
+ && chmod 0755 /usr/local/bin/mhd /user-mapping.sh
 
+ENTRYPOINT ["/user-mapping.sh"]

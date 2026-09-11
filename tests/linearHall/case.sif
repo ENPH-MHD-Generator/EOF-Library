@@ -7,17 +7,14 @@ Simulation
   Coordinate System = String "Cartesian 3D"
   Simulation Type = Steady
 
-  Steady State Max Iterations = 1000000
-  Steady State Min Iterations = 1000000
+  Steady State Max Iterations = 1000
+  Steady State Min Iterations = 1000
 
   Output Intervals = 1
   Post File = case.ep
 End
 
 
-! -------------------------
-! Body / One master equation (like your working pattern)
-! -------------------------
 Body 1
   Name = "fluid"
   Target Bodies(1) = 1
@@ -146,19 +143,27 @@ Solver 11
   Calculate Volume Current = Logical True
   Calculate Joule Heating  = Logical True
 
-  ! --- EOF-compatible linear system ---
+  Nonlinear System Max Iterations = 40
+  Nonlinear System Convergence Tolerance = 5.0e-3
+  Nonlinear System Relaxation Factor = 0.7
+  Nonlinear System Convergence Without Constraints = Logical True
+
+  Linear System Refactorize = Logical True
+
+  Nonlinear System Newton After Iterations = 0
+  Nonlinear System Newton After Tolerance  = 1.0e-3
+
   Linear System Solver = Iterative
-  Linear System Iterative Method = GMRES
+  Linear System Iterative Method = GCR
+  Linear System GCR Restart = 200
   Linear System Symmetric = False
-  Linear System Preconditioning = ILU
-
-  Linear System Max Iterations = 500
-  Linear System Convergence Tolerance = 1.0e-8
-
+  Linear System Preconditioning = ILU1
+  Linear System Max Iterations = 12000
+  Linear System Convergence Tolerance = 1.0e-3
   Linear System Abort Not Converged = False
-  Linear System Residual Output = 1
+  Linear System Scaling = False
+  Linear System Residual Output = 500
 End
-
 
 
 
@@ -174,13 +179,11 @@ Solver 12
   Target Variable 2 = String "Volume Current 2"
   Target Variable 3 = String "Volume Current 3"
   Target Variable 4 = String "Joule Heating"
-  Target Variable 5 = String "Electric Conductivity"
+  Target Variable 5 = String "Potential"
+  Target Variable 6 = String "Electric Conductivity"
 End
 
 
-! -------------------------
-! Material
-! -------------------------
 Material 1
   Name = "Conducting Fluid"
 
@@ -197,32 +200,101 @@ Material 1
 End
 
 
-! -------------------------
-! Body Force: none
-! -------------------------
 Body Force 1
   Name = "NoSource"
 End
 
-
 ! -------------------------
 ! Boundary Conditions
 ! -------------------------
+!   Boundary name            Elmer index
+!   InletX                     1
+!   OutletX                    2
+!   InsulatorSurface           3
+!   CathodeSurface_1           4
+!   AnodeSurface_1             5
+!   CathodeSurface_2           6
+!   AnodeSurface_2             7
+!   CathodeSurface_3           8
+!   AnodeSurface_3             9
+!   CathodeSurface_4           10
+!   AnodeSurface_4             11
+
 Boundary Condition 1
-  ! FaradayMinusY
-  Target Boundaries(1) = 1
-  Potential = Real 0.0
+  ! CathodeSurface_1
+  Target Boundaries(1) = 4
+  Electrode Pair = Integer 1
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 2
-  ! FaradayPlusY
-  Target Boundaries(1) = 2
-  Potential = Real 1.0
+  ! AnodeSurface_1
+  Target Boundaries(1) = 5
+  Electrode Pair = Integer 1
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 1.0
 End
 
 Boundary Condition 3
-  ! SideWallsZ
-  Target Boundaries(1) = 5
-  Current Density BC = Logical True
-  Current Density = Real 0.0
+  ! CathodeSurface_2
+  Target Boundaries(1) = 6
+  Electrode Pair = Integer 2
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 1.0
+End
+
+Boundary Condition 4
+  ! AnodeSurface_2
+  Target Boundaries(1) = 7
+  Electrode Pair = Integer 2
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 1.0
+End
+
+Boundary Condition 5
+  ! CathodeSurface_3
+  Target Boundaries(1) = 8
+  Electrode Pair = Integer 3
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 1.0
+End
+
+Boundary Condition 6
+  ! AnodeSurface_3
+  Target Boundaries(1) = 9
+  Electrode Pair = Integer 3
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 1.0
+End
+
+Boundary Condition 7
+  ! CathodeSurface_4
+  Target Boundaries(1) = 10
+  Electrode Pair = Integer 4
+  Electrode Sign = String "minus"
+  Electrode Resistance = Real 1.0
+End
+
+Boundary Condition 8
+  ! AnodeSurface_4
+  Target Boundaries(1) = 11
+  Electrode Pair = Integer 4
+  Electrode Sign = String "plus"
+  Electrode Resistance = Real 1.0
+End
+
+Boundary Condition 9
+  ! InsulatorSurface
+  Target Boundaries(1) = 3
+End
+
+Boundary Condition 10
+  ! InletX
+  Target Boundaries(1) = 1
+End
+
+Boundary Condition 11
+  ! OutletX
+  Target Boundaries(1) = 2
 End

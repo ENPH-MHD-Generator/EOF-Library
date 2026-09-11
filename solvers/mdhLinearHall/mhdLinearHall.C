@@ -87,8 +87,20 @@ int main(int argc, char *argv[])
     receiving.recvScalar(Jy);
     receiving.recvScalar(Jz);
     receiving.recvScalar(JH_recv);
+    receiving.recvScalar(potential);
     JH  = JH_recv;
     receiving.recvScalar(elcond_elmer);
+
+    // Without this, parallel decomposition fails when writing fields with non-zero values
+    Jx.correctBoundaryConditions();
+    Jy.correctBoundaryConditions();
+    Jz.correctBoundaryConditions();
+    JH.correctBoundaryConditions();
+    potential.correctBoundaryConditions();
+
+    // Compute electric field E = -grad(potential)
+    electric_field = -fvc::grad(potential);
+    electric_field.correctBoundaryConditions();
 
     // Reconstruct J_dens from component fields
     // Brackets define a local scope in OF6
@@ -189,9 +201,21 @@ int main(int argc, char *argv[])
         receiving.recvScalar(Jy);
         receiving.recvScalar(Jz);
         receiving.recvScalar(JH_recv);
+        receiving.recvScalar(potential);
         JH  = JH_recv;
         receiving.recvScalar(elcond_elmer);
 
+        // Without this, parallel decomposition fails when writing fields with non-zero values
+        Jx.correctBoundaryConditions();
+        Jy.correctBoundaryConditions();
+        Jz.correctBoundaryConditions();
+        JH.correctBoundaryConditions();
+        potential.correctBoundaryConditions();
+
+        // Compute electric field E = -grad(potential)
+        electric_field = -fvc::grad(potential);
+        electric_field.correctBoundaryConditions();
+        
         // Reconstruct J_dens from component fields
         // Brackets define a local scope in OF6
         {

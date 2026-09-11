@@ -1,0 +1,55 @@
+# ============================================================================
+# Linear Hall experiment configuration (schema version 1)
+#
+# This base-case copy is also used to verify whether the checked-in mesh can be
+# reused. The public example lives in experiments/linear-hall.yaml. In the
+# container, prepare it with:
+#
+#     mhd prepare /experiments/linear-hall.yaml
+#
+# ============================================================================
+
+schema_version: 1
+
+channel:
+  length: 0.200            # m  (200 mm)
+  height: 0.050            # m  ( 50 mm)
+  width:  0.050            # m  ( 50 mm)
+  wall_thickness: 0.005    # m  (  5 mm insulator / electrode shell)
+
+mesh:
+  size_min: null            # global minimum edge length (null = Gmsh default)
+  size_max: null            # global maximum edge length
+  size_factor: 0.2          # >1 coarser, <1 finer
+
+# ---------------------------------------------------------------------------
+# Electrode pairs — two supported formats:
+#
+#   Format A – explicit pair placement and resistance:
+#     electrodes:
+#       length: 0.010
+#       pairs:
+#         - { x_center: 0.040, resistance: 1.0 }
+#         - { x_center: 0.120, resistance: 1.0 }
+#
+#   Format B – auto-spaced (evenly distributed along the channel):
+#     electrodes:
+#       count: 4
+#       length: 0.010
+#       resistance: 1.0
+#
+# Exactly one of "pairs" and "count" must be supplied. All pairs use the one
+# shared electrode length. Pair-specific resistances are supported.
+# ---------------------------------------------------------------------------
+electrodes:
+  length: 0.010
+  pairs:
+    - { x_center: 0.040, resistance: 1.0 }
+    - { x_center: 0.080, resistance: 1.0 }
+    - { x_center: 0.120, resistance: 1.0 }
+    - { x_center: 0.160, resistance: 1.0 }
+
+physics:
+  B_field: [0, 0, 1.5]
+  inlet_velocity: [391, 0, 0]
+  inlet_temperature: 1500

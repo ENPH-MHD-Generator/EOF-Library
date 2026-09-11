@@ -16,33 +16,64 @@ FoamFile
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 // Joule heating power density [W/m^3]
-dimensions      [1 -1 -3 0 0 0 0];
+dimensions [1 -1 -3 0 0 0 0];
 
-// Start from zero; Elmer overwrites this during coupling
 internalField   uniform 0;
+
 
 boundaryField
 {
     InletX
     {
-        type            zeroGradient;
+        type    zeroGradient;
     }
 
     OutletX
     {
         type    zeroGradient;
     }
-    FaradayMinusY
+
+    InsulatorSurface
     {
         type    zeroGradient;
     }
 
-    FaradayPlusY
+    CathodeSurface_1
     {
         type    zeroGradient;
     }
 
-    SideWallsZ
+    AnodeSurface_1
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_4
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_4
     {
         type    zeroGradient;
     }
@@ -55,5 +86,3 @@ boundaryField
 
 
 // ************************************************************************* //
-
-

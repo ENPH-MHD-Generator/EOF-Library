@@ -5,7 +5,6 @@
 |   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
 |    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
-
 FoamFile
 {
     version     2.0;
@@ -13,38 +12,68 @@ FoamFile
     class       volVectorField;
     location    "0";
     object      U;
-};
-
+}
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-dimensions      [0 1 -1 0 0 0 0];
+dimensions [0 1 -1 0 0 0 0];
 
 internalField   uniform (0 0 0);
+
 
 boundaryField
 {
     InletX
     {
         type    fixedValue;
-        value   uniform (343 0 0);   // Mach 1 inflow
+        value   uniform (391 0 0);
     }
 
     OutletX
     {
-        type zeroGradient;
+        type    zeroGradient;
     }
 
-    FaradayMinusY
+    InsulatorSurface
     {
         type    noSlip;
     }
 
-    FaradayPlusY
+    CathodeSurface_1
     {
         type    noSlip;
     }
 
-    SideWallsZ
+    AnodeSurface_1
+    {
+        type    noSlip;
+    }
+
+    CathodeSurface_2
+    {
+        type    noSlip;
+    }
+
+    AnodeSurface_2
+    {
+        type    noSlip;
+    }
+
+    CathodeSurface_3
+    {
+        type    noSlip;
+    }
+
+    AnodeSurface_3
+    {
+        type    noSlip;
+    }
+
+    CathodeSurface_4
+    {
+        type    noSlip;
+    }
+
+    AnodeSurface_4
     {
         type    noSlip;
     }
@@ -54,5 +83,6 @@ boundaryField
         type    noSlip;
     }
 }
+
 
 // ************************************************************************* //

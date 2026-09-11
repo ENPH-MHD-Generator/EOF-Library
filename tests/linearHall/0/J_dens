@@ -15,11 +15,11 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Volume current desnity, J / m^2
+// Volume current density [A/m^2]
 dimensions [0 -2 0 0 0 1 0];
 
-// Start from zero; Elmer overwrites this during coupling
 internalField   uniform (0 0 0);
+
 
 boundaryField
 {
@@ -32,17 +32,48 @@ boundaryField
     {
         type    zeroGradient;
     }
-    FaradayMinusY
+
+    InsulatorSurface
     {
         type    zeroGradient;
     }
 
-    FaradayPlusY
+    CathodeSurface_1
     {
         type    zeroGradient;
     }
 
-    SideWallsZ
+    AnodeSurface_1
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_4
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_4
     {
         type    zeroGradient;
     }
@@ -55,5 +86,3 @@ boundaryField
 
 
 // ************************************************************************* //
-
-

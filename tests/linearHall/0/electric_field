@@ -9,16 +9,16 @@ FoamFile
 {
     version     2.0;
     format      ascii;
-    class       volScalarField;
+    class       volVectorField;
     location    "0";
-    object      p_rgh;
+    object      electric_field;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Dynamic pressure (p - rho*g*h)
-dimensions [1 -1 -2 0 0 0 0];
+// Electric field E = -grad(Potential) [V/m]
+dimensions [1 1 -3 0 0 -1 0];
 
-internalField   uniform 0;
+internalField   uniform (0 0 0);
 
 
 boundaryField
@@ -30,8 +30,7 @@ boundaryField
 
     OutletX
     {
-        type    fixedValue;
-        value   uniform 0;
+        type    zeroGradient;
     }
 
     InsulatorSurface
