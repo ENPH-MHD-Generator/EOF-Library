@@ -50,28 +50,144 @@ END MODULE MHDUtils
 
 
 !------------------------------------------------------------------------------
-! MHDParams – central knobs for MHD solver behaviour
+! MHDPlasma – seeded-plasma physics (no Elmer types)
 !
-! This module collects tunable scalar parameters that should be shared by
-! multiple MHD-related solvers. Keeping them here guarantees there is a
-! single, well-documented “source of truth” instead of copy-pasted literals.
+! Only the alkali seed ionizes; the carrier gas is neutral. Heavy particles are
+! at the gas temperature, electrons at T (two-temperature Saha). Collisions are
+! electron-neutral only, with the carrier and with neutral seed atoms.
 !------------------------------------------------------------------------------
-MODULE MHDParams
-  USE DefUtils, ONLY: dp
+MODULE MHDPlasma
   IMPLICIT NONE
+  INTEGER, PARAMETER, PRIVATE :: r8 = KIND(1.0d0)
 
-  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.070266_dp
-  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.013333_dp
+  REAL(KIND=r8), PARAMETER :: kBoltz = 1.380649d-23
+  REAL(KIND=r8), PARAMETER :: eMass = 9.1093837015d-31
+  REAL(KIND=r8), PARAMETER :: eCharge = 1.602176634d-19
+  REAL(KIND=r8), PARAMETER, PRIVATE :: hPlanck = 6.62607015d-34
+  REAL(KIND=r8), PARAMETER, PRIVATE :: Pi = 3.14159265358979323846d0
 
-  ! https://pure.tue.nl/ws/files/4331881/7207091.pdf
-  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = -0.0403361_dp
-  REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.403361_dp
+  TYPE SeedPlasma_t
+    REAL(KIND=r8) :: SeedFrac      ! seed atoms per heavy particle
+    REAL(KIND=r8) :: ChiJ          ! seed ionization energy [J]
+    REAL(KIND=r8) :: WeightRatio   ! g_ion / g_neutral of the seed
+    REAL(KIND=r8) :: Qseed         ! electron-seed cross section [m^2]
+    REAL(KIND=r8) :: Qcarrier      ! electron-carrier cross section [m^2]
+    REAL(KIND=r8) :: Mseed         ! seed particle mass [kg]
+    REAL(KIND=r8) :: Mcarrier      ! carrier particle mass [kg]
+    REAL(KIND=r8) :: LossFactor    ! inelastic loss factor delta (1 = elastic)
+  END TYPE SeedPlasma_t
+
+CONTAINS
+
+  !> Electron density and collision frequencies at electron temperature T for
+  !> heavy-particle density nH and seed density nS:
+  !>   ne^2 / (nS - ne) = 2 (g_i/g_n) (2 pi me kB T / h^2)^(3/2) exp(-chi / (kB T))
+  !>   nu = vth [ (nH - nS) Qc + (nS - ne) Qs ],  NuOverMass = sum_s nu_s / M_s
+  SUBROUTINE SeedPlasmaState( Pl, T, nH, nS, ne, nu, NuOverMass )
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN)  :: T, nH, nS
+    REAL(KIND=r8), INTENT(OUT) :: ne, nu, NuOverMass
+    REAL(KIND=r8) :: SahaS, Expo, vth, nuC, nuS
+
+    Expo = Pl % ChiJ / (kBoltz * T)
+    IF (Expo > 700.0_r8) THEN
+      SahaS = 0.0_r8
+    ELSE
+      SahaS = 2.0_r8 * Pl % WeightRatio * &
+          ((2.0_r8*Pi*eMass*kBoltz*T) / (hPlanck*hPlanck))**1.5_r8 * EXP(-Expo)
+    END IF
+
+    ! Positive root of ne^2 + S ne - S nS = 0, in a form that avoids
+    ! cancellation when S >> nS
+    IF (SahaS > 0.0_r8) THEN
+      ne = 2.0_r8 * SahaS * nS / (SahaS + SQRT(SahaS*SahaS + 4.0_r8*SahaS*nS))
+    ELSE
+      ne = 0.0_r8
+    END IF
+
+    vth = SQRT(8.0_r8*kBoltz*T / (Pi*eMass))
+    nuC = vth * (nH - nS) * Pl % Qcarrier
+    nuS = vth * (nS - ne) * Pl % Qseed
+    nu  = nuC + nuS
+    NuOverMass = nuC / Pl % Mcarrier + nuS / Pl % Mseed
+  END SUBROUTINE SeedPlasmaState
 
 
-  ! Off
-  ! REAL(KIND=dp), PARAMETER :: HallCoeffAlphaDefault = 0.0_dp
+  !> Electron heating Te - Tg sustained at electron temperature T by the field
+  !> E' = E + U x B (squared components along and across B), from the
+  !> Kerrebrock energy balance
+  !>   J^2/sigma = 3 delta ne me kB (Te - Tg) sum_s nu_s / M_s
+  !> With the Hall effect, J^2/sigma = sigma E_eff^2 where
+  !>   E_eff^2 = E'_par^2 + E'_perp^2 / (1 + beta^2),  beta = mu_e |B|,
+  !> so ne cancels:
+  !>   Te - Tg = e^2 E_eff^2 / (3 delta kB me^2 nu sum_s nu_s / M_s)
+  FUNCTION ElectronHeating( Pl, T, nH, nS, Epar2, Eperp2, Bmag ) RESULT(DT)
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN) :: T, nH, nS, Epar2, Eperp2, Bmag
+    REAL(KIND=r8) :: DT, ne, nu, NuOverMass, beta, E2
 
-END MODULE MHDParams
+    CALL SeedPlasmaState( Pl, T, nH, nS, ne, nu, NuOverMass )
+    IF (nu > 0.0_r8 .AND. NuOverMass > 0.0_r8) THEN
+      beta = eCharge * Bmag / (eMass * nu)
+      E2 = Epar2 + Eperp2 / (1.0_r8 + beta*beta)
+      DT = eCharge*eCharge * E2 / &
+          (3.0_r8 * Pl % LossFactor * kBoltz * eMass*eMass * nu * NuOverMass)
+    ELSE
+      DT = HUGE(1.0_r8)
+    END IF
+  END FUNCTION ElectronHeating
+
+
+  !> Electron temperature balancing electron heating by E' against collisional
+  !> losses, bracketed and bisected on [Tg, TeMax]. AtMax is set when the
+  !> balance lies above TeMax and Te is capped there.
+  FUNCTION ElectronTemperature( Pl, Tg, nH, nS, Epar2, Eperp2, Bmag, TeMax, AtMax ) RESULT(Te)
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN) :: Tg, nH, nS, Epar2, Eperp2, Bmag, TeMax
+    LOGICAL, INTENT(OUT) :: AtMax
+    REAL(KIND=r8) :: Te, TeLo, TeHi, TeCap
+    INTEGER :: k
+
+    AtMax = .FALSE.
+    Te = Tg
+    IF (Epar2 + Eperp2 <= 0.0_r8 .OR. TeMax <= Tg) RETURN
+
+    ! Residual (Te - Tg) - ElectronHeating(Te) is negative at Tg; grow the
+    ! upper bracket until it turns positive or reaches the cap
+    TeCap = TeMax
+    TeLo = Tg
+    TeHi = MIN(Tg + MAX(ElectronHeating(Pl, Tg, nH, nS, Epar2, Eperp2, Bmag), 1.0_r8), TeCap)
+    DO k = 1, 60
+      IF (Residual(TeHi) >= 0.0_r8) EXIT
+      IF (TeHi >= TeCap) THEN
+        AtMax = .TRUE.
+        Te = TeCap
+        RETURN
+      END IF
+      TeHi = MIN(Tg + 2.0_r8 * (TeHi - Tg), TeCap)
+    END DO
+
+    DO k = 1, 100
+      Te = 0.5_r8 * (TeLo + TeHi)
+      IF (TeHi - TeLo < 1.0e-3_r8) EXIT
+      IF (Residual(Te) < 0.0_r8) THEN
+        TeLo = Te
+      ELSE
+        TeHi = Te
+      END IF
+    END DO
+
+  CONTAINS
+
+    FUNCTION Residual(T) RESULT(R)
+      REAL(KIND=r8), INTENT(IN) :: T
+      REAL(KIND=r8) :: R
+      R = (T - Tg) - ElectronHeating(Pl, T, nH, nS, Epar2, Eperp2, Bmag)
+    END FUNCTION Residual
+
+  END FUNCTION ElectronTemperature
+
+END MODULE MHDPlasma
 
 
 MODULE MHDLog

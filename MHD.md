@@ -161,6 +161,53 @@ non-negative.
 - `inlet_velocity` is a three-component inlet velocity vector.
 - `inlet_temperature` must be positive.
 
+`plasma` is optional and describes the alkali-seeded carrier gas. The defaults
+are 1% potassium in argon:
+
+```yaml
+plasma:
+  seed_mole_fraction: 0.01        # seed atoms per heavy particle, in (0, 1)
+  seed_ionization_energy: 4.3407  # eV
+  seed_gi_over_gn: 0.5            # ion / neutral statistical weight ratio
+  seed_cross_section: 4.0e-18     # m^2, electron-seed momentum transfer
+  carrier_cross_section: 1.0e-19  # m^2, electron-carrier momentum transfer
+  reference_pressure: 101325      # Pa, absolute pressure where OpenFOAM p = 0
+  sigma_min: 1.0e-2               # S/m
+  sigma_max: 1.0e6                # S/m
+  two_temperature: true           # Te from Joule heating vs. collisional loss
+  carrier_molar_mass: 39.948      # g/mol
+  seed_molar_mass: 39.098         # g/mol
+  energy_loss_factor: 1.0         # delta; 1 = elastic losses only
+  electron_temperature_max: 20000 # K
+  electron_temperature_relaxation: 0.5
+```
+
+Only the seed ionizes. At every node Elmer solves the Saha equation for the
+seed at the electron temperature `Te`, with heavy-particle densities from the
+gas temperature, then computes the conductivity from electron-neutral
+collisions with the carrier gas and the neutral seed. The Hall term uses the
+resulting electron density, `1/(n_e e)`. Conductivity is clamped to
+`[sigma_min, sigma_max]`, and the Hall parameter stays physical at clamped
+nodes.
+
+With `two_temperature: true`, `Te` comes from the electron energy balance
+(Kerrebrock): Joule heating of the electrons, `J^2/sigma`, equals their
+elastic collisional loss to heavy particles,
+`3 delta n_e m_e k_B (Te - Tg) sum_s nu_s / M_s`. The heating uses the field
+the electrons see, `E' = -grad(phi) + U x B`, with the Hall effect included:
+`J^2/sigma = sigma (E'_par^2 + E'_perp^2 / (1 + beta^2))`, where
+`beta = mu_e |B|`. Because conductivity depends
+on `Te` and the current depends on conductivity, `Te` is updated every
+nonlinear iteration of the current solver (under-relaxed by
+`electron_temperature_relaxation`), and the solver only stops once `Te` has
+also converged. `energy_loss_factor` scales the losses for inelastic or
+radiative processes. With `two_temperature: false`, `Te` equals the gas
+temperature.
+
+The run writes `ionizationFraction` (`n_e / n_heavy`), `Te`, and
+`elcond_elmer` as OpenFOAM fields, including initial values at `t = 0`. The
+channel's initial temperature is the inlet temperature.
+
 Unknown keys and invalid values fail during validation instead of being
 silently ignored.
 

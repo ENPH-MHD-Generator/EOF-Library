@@ -53,3 +53,26 @@ physics:
   B_field: [0, 0, 1.5]
   inlet_velocity: [391, 0, 0]
   inlet_temperature: 1500
+
+# ---------------------------------------------------------------------------
+# Seeded plasma (optional; defaults shown). Only the alkali seed ionizes,
+# via the Saha equation at the electron temperature; the carrier gas stays
+# neutral. Conductivity uses electron-neutral collisions with carrier and
+# seed. With two_temperature, Te rises above Tgas where Joule heating of the
+# electrons exceeds their collisional losses (Kerrebrock).
+# ---------------------------------------------------------------------------
+plasma:
+  seed_mole_fraction: 0.01        # potassium atoms per heavy particle
+  seed_ionization_energy: 4.3407  # eV
+  seed_gi_over_gn: 0.5            # g(K+) / g(K)
+  seed_cross_section: 4.0e-18     # m^2, electron-K momentum transfer
+  carrier_cross_section: 1.0e-19  # m^2, electron-Ar momentum transfer
+  reference_pressure: 101325      # Pa, absolute pressure at OpenFOAM p = 0
+  sigma_min: 1.0e-2               # S/m
+  sigma_max: 1.0e6                # S/m
+  two_temperature: true           # Te from Joule heating vs. collisional loss
+  carrier_molar_mass: 39.948      # g/mol (Ar)
+  seed_molar_mass: 39.098         # g/mol (K)
+  energy_loss_factor: 1.0         # delta; 1 = elastic losses only (monatomic)
+  electron_temperature_max: 20000 # K
+  electron_temperature_relaxation: 0.5

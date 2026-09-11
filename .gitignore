@@ -49,6 +49,9 @@ partitioning.*
 # Cursor AI
 .cursor
 
-
 # Saved Runs
 saved_runs/*
+
+# Files
+*.pyc
+.DS_Store

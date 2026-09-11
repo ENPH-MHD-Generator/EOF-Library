@@ -68,8 +68,6 @@ int main(int argc, char *argv[])
     // Send fields to Elmer
     Elmer<fvMesh> sending(mesh, 1);     //  1 = send
     sending.sendStatus(1);              //  1 = ok / continue
-    elcond = elcond_melt;
-    sending.sendScalar(elcond);
     sending.sendScalar(Ux);
     sending.sendScalar(Uy);
     sending.sendScalar(Uz);
@@ -90,6 +88,8 @@ int main(int argc, char *argv[])
     receiving.recvScalar(potential);
     JH  = JH_recv;
     receiving.recvScalar(elcond_elmer);
+    receiving.recvScalar(ionizationFraction);
+    receiving.recvScalar(Te);
 
     // Without this, parallel decomposition fails when writing fields with non-zero values
     Jx.correctBoundaryConditions();
@@ -97,6 +97,9 @@ int main(int argc, char *argv[])
     Jz.correctBoundaryConditions();
     JH.correctBoundaryConditions();
     potential.correctBoundaryConditions();
+    elcond_elmer.correctBoundaryConditions();
+    ionizationFraction.correctBoundaryConditions();
+    Te.correctBoundaryConditions();
 
     // Compute electric field E = -grad(potential)
     electric_field = -fvc::grad(potential);
@@ -185,9 +188,6 @@ int main(int argc, char *argv[])
         By = B.component(vector::Y);
         Bz = B.component(vector::Z);
 
-        elcond = elcond_melt;
-        Info<< "elcond min/max = " << gMin(elcond) << " " << gMax(elcond) << nl << endl;
-        sending.sendScalar(elcond);
         sending.sendScalar(Ux);
         sending.sendScalar(Uy);
         sending.sendScalar(Uz);
@@ -204,6 +204,10 @@ int main(int argc, char *argv[])
         receiving.recvScalar(potential);
         JH  = JH_recv;
         receiving.recvScalar(elcond_elmer);
+        receiving.recvScalar(ionizationFraction);
+        receiving.recvScalar(Te);
+        Info<< "elcond min/max = " << gMin(elcond_elmer) << " " << gMax(elcond_elmer)
+            << "  ionizationFraction max = " << gMax(ionizationFraction) << nl << endl;
 
         // Without this, parallel decomposition fails when writing fields with non-zero values
         Jx.correctBoundaryConditions();
@@ -211,6 +215,9 @@ int main(int argc, char *argv[])
         Jz.correctBoundaryConditions();
         JH.correctBoundaryConditions();
         potential.correctBoundaryConditions();
+        elcond_elmer.correctBoundaryConditions();
+        ionizationFraction.correctBoundaryConditions();
+        Te.correctBoundaryConditions();
 
         // Compute electric field E = -grad(potential)
         electric_field = -fvc::grad(potential);

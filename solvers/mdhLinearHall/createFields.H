@@ -196,26 +196,6 @@ volVectorField fLorentz
 
 
 
-Info<< "Initializing field elcond\n" << endl;
-volScalarField elcond
-(
-    IOobject
-    (
-        "elcond",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    mesh,
-    dimensionedScalar
-    (
-        "zero",
-        dimensionSet(-1, -3, 3, 0, 0, 2, 0),
-        0.0
-    )
-);
-
 Info<< "Initializing field T\n" << endl;
 volScalarField T
 (
@@ -360,19 +340,6 @@ mesh.setFluxRequired(p_rgh.name());
 
 #include "createMRF.H"
 
-// -------------------------------------------------------------------------
-// Electrical conductivity (single-body enforced)
-// -------------------------------------------------------------------------
-
-dimensionedScalar elcond_melt
-(
-    "elcond_melt",
-    dimensionSet(-1, -3, 3, 0, 0, 2, 0),
-    laminarTransport
-);
-
-// Force single, nonzero conductivity everywhere
-elcond = elcond_melt;
 
 // -------------------------------------------------------------------------
 // Elmer update control
@@ -515,6 +482,12 @@ Bx = B.component(vector::X);
 By = B.component(vector::Y);
 Bz = B.component(vector::Z);
 
+// -------------------------------------------------------------------------
+// Seeded-plasma state computed by Elmer (Saha equation), written for viewing
+// -------------------------------------------------------------------------
+
+Info<< "Initializing plasma fields (elcond_elmer, ionizationFraction, Te)\n" << endl;
+
 volScalarField elcond_elmer
 (
     IOobject
@@ -526,5 +499,34 @@ volScalarField elcond_elmer
         IOobject::AUTO_WRITE
     ),
     mesh,
-    dimensionedScalar("zero", elcond.dimensions(), 0.0)
+    dimensionedScalar("zero", dimensionSet(-1, -3, 3, 0, 0, 2, 0), 0.0)
+);
+
+// Electron mole fraction ne / n_heavy
+volScalarField ionizationFraction
+(
+    IOobject
+    (
+        "ionizationFraction",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar("zero", dimless, 0.0)
+);
+
+volScalarField Te
+(
+    IOobject
+    (
+        "Te",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::AUTO_WRITE
+    ),
+    mesh,
+    dimensionedScalar("zero", dimTemperature, 0.0)
 );

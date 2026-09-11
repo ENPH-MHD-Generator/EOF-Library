@@ -234,11 +234,90 @@ class PhysicsConfig:
 
 
 @dataclass(frozen=True)
+class PlasmaConfig:
+    """Alkali-seeded carrier gas; defaults are potassium seed in argon.
+
+    Only the seed ionizes (Saha equation at the electron temperature).
+    Conductivity comes from electron-neutral collisions with both the carrier
+    gas and neutral seed. With two_temperature, Te is raised above the gas
+    temperature by Joule heating of the electrons (Kerrebrock energy balance);
+    otherwise Te = Tgas.
+    """
+
+    seed_mole_fraction: float = 0.01  # seed atoms per heavy particle
+    seed_ionization_energy: float = 4.3407  # eV (K)
+    seed_gi_over_gn: float = 0.5  # g(K+) / g(K) = 1 / 2
+    seed_cross_section: float = 4.0e-18  # m^2, electron-seed momentum transfer
+    carrier_cross_section: float = 1.0e-19  # m^2, electron-carrier momentum transfer
+    reference_pressure: float = 101325.0  # Pa, absolute pressure at OpenFOAM p = 0
+    sigma_min: float = 1.0e-2  # S/m, conductivity floor for matrix conditioning
+    sigma_max: float = 1.0e6  # S/m
+    two_temperature: bool = True
+    carrier_molar_mass: float = 39.948  # g/mol (Ar)
+    seed_molar_mass: float = 39.098  # g/mol (K)
+    energy_loss_factor: float = 1.0  # delta; 1 for elastic losses in monatomic gas
+    electron_temperature_max: float = 20000.0  # K, cap on the energy-balance solution
+    electron_temperature_relaxation: float = 0.5  # under-relaxation of Te per iteration
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "PlasmaConfig":
+        data = _mapping(raw or {}, "plasma")
+        defaults = cls()
+        _known_keys(data, asdict(defaults), "plasma")
+
+        def value(key: str, *, positive: bool = True) -> float:
+            location = f"plasma.{key}"
+            raw_value = data.get(key, getattr(defaults, key))
+            # YAML 1.1 reads exponents without a sign (1.0e6) as strings
+            if isinstance(raw_value, str):
+                try:
+                    raw_value = float(raw_value)
+                except ValueError:
+                    pass
+            if positive:
+                return _number(raw_value, location, positive=True)
+            return _nonnegative_number(raw_value, location)
+
+        two_temperature = data.get("two_temperature", defaults.two_temperature)
+        if not isinstance(two_temperature, bool):
+            raise ConfigError("plasma.two_temperature must be true or false")
+
+        result = cls(
+            seed_mole_fraction=value("seed_mole_fraction"),
+            seed_ionization_energy=value("seed_ionization_energy"),
+            seed_gi_over_gn=value("seed_gi_over_gn"),
+            seed_cross_section=value("seed_cross_section", positive=False),
+            carrier_cross_section=value("carrier_cross_section", positive=False),
+            reference_pressure=value("reference_pressure"),
+            sigma_min=value("sigma_min"),
+            sigma_max=value("sigma_max"),
+            two_temperature=two_temperature,
+            carrier_molar_mass=value("carrier_molar_mass"),
+            seed_molar_mass=value("seed_molar_mass"),
+            energy_loss_factor=value("energy_loss_factor"),
+            electron_temperature_max=value("electron_temperature_max"),
+            electron_temperature_relaxation=value("electron_temperature_relaxation"),
+        )
+        if result.seed_mole_fraction >= 1:
+            raise ConfigError("plasma.seed_mole_fraction must be less than 1")
+        if result.seed_cross_section + result.carrier_cross_section <= 0:
+            raise ConfigError(
+                "plasma.seed_cross_section and plasma.carrier_cross_section cannot both be zero"
+            )
+        if result.sigma_min >= result.sigma_max:
+            raise ConfigError("plasma.sigma_min must be less than plasma.sigma_max")
+        if result.electron_temperature_relaxation > 1:
+            raise ConfigError("plasma.electron_temperature_relaxation must be in (0, 1]")
+        return result
+
+
+@dataclass(frozen=True)
 class CaseConfig:
     channel: ChannelConfig
     mesh: MeshConfig
     electrodes: ElectrodeConfig
     physics: PhysicsConfig
+    plasma: PlasmaConfig = PlasmaConfig()
     schema_version: int = 1
 
     @classmethod
@@ -246,7 +325,7 @@ class CaseConfig:
         data = _mapping(raw, "configuration")
         _known_keys(
             data,
-            ("schema_version", "channel", "mesh", "electrodes", "physics"),
+            ("schema_version", "channel", "mesh", "electrodes", "physics", "plasma"),
             "configuration",
         )
         schema_version = _integer(data.get("schema_version", 1), "schema_version", positive=True)
@@ -260,6 +339,7 @@ class CaseConfig:
             mesh=MeshConfig.from_mapping(data.get("mesh", {})),
             electrodes=ElectrodeConfig.from_mapping(data["electrodes"], channel),
             physics=PhysicsConfig.from_mapping(data.get("physics", {})),
+            plasma=PlasmaConfig.from_mapping(data.get("plasma", {})),
             schema_version=schema_version,
         )
 
@@ -278,6 +358,7 @@ class CaseConfig:
                 "inlet_velocity": list(self.physics.inlet_velocity),
                 "inlet_temperature": self.physics.inlet_temperature,
             },
+            "plasma": asdict(self.plasma),
         }
 
 

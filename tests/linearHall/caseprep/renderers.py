@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Dict, Iterable, List, Mapping
 
 from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
@@ -100,9 +101,7 @@ Solver 7
   Variable DOFs = 1
 End
 
-! --------------------------------------------------
-! 4) Saha Equation
-! --------------------------------------------------
+! Pressure and gas temperature feed the seeded-plasma (Saha) model
 
 Solver 8
   Exec Solver = Always
@@ -128,15 +127,14 @@ Solver 10
   Equation = "OpenFOAM2Elmer"
   Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
 
-  Target Variable 1 = String "Electric Conductivity"
-  Target Variable 2 = String "Ux"
-  Target Variable 3 = String "Uy"
-  Target Variable 4 = String "Uz"
-  Target Variable 5 = String "Bx"
-  Target Variable 6 = String "By"
-  Target Variable 7 = String "Bz"
-  Target Variable 8 = String "Pressure"
-  Target Variable 9 = String "Gas Temperature"
+  Target Variable 1 = String "Ux"
+  Target Variable 2 = String "Uy"
+  Target Variable 3 = String "Uz"
+  Target Variable 4 = String "Bx"
+  Target Variable 5 = String "By"
+  Target Variable 6 = String "Bz"
+  Target Variable 7 = String "Pressure"
+  Target Variable 8 = String "Gas Temperature"
 End
 
 
@@ -177,7 +175,6 @@ Solver 11
 End
 
 
-
 ! --------------------------------------------------
 ! 4 Elmer -> OpenFOAM: export computed results
 ! --------------------------------------------------
@@ -192,22 +189,8 @@ Solver 12
   Target Variable 4 = String "Joule Heating"
   Target Variable 5 = String "Potential"
   Target Variable 6 = String "Electric Conductivity"
-End
-
-
-Material 1
-  Name = "Conducting Fluid"
-
-  Electric Conductivity = Variable "Electric Conductivity"
-    Real MATC "tx"
-
-  Primary Gas Mass = Real 6.63e-26
-  Ionization Potential [eV] = Real 15.76
-  Electron Neutral Cross Section = Real 1.0e-19  ! m^2 (placeholder)
-
-  Sigma Min = Real 1.0e-2
-  Sigma Max = Real 1.0e6
-
+  Target Variable 7 = String "Ionization Fraction"
+  Target Variable 8 = String "Electron Temperature"
 End
 
 
@@ -217,11 +200,43 @@ End
 """
 
 
+MATERIAL_TEMPLATE = """\
+Material 1
+  Name = "Conducting Fluid"
+
+  ! Computed by MHDSolve from the Saha equation for the seed species
+  Electric Conductivity = Variable "Electric Conductivity"
+    Real MATC "tx"
+
+  Seed Mole Fraction = Real {seed_mole_fraction:g}
+  Seed Ionization Energy = Real {seed_ionization_energy:g}  ! eV
+  Seed Statistical Weight Ratio = Real {seed_gi_over_gn:g}  ! g_ion / g_neutral
+  Seed Electron Neutral Cross Section = Real {seed_cross_section:g}  ! m^2
+  Carrier Electron Neutral Cross Section = Real {carrier_cross_section:g}  ! m^2
+  Reference Pressure = Real {reference_pressure:g}  ! Pa, added to OpenFOAM gauge p
+
+  Sigma Min = Real {sigma_min:g}
+  Sigma Max = Real {sigma_max:g}
+
+  ! Electron temperature: Joule heating vs. elastic losses (Kerrebrock),
+  ! otherwise Te = Tgas
+  Two Temperature = Logical {two_temperature}
+  Carrier Molar Mass = Real {carrier_molar_mass:g}  ! g/mol
+  Seed Molar Mass = Real {seed_molar_mass:g}  ! g/mol
+  Electron Energy Loss Factor = Real {energy_loss_factor:g}
+  Electron Temperature Max = Real {electron_temperature_max:g}  ! K
+  Electron Temperature Relaxation = Real {electron_temperature_relaxation:g}
+End
+"""
+
+
 class ElmerCaseRenderer:
     """Render an Elmer SIF from a resolved case model."""
 
     def render(self, config: CaseConfig, boundary_indices: Mapping[str, int]) -> str:
-        lines = [CASE_SIF_HEADER]
+        material = asdict(config.plasma)
+        material["two_temperature"] = "True" if config.plasma.two_temperature else "False"
+        lines = [CASE_SIF_HEADER, MATERIAL_TEMPLATE.format_map(material)]
         lines.extend(
             (
                 "! -------------------------",
@@ -313,7 +328,7 @@ FIELD_DEFINITIONS = (
         "name": "T",
         "class": "volScalarField",
         "dimensions": "[0 0 0 1 0 0 0]",
-        "internal_field": "uniform 100",
+        "internal_field": "uniform {inlet_temperature}",
         "comment": "// Temperature [K]",
         "inlet": {"type": "fixedValue", "value": "uniform {inlet_temperature}"},
         "outlet": {"type": "zeroGradient"},
@@ -375,6 +390,38 @@ FIELD_DEFINITIONS = (
         "dimensions": "[1 -1 -3 0 0 0 0]",
         "internal_field": "uniform 0",
         "comment": "// Joule heating power density [W/m^3]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    # Plasma state computed by Elmer. The solver does not read these; they
+    # exist so the fields are present in the t = 0 output for viewing.
+    {
+        "name": "Te",
+        "class": "volScalarField",
+        "dimensions": "[0 0 0 1 0 0 0]",
+        "internal_field": "uniform {inlet_temperature}",
+        "comment": "// Electron temperature [K]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "ionizationFraction",
+        "class": "volScalarField",
+        "dimensions": "[0 0 0 0 0 0 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Electron mole fraction n_e / n_heavy",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "elcond_elmer",
+        "class": "volScalarField",
+        "dimensions": "[-1 -3 3 0 0 2 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Electrical conductivity from the Saha model [S/m]",
         "inlet": {"type": "zeroGradient"},
         "outlet": {"type": "zeroGradient"},
         "wall": {"type": "zeroGradient"},

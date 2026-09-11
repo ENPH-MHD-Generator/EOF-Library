@@ -89,9 +89,7 @@ Solver 7
   Variable DOFs = 1
 End
 
-! --------------------------------------------------
-! 4) Saha Equation
-! --------------------------------------------------
+! Pressure and gas temperature feed the seeded-plasma (Saha) model
 
 Solver 8
   Exec Solver = Always
@@ -117,15 +115,14 @@ Solver 10
   Equation = "OpenFOAM2Elmer"
   Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
 
-  Target Variable 1 = String "Electric Conductivity"
-  Target Variable 2 = String "Ux"
-  Target Variable 3 = String "Uy"
-  Target Variable 4 = String "Uz"
-  Target Variable 5 = String "Bx"
-  Target Variable 6 = String "By"
-  Target Variable 7 = String "Bz"
-  Target Variable 8 = String "Pressure"
-  Target Variable 9 = String "Gas Temperature"
+  Target Variable 1 = String "Ux"
+  Target Variable 2 = String "Uy"
+  Target Variable 3 = String "Uz"
+  Target Variable 4 = String "Bx"
+  Target Variable 5 = String "By"
+  Target Variable 6 = String "Bz"
+  Target Variable 7 = String "Pressure"
+  Target Variable 8 = String "Gas Temperature"
 End
 
 
@@ -166,7 +163,6 @@ Solver 11
 End
 
 
-
 ! --------------------------------------------------
 ! 4 Elmer -> OpenFOAM: export computed results
 ! --------------------------------------------------
@@ -181,27 +177,40 @@ Solver 12
   Target Variable 4 = String "Joule Heating"
   Target Variable 5 = String "Potential"
   Target Variable 6 = String "Electric Conductivity"
-End
-
-
-Material 1
-  Name = "Conducting Fluid"
-
-  Electric Conductivity = Variable "Electric Conductivity"
-    Real MATC "tx"
-
-  Primary Gas Mass = Real 6.63e-26
-  Ionization Potential [eV] = Real 15.76
-  Electron Neutral Cross Section = Real 1.0e-19  ! m^2 (placeholder)
-
-  Sigma Min = Real 1.0e-2
-  Sigma Max = Real 1.0e6
-
+  Target Variable 7 = String "Ionization Fraction"
+  Target Variable 8 = String "Electron Temperature"
 End
 
 
 Body Force 1
   Name = "NoSource"
+End
+
+Material 1
+  Name = "Conducting Fluid"
+
+  ! Computed by MHDSolve from the Saha equation for the seed species
+  Electric Conductivity = Variable "Electric Conductivity"
+    Real MATC "tx"
+
+  Seed Mole Fraction = Real 0.01
+  Seed Ionization Energy = Real 4.3407  ! eV
+  Seed Statistical Weight Ratio = Real 0.5  ! g_ion / g_neutral
+  Seed Electron Neutral Cross Section = Real 4e-18  ! m^2
+  Carrier Electron Neutral Cross Section = Real 1e-19  ! m^2
+  Reference Pressure = Real 101325  ! Pa, added to OpenFOAM gauge p
+
+  Sigma Min = Real 0.01
+  Sigma Max = Real 1e+06
+
+  ! Electron temperature: Joule heating vs. elastic losses (Kerrebrock),
+  ! otherwise Te = Tgas
+  Two Temperature = Logical True
+  Carrier Molar Mass = Real 39.948  ! g/mol
+  Seed Molar Mass = Real 39.098  ! g/mol
+  Electron Energy Loss Factor = Real 1
+  Electron Temperature Max = Real 20000  ! K
+  Electron Temperature Relaxation = Real 0.5
 End
 
 ! -------------------------
