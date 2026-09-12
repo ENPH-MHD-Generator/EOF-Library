@@ -56,6 +56,14 @@ build_environment:
 setup: build_environment
 	mkdir -p ./experiments ./out
 
+schema:
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} python3 -m caseprep.schema \
+		schemas/mhd-experiment-v1.schema.json
+
+check-schema:
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} python3 -m caseprep.schema \
+		schemas/mhd-experiment-v1.schema.json --check
+
 build: setup
 	docker build \
 	  --build-arg ELMER_DEBUG=$(ELMER_DEBUG) \

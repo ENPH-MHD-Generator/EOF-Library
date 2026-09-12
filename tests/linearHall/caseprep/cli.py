@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .config import ConfigError
+from .loader import ConfigError
 from .preparer import PreparationError
 from .runtime import MhdRuntime
 

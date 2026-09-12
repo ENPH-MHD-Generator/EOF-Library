@@ -6,7 +6,7 @@ requested. Configuration validation and text-file generation do not require it.
 
 from pathlib import Path
 
-from .config import CaseConfig
+from .models import CaseConfig
 
 
 class ProceduralMeshGenerator:
@@ -28,14 +28,14 @@ class ProceduralMeshGenerator:
             out_msh=str(destination),
             target_element_size=mesh.target_element_size,
             channel_config={
-                "num_pairs": len(config.electrodes.pairs),
+                "num_pairs": len(config.electrode_pairs),
                 "channel_length": channel.length,
                 "channel_height": channel.height,
                 "channel_width": channel.width,
                 "electrode_length": config.electrodes.length,
                 "wall_thickness": channel.wall_thickness,
                 "electrode_centers": [
-                    pair.x_center for pair in config.electrodes.pairs
+                    pair.x_center for pair in config.electrode_pairs
                 ],
             },
         )

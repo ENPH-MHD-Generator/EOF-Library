@@ -14,8 +14,15 @@ RUN curl -fsSL \
       -o /tmp/miniforge.sh \
  && bash /tmp/miniforge.sh -b -p /opt/mhd-python \
  && rm /tmp/miniforge.sh \
- && /opt/mhd-python/bin/mamba install -y python=3.11 pyyaml \
- && /opt/mhd-python/bin/pip install --no-cache-dir gmsh==4.11.1 \
+ && /opt/mhd-python/bin/mamba install -y python=3.11 pip \
+ && /opt/mhd-python/bin/conda clean -afy
+
+COPY requirements-caseprep.txt /tmp/requirements-caseprep.txt
+
+RUN /opt/mhd-python/bin/pip install \
+      --no-cache-dir \
+      --requirement /tmp/requirements-caseprep.txt \
+ && rm /tmp/requirements-caseprep.txt \
  && /opt/mhd-python/bin/conda clean -afy
 
 

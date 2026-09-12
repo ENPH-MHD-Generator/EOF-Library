@@ -13,8 +13,9 @@ from typing import Dict, List, Optional
 import yaml
 
 from .boundaries import elmer_boundary_indices
-from .config import CaseConfig, ConfigError, load_case_config
+from .loader import ConfigError, load_case_config
 from .mesh import ProceduralMeshGenerator
+from .models import CaseConfig
 from .renderers import ElmerCaseRenderer, OpenFoamCaseRenderer
 
 
@@ -111,7 +112,7 @@ class CasePreparer:
     ) -> None:
         self._copy_static_case_files(destination)
 
-        indices = elmer_boundary_indices(len(config.electrodes.pairs))
+        indices = elmer_boundary_indices(len(config.electrode_pairs))
         self._write_text(destination / "case.sif", self.elmer_renderer.render(config, indices))
 
         zero_directory = destination / "0"
@@ -229,7 +230,7 @@ class CasePreparer:
                 case.channel,
                 case.mesh,
                 case.electrodes.length,
-                tuple(pair.x_center for pair in case.electrodes.pairs),
+                tuple(pair.x_center for pair in case.electrode_pairs),
             )
 
         if signature(config) != signature(base_config):

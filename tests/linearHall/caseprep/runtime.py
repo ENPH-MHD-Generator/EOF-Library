@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .config import CaseConfig, load_case_config
+from .loader import load_case_config
+from .models import CaseConfig
 from .preparer import CasePreparer, PreparationError
 
 

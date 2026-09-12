@@ -114,6 +114,24 @@ electrode resistance is in ohms.
 
 `schema_version` must be `1`.
 
+The versioned Pydantic models in
+`tests/linearHall/caseprep/models.py` are the authoritative schema. They reject
+unknown keys, validate types and ranges, and enforce physical constraints that
+span configuration sections. The loader selects the matching model using
+`schema_version`, which allows future versions to coexist without silently
+changing the meaning of existing files.
+
+The generated JSON Schema at `schemas/mhd-experiment-v1.schema.json` provides
+portable editor validation and completion. The example YAML declares this
+schema with a `yaml-language-server` comment. After changing a Pydantic model,
+regenerate and verify the artifact from a Python environment containing
+`requirements-caseprep.txt`:
+
+```sh
+make schema
+make check-schema
+```
+
 `channel` defines the rectangular flow channel and is required:
 
 - `length`, `height`, and `width` must be positive.

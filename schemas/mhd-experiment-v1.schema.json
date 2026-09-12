@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ChannelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "length": {
+          "description": "Flow-channel length.",
+          "exclusiveMinimum": 0,
+          "title": "Length",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "height": {
+          "description": "Flow-channel height.",
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "width": {
+          "description": "Flow-channel width.",
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "wall_thickness": {
+          "description": "Electrode and insulating shell thickness.",
+          "exclusiveMinimum": 0,
+          "title": "Wall Thickness",
+          "type": "number",
+          "x-unit": "m"
+        }
+      },
+      "required": [
+        "length",
+        "height",
+        "width",
+        "wall_thickness"
+      ],
+      "title": "ChannelConfig",
+      "type": "object"
+    },
+    "ElectrodePair": {
+      "additionalProperties": false,
+      "properties": {
+        "x_center": {
+          "description": "Electrode-pair center along the channel x-axis.",
+          "title": "X Center",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "resistance": {
+          "description": "External resistance across this electrode pair.",
+          "minimum": 0,
+          "title": "Resistance",
+          "type": "number",
+          "x-unit": "ohm"
+        }
+      },
+      "required": [
+        "x_center",
+        "resistance"
+      ],
+      "title": "ElectrodePair",
+      "type": "object"
+    },
+    "EvenlySpacedElectrodeConfig": {
+      "additionalProperties": false,
+      "description": "A requested number of identical, evenly spaced electrode pairs.",
+      "properties": {
+        "length": {
+          "description": "Shared streamwise length for every electrode.",
+          "exclusiveMinimum": 0,
+          "title": "Length",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "count": {
+          "exclusiveMinimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "resistance": {
+          "default": 1.0,
+          "description": "External resistance applied to every generated pair.",
+          "minimum": 0,
+          "title": "Resistance",
+          "type": "number",
+          "x-unit": "ohm"
+        }
+      },
+      "required": [
+        "length",
+        "count"
+      ],
+      "title": "EvenlySpacedElectrodeConfig",
+      "type": "object"
+    },
+    "ExplicitElectrodeConfig": {
+      "additionalProperties": false,
+      "description": "Explicitly positioned electrode pairs with individual resistances.",
+      "properties": {
+        "length": {
+          "description": "Shared streamwise length for every electrode.",
+          "exclusiveMinimum": 0,
+          "title": "Length",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "pairs": {
+          "items": {
+            "$ref": "#/$defs/ElectrodePair"
+          },
+          "minItems": 1,
+          "title": "Pairs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "length",
+        "pairs"
+      ],
+      "title": "ExplicitElectrodeConfig",
+      "type": "object"
+    },
+    "MeshConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "target_element_size": {
+          "description": "Uniform target characteristic length for the shared Gmsh tetrahedral mesh.",
+          "exclusiveMinimum": 0,
+          "title": "Target Element Size",
+          "type": "number",
+          "x-unit": "m"
+        }
+      },
+      "required": [
+        "target_element_size"
+      ],
+      "title": "MeshConfig",
+      "type": "object"
+    },
+    "PhysicsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "B_field": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "description": "Applied magnetic-field vector.",
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "B Field",
+          "type": "array",
+          "x-unit": "T"
+        },
+        "inlet_velocity": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "description": "OpenFOAM inlet velocity vector.",
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Inlet Velocity",
+          "type": "array",
+          "x-unit": "m/s"
+        },
+        "inlet_temperature": {
+          "default": 300.0,
+          "description": "OpenFOAM inlet temperature.",
+          "exclusiveMinimum": 0,
+          "title": "Inlet Temperature",
+          "type": "number",
+          "x-unit": "K"
+        }
+      },
+      "title": "PhysicsConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Complete schema-version-1 experiment and its physical constraints.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "channel": {
+      "$ref": "#/$defs/ChannelConfig"
+    },
+    "mesh": {
+      "$ref": "#/$defs/MeshConfig"
+    },
+    "electrodes": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExplicitElectrodeConfig"
+        },
+        {
+          "$ref": "#/$defs/EvenlySpacedElectrodeConfig"
+        }
+      ],
+      "title": "Electrodes"
+    },
+    "physics": {
+      "$ref": "#/$defs/PhysicsConfig"
+    }
+  },
+  "required": [
+    "schema_version",
+    "channel",
+    "mesh",
+    "electrodes"
+  ],
+  "title": "MHD Experiment Configuration v1",
+  "type": "object"
+}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Mapping
 
 from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
-from .config import CaseConfig
+from .models import CaseConfig
 
 
 CASE_SIF_HEADER = """\
@@ -204,7 +204,7 @@ class ElmerCaseRenderer:
         lines.append("")
 
         condition_number = 0
-        for pair_number, pair in enumerate(config.electrodes.pairs, start=1):
+        for pair_number, pair in enumerate(config.electrode_pairs, start=1):
             for role, sign in (("Cathode", "minus"), ("Anode", "plus")):
                 condition_number += 1
                 name = f"{role}Surface_{pair_number}"
@@ -384,7 +384,7 @@ class OpenFoamCaseRenderer:
         result: Dict[str, str] = {}
         for definition in FIELD_DEFINITIONS:
             result[str(definition["name"])] = self._render_field(
-                definition, electrode_patch_names(len(config.electrodes.pairs)), substitutions
+                definition, electrode_patch_names(len(config.electrode_pairs)), substitutions
             )
         return result
 

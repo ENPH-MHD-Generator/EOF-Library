@@ -9,7 +9,7 @@ channel:
   wall_thickness: 0.005
 
 mesh:
-  target_element_size: 0.05
+  target_element_size: 0.005
 
 electrodes:
   length: 0.010
