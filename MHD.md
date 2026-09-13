@@ -61,9 +61,26 @@ The native builds are independent Docker stages:
   reuse the cached OpenFOAM solver and coupler.
 - Changes beneath `solvers/mdhLinearHall/` rebuild the OpenFOAM solver but
   reuse the cached Elmer module and coupler.
-- Changes to `libs/coupleElmer/`, `libs/commSplit/`,
-  `libs/Elmer2OpenFOAM.F90`, or `libs/OpenFOAM2Elmer.F90` rebuild the shared
-  coupler and both dependent solver stages.
+- Changes to `libs/coupleElmer/` or `libs/commSplit/` rebuild the OpenFOAM
+  side of the coupler and both dependent solver stages.
+- Changes to `libs/Elmer2OpenFOAM.F90` or `libs/OpenFOAM2Elmer.F90` rebuild
+  only the Elmer-side modules.
+
+Elmer and its Fortran dependencies are built with gcc/gfortran 9 (Ubuntu
+toolchain PPA); OpenFOAM, the OpenFOAM coupler and Open MPI 1.10 keep the system
+gcc 5. Elmer only uses `mpif.h`, so Open MPI's wrappers are pointed at gfortran 9
+with `OMPI_FC`. ScaLAPACK 2.1.0, MUMPS 5.6.2 (parallel direct solver) and Hypre
+2.15.1 are built from source with the same compiler: Fortran libraries that
+share derived types with Elmer must use one compiler, since gfortran 8 changed
+the array descriptor ABI. Hypre is available for future symmetric problems;
+BoomerAMG does not converge on the non-symmetric, penalty-coupled potential
+equation. BLAS runs one thread per MPI rank (`OPENBLAS_NUM_THREADS=1`).
+
+The Elmer-side modules
+are always compiled after Elmer, against the installed version: Elmer's data
+types depend on its build options, so modules built against a different Elmer
+would corrupt memory. Changing Elmer build options (including `--debug`)
+recompiles Elmer incrementally from the build cache.
 
 The Elmer stage also keeps its configured MPI compiler tree in a BuildKit cache,
 so changed Fortran sources can reuse previously compiled dependencies.
@@ -281,6 +298,20 @@ jump in `J x B` when it is refreshed, which is the error the skipped updates
 carried. Keep it to a few percent, and compare integral results (`P_emf`,
 electrode currents) against a run with all tolerances at zero.
 
+`numerics` is optional:
+
+```yaml
+numerics:
+  linear_solver: auto   # auto, iterative, or mumps
+```
+
+`linear_solver` selects how Elmer solves the potential equation: `iterative`
+(ILU-preconditioned GCR) or `mumps` (parallel sparse direct). `auto` uses
+iterative on tetrahedral meshes, where it was about 20% faster at
+`size_factor` 0.15, and MUMPS on structured meshes, where ILU needs thousands
+of iterations on the thin wall cells (first solve 43 s vs 6.5 s on a 141k-node
+mesh). Both give the same results.
+
 Unknown keys and invalid values fail during validation instead of being
 silently ignored.
 
@@ -359,6 +390,21 @@ the rank count recorded during preparation, verifies the preparation marker and
 required solver meshes, launches the coupled OpenFOAM/Elmer MPI process, and
 then runs `reconstructPar` and `foamToVTK`.
 
+OpenFOAM and Elmer take turns computing, so both solvers can share the same
+cores: `mhd run` always allows oversubscription and has waiting MPI ranks yield
+the CPU. `--cores C` confines the whole run to `C` cores, for example to match a
+cluster allocation:
+
+```sh
+mhd run linear-hall --cores 4
+```
+
+With `--ranks 4`, running all 8 processes on 4 cores took about 20% longer than
+spreading them over 10, for 60% fewer cores. After the simulation,
+`reconstructPar` and `foamToVTK` run concurrently over the time directories,
+one process per core (or per rank without `--cores`); the output is identical
+to a serial run and each process logs to `log.<tool>.<n>` in the case.
+
 To retain only the raw parallel output and skip reconstruction and VTK export:
 
 ```sh
@@ -383,7 +429,9 @@ time steps. Measured for 1e-4 s of simulated time:
 | 0.2 | ~33k | 27 s | 20 s |
 | 0.15 | ~77k | 100 s | 73 s |
 
-Use `--ranks 4` from about `size_factor` 0.2 down; on coarser meshes the fixed
+These timings predate the fixed wall temperatures, the one-point tetrahedral
+quadrature in Elmer and `maxCo 0.8`; the latter two cut run time by roughly
+25% and 10%. Use `--ranks 4` from about `size_factor` 0.2 down; on coarser meshes the fixed
 start-up and coupling costs dominate and extra ranks do not help. The mesh is
 Netgen-optimized after generation because sliver tetrahedra otherwise set the
 time step for the whole mesh. Each Elmer update prints the electron

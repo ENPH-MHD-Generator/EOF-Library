@@ -25,9 +25,18 @@ ARG ELMER_DEBUG=0
 
 USER root
 
-# Native build/debug tools plus the shared-library dependency of the Gmsh wheel.
+# Native build/debug tools plus the shared-library dependency of the Gmsh wheel,
+# and METIS/ParMETIS (C libraries) for MUMPS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglu1-mesa nano strace sudo \
+    libparmetis-dev libmetis-dev software-properties-common wget ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# gcc/gfortran 9 for Elmer and its Fortran dependencies (Ubuntu 16.04 ships 5.4).
+# OpenFOAM, the OpenFOAM coupler and Open MPI stay on the system toolchain. Elmer
+# only uses mpif.h, so Open MPI's wrappers are pointed at gfortran-9 instead.
+RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test \
+ && apt-get update && apt-get install -y --no-install-recommends gcc-9 g++-9 gfortran-9 \
  && rm -rf /var/lib/apt/lists/*
 
 # Allow openfoam user to sudo without password
@@ -40,31 +49,69 @@ WORKDIR /home/openfoam
 RUN rm -rf /home/openfoam/EOF-Library \
  && mkdir -p /home/openfoam/EOF-Library
 
-# Build the coupler in a shared layer. Only its direct sources invalidate it.
+# Build the OpenFOAM side of the coupler in a shared layer. Only its direct
+# sources invalidate it.
 COPY libs/coupleElmer/ /home/openfoam/EOF-Library/libs/coupleElmer/
 COPY libs/commSplit/ /home/openfoam/EOF-Library/libs/commSplit/
-COPY libs/Elmer2OpenFOAM.F90 /home/openfoam/EOF-Library/libs/Elmer2OpenFOAM.F90
-COPY libs/OpenFOAM2Elmer.F90 /home/openfoam/EOF-Library/libs/OpenFOAM2Elmer.F90
-COPY libs/solvers/MHDSolve/MHDSolve.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDSolve.F90
-COPY libs/solvers/MHDSolve/MHDUtils.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDUtils.F90
 COPY etc/ /home/openfoam/EOF-Library/etc/
 COPY Makefile /home/openfoam/EOF-Library/Makefile
 
 WORKDIR /home/openfoam/EOF-Library
 
-RUN make eof
+RUN make eof-openfoam
 
 
 FROM mhd-native-base AS mhd-elmer-runtime
 
 ARG ELMER_DEBUG=0
+ARG SCALAPACK_VERSION=2.1.0
+ARG MUMPS_VERSION=5.6.2
 
-RUN --mount=type=bind,from=mhd-native-base,source=/opt/elmerfem/build,target=/opt/mhd-elmer-build-seed,readonly \
-    --mount=type=cache,id=mhd-elmer-build-v2,target=/opt/elmerfem/build,sharing=locked \
-    if [ ! -f /opt/elmerfem/build/CMakeCache.txt ]; then \
-      cp -a /opt/mhd-elmer-build-seed/. /opt/elmerfem/build/; \
-    fi \
- && make elmer ELMER_DEBUG=${ELMER_DEBUG}
+# ScaLAPACK and MUMPS from source with gfortran-9. Every Fortran library that
+# shares derived types with Elmer must use the same compiler (gfortran 8 changed
+# the array descriptor ABI), so the gfortran-5 Ubuntu packages cannot be used.
+ENV OMPI_CC=gcc-9 OMPI_CXX=g++-9 OMPI_FC=gfortran-9
+RUN set -e; mkdir -p /opt/mumps/lib /opt/mumps/include /tmp/src && cd /tmp/src \
+ && wget -q https://github.com/Reference-ScaLAPACK/scalapack/archive/refs/tags/v${SCALAPACK_VERSION}.tar.gz -O scalapack.tgz \
+ && tar xzf scalapack.tgz && mkdir -p scalapack-${SCALAPACK_VERSION}/build && cd scalapack-${SCALAPACK_VERSION}/build \
+ && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=mpicc -DCMAKE_Fortran_COMPILER=mpif90 \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF -DSCALAPACK_BUILD_TESTS=OFF \
+      -DBLAS_LIBRARIES=/usr/lib/libblas.so -DLAPACK_LIBRARIES=/usr/lib/liblapack.so >/dev/null \
+ && make -j"$(nproc)" scalapack && cp lib/libscalapack.a /opt/mumps/lib/ \
+ && cd /tmp/src && wget -q https://mumps-solver.org/MUMPS_${MUMPS_VERSION}.tar.gz -O mumps.tgz \
+ && tar xzf mumps.tgz && cd MUMPS_${MUMPS_VERSION} \
+ && cp Make.inc/Makefile.inc.generic Makefile.inc \
+ && sed -i -e 's|^#LMETISDIR .*|LMETISDIR = /usr/lib|' -e 's|^#IMETIS .*|IMETIS = -I/usr/include|' \
+      -e 's|^#LMETIS .*|LMETIS = -L/usr/lib -lparmetis -lmetis|' \
+      -e 's|^ORDERINGSF .*|ORDERINGSF = -Dpord -Dmetis -Dparmetis|' \
+      -e 's|^CC .*|CC = mpicc|' -e 's|^FC .*|FC = mpif90|' -e 's|^FL .*|FL = mpif90|' \
+      -e 's|^SCALAP .*|SCALAP = /opt/mumps/lib/libscalapack.a|' \
+      -e 's|^LAPACK .*|LAPACK = -llapack|' -e 's|^LIBBLAS .*|LIBBLAS = -lblas|' \
+      -e 's|^OPTF .*|OPTF = -O3 -fPIC|' -e 's|^OPTC .*|OPTC = -O3 -fPIC -I.|' -e 's|^OPTL .*|OPTL = -O3|' Makefile.inc \
+ && make -j"$(nproc)" d \
+ && cp lib/*.a /opt/mumps/lib/ && cp include/*.h /opt/mumps/include/ \
+ && rm -rf /tmp/src
+
+# Hypre (BoomerAMG algebraic multigrid). A C library, so no Fortran ABI concerns;
+# 2.15.1 matches the age of Elmer's Hypre interface (the Ubuntu 2.8 is too old).
+ARG HYPRE_VERSION=2.15.1
+RUN set -e; mkdir -p /tmp/src && cd /tmp/src \
+ && wget -q https://github.com/hypre-space/hypre/archive/refs/tags/v${HYPRE_VERSION}.tar.gz -O hypre.tgz \
+ && tar xzf hypre.tgz && cd hypre-${HYPRE_VERSION}/src \
+ && ./configure --prefix=/opt/hypre --with-MPI --disable-fortran CC=mpicc CXX=mpicxx \
+      CFLAGS="-O3 -fPIC" CXXFLAGS="-O3 -fPIC" >/dev/null \
+ && make -j"$(nproc)" >/dev/null && make install >/dev/null \
+ && rm -rf /tmp/src
+
+RUN --mount=type=cache,id=mhd-elmer-build-gcc9,target=/opt/elmerfem/build,sharing=locked \
+    make elmer ELMER_DEBUG=${ELMER_DEBUG}
+
+# Elmer-side coupler and MHD modules, compiled against the Elmer just installed
+COPY libs/Elmer2OpenFOAM.F90 /home/openfoam/EOF-Library/libs/Elmer2OpenFOAM.F90
+COPY libs/OpenFOAM2Elmer.F90 /home/openfoam/EOF-Library/libs/OpenFOAM2Elmer.F90
+COPY libs/solvers/MHDSolve/MHDSolve.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDSolve.F90
+COPY libs/solvers/MHDSolve/MHDUtils.F90 /home/openfoam/EOF-Library/libs/solvers/MHDSolve/MHDUtils.F90
+RUN make eof-elmer
 
 
 FROM mhd-native-base AS mhd-openfoam-builder
@@ -89,6 +136,12 @@ COPY solvers/ /home/openfoam/EOF-Library/solvers/
 COPY --from=mhd-python-runtime /opt/mhd-python /opt/mhd-python
 
 ENV PATH="/opt/mhd-python/bin:${PATH}"
+
+# One BLAS thread per MPI rank. The ranks already occupy the cores; OpenBLAS's
+# default of one thread per core in every rank oversubscribes the CPU and made
+# MUMPS solves 10-30x slower.
+ENV OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1
 
 # Ensure interactive shells know OpenFOAM + EOF env (helps aliases & PATH)
 RUN echo '. /opt/openfoam6/etc/bashrc' >> /home/openfoam/.bashrc \

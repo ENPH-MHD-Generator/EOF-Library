@@ -255,6 +255,18 @@ class ElmerCaseRenderer:
             ):
                 assert header.count(old) == 1, old
                 header = header.replace(old, new)
+        solver = config.numerics.linear_solver
+        if solver == "auto":
+            solver = "mumps" if config.mesh.type == "structured" else "iterative"
+        if solver == "mumps":
+            old = "  Linear System Solver = Iterative\n"
+            assert header.count(old) == 1, old
+            header = header.replace(
+                old,
+                "  ! Parallel sparse direct solve; the iterative settings below are unused\n"
+                "  Linear System Solver = Direct\n"
+                "  Linear System Direct Method = MUMPS\n",
+            )
         lines = [header, MATERIAL_TEMPLATE.format_map(material)]
         lines.extend(
             (

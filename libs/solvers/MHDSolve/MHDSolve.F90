@@ -192,6 +192,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CHARACTER(LEN=256) :: LogMsg
 
   LOGICAL :: GetCondAtIp
+  ! Gauss points for linear tetrahedra in assembly and current evaluation
+  INTEGER :: TetraPoints
   TYPE(ValueHandle_t) :: CondAtIp_h
   REAL(KIND=dp) :: CondAtIp
 
@@ -333,6 +335,15 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   IF ( .NOT. GotIt ) NonlinearIter = 1
 
   GetCondAtIp = ListGetLogical( Params,'Conductivity At Ip',GotIt )
+
+  ! Linear tetrahedra have constant basis gradients and our fields vary
+  ! linearly, so the one-point centroid rule is the standard choice; Elmer's
+  ! default of 4 points quadruples the element-loop cost. Assembly and current
+  ! evaluation use the same rule, so the discrete energy balance still closes.
+  TetraPoints = ListGetInteger( Params, 'Tetra Integration Points', GotIt )
+  IF ( .NOT. GotIt ) TetraPoints = 1
+  IF ( ALL(TetraPoints /= (/ 1, 4, 11 /)) ) &
+      CALL Fatal('StatCurrentSolver', 'Tetra Integration Points must be 1, 4 or 11')
 
   !------------------------------------------------------------
   ! Electrode allocation and assignment
@@ -1224,6 +1235,23 @@ SUBROUTINE NodalConductivity( Cond, NodeIndexes, n )
 END SUBROUTINE NodalConductivity
 
 
+!------------------------------------------------------------------------------
+!> Integration points for the potential assembly and current evaluation:
+!> TetraPoints for linear tetrahedra, Elmer's default rule otherwise (a single
+!> point would admit hourglass modes on hexahedra).
+!------------------------------------------------------------------------------
+FUNCTION ElementGaussPoints( Elem ) RESULT( IP )
+  TYPE(Element_t) :: Elem
+  TYPE(GaussIntegrationPoints_t) :: IP
+
+  IF ( Elem % TYPE % ElementCode == 504 ) THEN
+    IP = GaussPoints( Elem, TetraPoints )
+  ELSE
+    IP = GaussPoints( Elem )
+  END IF
+END FUNCTION ElementGaussPoints
+
+
 FUNCTION RequiredMaterialReal(Mat, Name) RESULT(Val)
   TYPE(ValueList_t), POINTER :: Mat
   CHARACTER(LEN=*) :: Name
@@ -1351,7 +1379,7 @@ END FUNCTION HallCoefficient
 !------------------------------------------------------------------------------
 !    Gauss integration stuff
 !------------------------------------------------------------------------------
-       IntegStuff = GaussPoints( Element )
+       IntegStuff = ElementGaussPoints( Element )
        U_Integ => IntegStuff % u
        V_Integ => IntegStuff % v
        W_Integ => IntegStuff % w
@@ -1671,7 +1699,7 @@ END FUNCTION HallCoefficient
 !------------------------------------------------------------------------------
 !      Numerical integration
 !------------------------------------------------------------------------------
-      IntegStuff = GaussPoints( Element )
+      IntegStuff = ElementGaussPoints( Element )
 
       DO t=1,IntegStuff % n
         U = IntegStuff % u(t)

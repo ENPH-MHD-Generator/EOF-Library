@@ -32,7 +32,7 @@ adjustTimeStep  yes;
 
 purgeWrite      0;
 
-maxCo           0.5;
+maxCo           0.8;       // 0.5 gave the same results (within ~1%) with 1.6x the steps
 maxDeltaT       1;
 
 functions { }

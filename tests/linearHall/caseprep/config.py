@@ -423,6 +423,31 @@ class CouplingConfig:
         )
 
 
+LINEAR_SOLVERS = ("auto", "iterative", "mumps")
+
+
+@dataclass(frozen=True)
+class NumericsConfig:
+    """Numerical method choices.
+
+    ``linear_solver`` for Elmer's potential equation: ``iterative`` (ILU-
+    preconditioned GCR), ``mumps`` (parallel sparse direct), or ``auto``, which
+    uses iterative on tetrahedral meshes (faster there) and MUMPS on structured
+    meshes, where ILU converges slowly on the thin wall cells.
+    """
+
+    linear_solver: str = "auto"
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "NumericsConfig":
+        data = _mapping(raw or {}, "numerics")
+        _known_keys(data, ("linear_solver",), "numerics")
+        solver = data.get("linear_solver", cls.linear_solver)
+        if solver not in LINEAR_SOLVERS:
+            raise ConfigError(f"numerics.linear_solver must be one of: {', '.join(LINEAR_SOLVERS)}")
+        return cls(linear_solver=solver)
+
+
 @dataclass(frozen=True)
 class CaseConfig:
     channel: ChannelConfig
@@ -431,6 +456,7 @@ class CaseConfig:
     physics: PhysicsConfig
     plasma: PlasmaConfig = PlasmaConfig()
     coupling: CouplingConfig = CouplingConfig()
+    numerics: NumericsConfig = NumericsConfig()
     schema_version: int = 1
 
     @classmethod
@@ -438,7 +464,7 @@ class CaseConfig:
         data = _mapping(raw, "configuration")
         _known_keys(
             data,
-            ("schema_version", "channel", "mesh", "electrodes", "physics", "plasma", "coupling"),
+            ("schema_version", "channel", "mesh", "electrodes", "physics", "plasma", "coupling", "numerics"),
             "configuration",
         )
         schema_version = _integer(data.get("schema_version", 1), "schema_version", positive=True)
@@ -454,6 +480,7 @@ class CaseConfig:
             physics=PhysicsConfig.from_mapping(data.get("physics", {})),
             plasma=PlasmaConfig.from_mapping(data.get("plasma", {})),
             coupling=CouplingConfig.from_mapping(data.get("coupling", {})),
+            numerics=NumericsConfig.from_mapping(data.get("numerics", {})),
             schema_version=schema_version,
         )
 
@@ -486,6 +513,7 @@ class CaseConfig:
             },
             "plasma": asdict(self.plasma),
             "coupling": asdict(self.coupling),
+            "numerics": asdict(self.numerics),
         }
 
 

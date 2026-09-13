@@ -3,3 +3,6 @@ processor*
 runs/
 .idea
 
+
+# Compiled Elmer modules are built inside the image; never copy host builds over them
+libs/**/*.so

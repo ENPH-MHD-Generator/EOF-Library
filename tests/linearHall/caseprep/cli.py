@@ -63,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="List valid prepared cases available beneath /runs.",
     )
     run.add_argument(
+        "--cores",
+        type=int,
+        default=None,
+        help="Confine the run to this many CPU cores. OpenFOAM and Elmer share them, "
+        "since they take turns computing (default: all visible cores).",
+    )
+    run.add_argument(
         "--no-postprocess",
         action="store_true",
         help="Skip reconstructPar and foamToVTK after a successful simulation.",
@@ -135,6 +142,7 @@ def main(
         destination = runtime.run(
             args.name,
             postprocess=not args.no_postprocess,
+            cores=args.cores,
             dry_run=args.dry_run,
         )
         action = "Validated" if args.dry_run else "Completed"
