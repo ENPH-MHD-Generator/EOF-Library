@@ -18,6 +18,7 @@ channel:
   wall_thickness: 0.005    # m  (  5 mm insulator / electrode shell)
 
 mesh:
+  type: tetrahedral         # or structured (graded hexahedra, see MHD.md)
   size_min: null            # global minimum edge length (null = Gmsh default)
   size_max: null            # global maximum edge length
   size_factor: 0.2          # >1 coarser, <1 finer
@@ -53,6 +54,8 @@ physics:
   B_field: [0, 0, 1.5]
   inlet_velocity: [391, 0, 0]
   inlet_temperature: 1500
+  insulator_wall_temperature: 300   # K, fixed wall temperature; null = adiabatic
+  electrode_wall_temperature: 300   # K
 
 # ---------------------------------------------------------------------------
 # Seeded plasma (optional; defaults shown). Only the alkali seed ionizes,

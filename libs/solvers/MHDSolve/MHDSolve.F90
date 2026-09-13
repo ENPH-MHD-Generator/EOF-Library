@@ -219,6 +219,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   ! Per-node electron temperature relaxation and last step, for damping
   ! oscillating nodes (indexed like ElecTemp)
   REAL(KIND=dp), ALLOCATABLE :: TeNodeRelax(:), TeLastStep(:)
+  ! Lumped nodal volumes (integral of each basis function), for the
+  ! volume-weighted electron temperature convergence measure
+  REAL(KIND=dp), ALLOCATABLE :: TeNodeWeight(:)
 
   ! Electrode Unknowns
   INTEGER, ALLOCATABLE :: ElectrodePairOfBC(:)
@@ -255,7 +258,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   PVals, TgasVals, SigVals, &
   PPerm, TgasPerm, SigPerm, &
   IonFrac, ElecTemp, ElecDens, ElecMob, PlasmaPerm, EffField, &
-  TeNodeRelax, TeLastStep, &
+  TeNodeRelax, TeLastStep, TeNodeWeight, &
   ElemCurr1, ElemCurr2, ElemCurr3, ElemHeating, ElemPerm
 
 !------------------------------------------------------------------------------
@@ -915,9 +918,15 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !> Mobility. The mobility sets the Hall coefficient, see HallCoefficient.
 !> MaxRelChange returns the largest relative change of Te over all nodes.
 !------------------------------------------------------------------------------
-SUBROUTINE UpdateSeededPlasma( MaxRelChange, FirstIteration )
-  REAL(KIND=dp), INTENT(OUT) :: MaxRelChange
+SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
+  !> Volume-weighted RMS of the relative electron temperature change. This,
+  !> not the largest nodal change, decides convergence: the singular current
+  !> concentration at electrode edges keeps a handful of cells changing, and
+  !> letting them decide stalls every update at the iteration limit on fine
+  !> meshes while the solution elsewhere has long converged.
+  REAL(KIND=dp), INTENT(OUT) :: RmsRelChange
   LOGICAL, INTENT(IN) :: FirstIteration
+  REAL(KIND=dp) :: MaxRelChange, RelChange, SumW, SumWC2
 
   TYPE(ValueList_t), POINTER :: Mat
   TYPE(SeedPlasma_t) :: Pl
@@ -983,6 +992,8 @@ SUBROUTINE UpdateSeededPlasma( MaxRelChange, FirstIteration )
   TeMinSeen = HUGE(1.0_dp); TeMaxSeen = 0.0_dp
   DTeMax = 0.0_dp
   MaxRelChange = 0.0_dp
+  RmsRelChange = 0.0_dp
+  SumW = 0.0_dp; SumWC2 = 0.0_dp
   nOwned = 0; nSigClamped = 0; nTeClamped = 0
   nDamped = 0
   WorstChange = -1.0_dp; WorstPos = 0.0_dp
@@ -997,6 +1008,12 @@ SUBROUTINE UpdateSeededPlasma( MaxRelChange, FirstIteration )
     IF (FirstIteration) THEN
       TeNodeRelax = TeRelax
       TeLastStep = 0.0_dp
+    END IF
+    IF (.NOT. ALLOCATED(TeNodeWeight)) THEN
+      CALL ComputeNodeWeights()
+    ELSE IF (SIZE(TeNodeWeight) /= SIZE(ElecTemp)) THEN
+      DEALLOCATE( TeNodeWeight )
+      CALL ComputeNodeWeights()
     END IF
   END IF
 
@@ -1063,12 +1080,17 @@ SUBROUTINE UpdateSeededPlasma( MaxRelChange, FirstIteration )
         ! Convergence is judged on the applied (relaxed) change; the damping
         ! floor of 0.1 x the base relaxation bounds how much it can understate
         ! the distance to the energy-balance solution
-        IF (Owned .AND. TeNodeRelax(ipX) * ABS(TeStep) / TeOld > MaxRelChange) THEN
-          MaxRelChange = TeNodeRelax(ipX) * ABS(TeStep) / TeOld
-          IF (MaxRelChange > WorstChange) THEN
-            WorstChange = MaxRelChange
-            WorstPos = (/ Solver % Mesh % Nodes % x(i), Solver % Mesh % Nodes % y(i), &
-                          Solver % Mesh % Nodes % z(i) /)
+        IF (Owned) THEN
+          RelChange = TeNodeRelax(ipX) * ABS(TeStep) / TeOld
+          SumW = SumW + TeNodeWeight(ipX)
+          SumWC2 = SumWC2 + TeNodeWeight(ipX) * RelChange**2
+          IF (RelChange > MaxRelChange) THEN
+            MaxRelChange = RelChange
+            IF (MaxRelChange > WorstChange) THEN
+              WorstChange = MaxRelChange
+              WorstPos = (/ Solver % Mesh % Nodes % x(i), Solver % Mesh % Nodes % y(i), &
+                            Solver % Mesh % Nodes % z(i) /)
+            END IF
           END IF
         END IF
         Te = MAX(Tg, TeOld + TeNodeRelax(ipX) * TeStep)
@@ -1111,11 +1133,15 @@ SUBROUTINE UpdateSeededPlasma( MaxRelChange, FirstIteration )
     TeMaxSeen = ParallelReduction(TeMaxSeen, 2)
     DTeMax = ParallelReduction(DTeMax, 2)
     MaxRelChange = ParallelReduction(MaxRelChange, 2)
+    SumW = ParallelReduction(SumW)
+    SumWC2 = ParallelReduction(SumWC2)
     nOwned = NINT(ParallelReduction(REAL(nOwned, dp)))
     nSigClamped = NINT(ParallelReduction(REAL(nSigClamped, dp)))
     nTeClamped = NINT(ParallelReduction(REAL(nTeClamped, dp)))
     nDamped = NINT(ParallelReduction(REAL(nDamped, dp)))
   END IF
+
+  IF (SumW > 0.0_dp) RmsRelChange = SQRT(SumWC2 / SumW)
 
   WRITE(Message,'(A,ES10.3,A,ES10.3,A,ES10.3,A,ES10.3,A,I0,A,I0,A)') &
       'Ionization fraction [', IonMin, ', ', IonMax, &
@@ -1128,13 +1154,52 @@ SUBROUTINE UpdateSeededPlasma( MaxRelChange, FirstIteration )
         ' K  max rel. change ', MaxRelChange, '  capped at Te max: ', nTeClamped, &
         ' nodes  damped: ', nDamped, ' nodes'
     CALL Info('UpdateSeededPlasma', Message, Level=4)
+    WRITE(Message,'(A,ES10.3,A,ES10.3,A)') &
+        'Te convergence: volume-weighted RMS change ', RmsRelChange, &
+        ' (tolerance ', TeTol, ')'
+    CALL Info('UpdateSeededPlasma', Message, Level=4)
     IF (WorstChange > 0.0_dp .AND. MaxRelChange > 0.05_dp) THEN
       WRITE(Message,'(A,ES10.3,A,3F8.2,A)') '  largest change on this rank ', WorstChange, &
           ' at (', 1.0e3_dp * WorstPos, ') mm'
       CALL Info('UpdateSeededPlasma', Message, Level=4)
     END IF
   END IF
+
 END SUBROUTINE UpdateSeededPlasma
+
+!> Lumped nodal volumes, integral of each nodal basis function over the
+!> local active elements, stored with the plasma variable permutation
+SUBROUTINE ComputeNodeWeights()
+  TYPE(Element_t), POINTER :: Elem
+  TYPE(Nodes_t) :: EN
+  TYPE(GaussIntegrationPoints_t) :: GIP
+  REAL(KIND=dp) :: Basis(Model % MaxElementNodes), dBasisdx(Model % MaxElementNodes,3), DetJ
+  INTEGER :: t, g, k, nn, ipW
+  LOGICAL :: stat
+
+  ALLOCATE( TeNodeWeight(SIZE(ElecTemp)) )
+  TeNodeWeight = 0.0_dp
+  ALLOCATE( EN % x(Model % MaxElementNodes), EN % y(Model % MaxElementNodes), &
+            EN % z(Model % MaxElementNodes) )
+
+  DO t = 1, Solver % NumberOfActiveElements
+    Elem => Solver % Mesh % Elements( Solver % ActiveElements(t) )
+    nn = Elem % TYPE % NumberOfNodes
+    EN % x(1:nn) = Solver % Mesh % Nodes % x(Elem % NodeIndexes(1:nn))
+    EN % y(1:nn) = Solver % Mesh % Nodes % y(Elem % NodeIndexes(1:nn))
+    EN % z(1:nn) = Solver % Mesh % Nodes % z(Elem % NodeIndexes(1:nn))
+    GIP = GaussPoints( Elem )
+    DO g = 1, GIP % n
+      stat = ElementInfo( Elem, EN, GIP % u(g), GIP % v(g), GIP % w(g), DetJ, Basis, dBasisdx )
+      DO k = 1, nn
+        ipW = PlasmaPerm(Elem % NodeIndexes(k))
+        IF (ipW > 0) TeNodeWeight(ipW) = TeNodeWeight(ipW) + DetJ * GIP % s(g) * Basis(k)
+      END DO
+    END DO
+  END DO
+
+  DEALLOCATE( EN % x, EN % y, EN % z )
+END SUBROUTINE ComputeNodeWeights
 
 
 !------------------------------------------------------------------------------
@@ -1848,9 +1913,12 @@ END FUNCTION HallCoefficient
   !>   V rows:    sum kappa (V - phi_p) + I = 0  (plus)   Kirchhoff at the electrode
   !>              sum kappa (V - phi_p) - I = 0  (minus)
   !>   I row:     R I - (Vp - Vm) = 0                     Ohm's law of the load
-  !> Gc = Electrode Penalty Factor * sigma / h, so kappa is about that factor
-  !> times the local stiffness and each electrode is equipotential to roughly
-  !> 1/factor of one element's potential drop. Unlike per-node Lagrange
+  !> Gc = Electrode Penalty Factor * sigma_max / h, with sigma_max the largest
+  !> conductivity in the domain, so the contact is at least that factor stiffer
+  !> than any plasma element and each electrode is equipotential to roughly
+  !> 1/factor of one element's potential drop. (Scaling by the local wall
+  !> conductivity instead makes the contact a real resistor when the gas at the
+  !> wall is cold, dissipating power that belongs to the load.) Unlike per-node Lagrange
   !> multipliers this keeps a positive diagonal in every row (no saddle point),
   !> which ILU-preconditioned Krylov solvers handle well, and adds only three
   !> rows per pair.
@@ -1880,7 +1948,7 @@ END FUNCTION HallCoefficient
     TYPE(Nodes_t) :: EN
     TYPE(GaussIntegrationPoints_t) :: Integ
     REAL(dp) :: Basis(MAX_ELEMENT_NODES), dBasisdx(MAX_ELEMENT_NODES,3)
-    REAL(dp) :: SqrtElementMetric, s, ElemArea, SigElem, Gc, kappa, PenaltyFactor
+    REAL(dp) :: SqrtElementMetric, s, ElemArea, SigRef, Gc, kappa, PenaltyFactor
     REAL(dp), ALLOCATABLE :: SideArea(:), SideKappa(:)
     LOGICAL :: stat, Found
 
@@ -1891,6 +1959,11 @@ END FUNCTION HallCoefficient
 
     PenaltyFactor = ListGetCReal(Solver % Values, 'Electrode Penalty Factor', Found)
     IF (.NOT. Found) PenaltyFactor = 1.0e3_dp
+
+    SigRef = 0.0_dp
+    IF (SIZE(SigVals) > 0) SigRef = MAXVAL(SigVals)
+    IF (ParEnv % PEs > 1) SigRef = ParallelReduction(SigRef, 2)
+    IF (SigRef <= 0.0_dp) SigRef = 1.0_dp
 
     NX = 3 * NumElectrodePairs
 
@@ -1948,14 +2021,7 @@ END FUNCTION HallCoefficient
         END DO
         IF (ElemArea <= 0.0_dp) CYCLE
 
-        ! Scale with the largest nodal conductivity so the contact stays stiff
-        ! relative to the plasma next to it
-        SigElem = 0.0_dp
-        DO k = 1, n
-          IF (SigPerm(NodeIndexes(k)) > 0) SigElem = MAX(SigElem, SigVals(SigPerm(NodeIndexes(k))))
-        END DO
-        IF (SigElem <= 0.0_dp) SigElem = 1.0_dp
-        Gc = PenaltyFactor * SigElem / SQRT(ElemArea)
+        Gc = PenaltyFactor * SigRef / SQRT(ElemArea)
 
         DO gp = 1, Integ % n
           stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &

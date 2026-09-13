@@ -8,9 +8,17 @@ channel:
   wall_thickness: 0.005
 
 mesh:
+  type: tetrahedral
   size_min: null
   size_max: null
-  size_factor: 0.1
+  size_factor: 0.2
+  # Graded hexahedra resolving the cold wall layer (equilibrium electrons only
+  # for now; see MHD.md):
+  #   type: structured
+  #   cell_size: 0.0025               # m, core
+  #   wall_cell_size: 0.00025         # m, first cell at every wall
+  #   electrode_edge_cell_size: 0.001 # m, streamwise at electrode edges
+  #   growth_rate: 1.2
 
 electrodes:
   length: 0.010
@@ -24,6 +32,9 @@ physics:
   B_field: [0, 0, 1.5]
   inlet_velocity: [391, 0, 0]
   inlet_temperature: 2500
+  # Uncooled walls starting at room temperature; null makes a surface adiabatic
+  insulator_wall_temperature: 300   # K
+  electrode_wall_temperature: 300   # K
 
 # Alkali-seeded argon. Only the seed ionizes (two-temperature Saha).
 plasma:

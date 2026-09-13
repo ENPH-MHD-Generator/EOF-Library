@@ -36,52 +36,62 @@ boundaryField
 
     InsulatorSurface
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     CathodeSurface_1
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     AnodeSurface_1
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     CathodeSurface_2
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     AnodeSurface_2
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     CathodeSurface_3
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     AnodeSurface_3
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     CathodeSurface_4
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     AnodeSurface_4
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 
     defaultFaces
     {
-        type    zeroGradient;
+        type    fixedValue;
+        value   uniform 300;
     }
 }
 

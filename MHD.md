@@ -122,11 +122,26 @@ electrode resistance is in ohms.
 - `wall_thickness` is the positive thickness used for the electrode and
   insulating shell geometry.
 
-`mesh` is optional:
+`mesh` is optional. `type` selects the mesh:
 
-- `size_min` and `size_max` set optional global Gmsh edge-length bounds.
-- `size_factor` scales Gmsh's characteristic lengths. Values below one refine
-  the mesh and values above one coarsen it. The default is `1.0`.
+- `tetrahedral` (default): unstructured tetrahedra.
+  - `size_min` and `size_max` set optional global Gmsh edge-length bounds.
+  - `size_factor` scales Gmsh's characteristic lengths. Values below one refine
+    the mesh and values above one coarsen it. The default is `1.0`.
+- `structured`: graded hexahedra, finest at every wall to resolve the cold
+  thermal boundary layer and streamwise at the electrode edges.
+  - `cell_size` (default 0.0025 m) is the core cell size.
+  - `wall_cell_size` (default 0.00025 m) is the first cell at every wall.
+  - `electrode_edge_cell_size` (default 0.001 m) is the streamwise size at the
+    electrode edges.
+  - `growth_rate` (default 1.2) is the largest size ratio of neighbouring cells.
+
+  Keys of the other mesh type are rejected. Structured meshes currently only
+  work with `two_temperature: false`. Their wall cells are far smaller than
+  the ~1 mm electron energy relaxation length, and the local electron energy
+  balance runs away at the electrode edges without electron heat conduction.
+  Elmer's cost follows the node count, which for hexahedra is about 5x that of
+  a tetrahedral mesh with the same number of cells.
 
 `electrodes` is required. Every electrode pair must have the same positive
 `length`; pair-specific lengths are rejected. Choose exactly one placement
@@ -160,6 +175,13 @@ non-negative.
 - `B_field` is a three-component magnetic flux-density vector.
 - `inlet_velocity` is a three-component inlet velocity vector.
 - `inlet_temperature` must be positive.
+- `insulator_wall_temperature` and `electrode_wall_temperature` (default 300 K)
+  fix the temperature of the insulating walls and the electrodes, so heat is
+  lost to them. `null` makes that surface adiabatic. The defaults assume
+  uncooled walls starting at room temperature: over a run of under 10 s a
+  copper electrode surface warms about 10 K and a ceramic one tens to a few
+  hundred K. Elmer sees the cold wall through the temperature interpolation,
+  so the conductivity drops in the cold layer next to the walls.
 
 `plasma` is optional and describes the alkali-seeded carrier gas. The defaults
 are 1% potassium in argon:
@@ -238,7 +260,7 @@ problem in Elmer:
 ```yaml
 coupling:
   velocity_tolerance: 0.05        # max |U - U_sent| / max |U_sent|
-  temperature_tolerance: 0.005    # max |T - T_sent| / T_sent
+  temperature_tolerance: 0.005    # Joule-power-weighted RMS |T - T_sent| / T_sent
   pressure_tolerance: 0.05        # max |p - p_sent| / absolute pressure
   max_steps_between_updates: 250  # 0 = no limit
 ```
@@ -366,7 +388,10 @@ start-up and coupling costs dominate and extra ranks do not help. The mesh is
 Netgen-optimized after generation because sliver tetrahedra otherwise set the
 time step for the whole mesh. Each Elmer update prints the electron
 temperature convergence; nodes whose updates oscillate are damped
-automatically, and the count appears as `damped`.
+automatically, and the count appears as `damped`. Convergence uses the
+volume-weighted RMS change of `Te`, so the few cells at the singular current
+concentration at electrode edges no longer force every update to the
+iteration limit on fine meshes; the largest nodal change is still logged.
 
 ## Where cases and results live
 

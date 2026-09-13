@@ -175,11 +175,27 @@ int main(int argc, char *argv[])
         const scalar dUrel =
             gMax(mag(U.primitiveField() - U_old.primitiveField()))
            /max(gMax(mag(U_old.primitiveField())), SMALL);
-        const scalar dTrel = gMax
-        (
-            mag(T.primitiveField() - T_sent.primitiveField())
-           /max(T_sent.primitiveField(), SMALL)
-        );
+        // Temperature: RMS relative change weighted by Joule heating power.
+        // Conductivity only matters where current flows; the cold, current-free
+        // layer at the walls changes every step as it develops and would
+        // otherwise trigger an update on every step. Volume-weighted until
+        // Elmer has produced any current.
+        scalar dTrel = 0;
+        {
+            const scalarField relT
+            (
+                (T.primitiveField() - T_sent.primitiveField())
+               /max(T_sent.primitiveField(), SMALL)
+            );
+            scalarField weight(max(JH.primitiveField(), scalar(0))*mesh.V().field());
+            scalar weightSum = gSum(weight);
+            if (weightSum <= VSMALL)
+            {
+                weight = mesh.V().field();
+                weightSum = gSum(weight);
+            }
+            dTrel = Foam::sqrt(gSum(weight*sqr(relT))/max(weightSum, VSMALL));
+        }
         const scalar dprel =
             gMax(mag(p.primitiveField() - p_sent.primitiveField()))
            /max(gMax(p_sent.primitiveField()) + couplingReferencePressure, SMALL);

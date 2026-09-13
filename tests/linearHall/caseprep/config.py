@@ -90,8 +90,30 @@ class ChannelConfig:
         )
 
 
+MESH_TYPES = ("structured", "tetrahedral")
+STRUCTURED_MESH_KEYS = ("cell_size", "wall_cell_size", "electrode_edge_cell_size", "growth_rate")
+TETRAHEDRAL_MESH_KEYS = ("size_min", "size_max", "size_factor")
+
+
 @dataclass(frozen=True)
 class MeshConfig:
+    """Mesh settings.
+
+    ``tetrahedral`` (default): the unstructured Gmsh mesh controlled by the
+    size_* keys. ``structured``: graded hexahedra, finest at the walls (cold
+    thermal boundary layer) and streamwise at the electrode edges. The
+    two-temperature electron model does not yet converge on structured meshes:
+    their wall cells are far smaller than the ~1 mm electron energy relaxation
+    length, where the purely local Te balance runs away at electrode edges.
+    """
+
+    type: str = "tetrahedral"
+    # structured [m]
+    cell_size: float = 0.0025  # core cell size
+    wall_cell_size: float = 0.00025  # first cell at every wall
+    electrode_edge_cell_size: float = 0.001  # streamwise size at electrode edges
+    growth_rate: float = 1.2  # maximum size ratio of neighbouring cells
+    # tetrahedral
     size_min: Optional[float] = None
     size_max: Optional[float] = None
     size_factor: float = 1.0
@@ -99,7 +121,30 @@ class MeshConfig:
     @classmethod
     def from_mapping(cls, raw: Any) -> "MeshConfig":
         data = _mapping(raw or {}, "mesh")
-        _known_keys(data, ("size_min", "size_max", "size_factor"), "mesh")
+        _known_keys(data, ("type",) + STRUCTURED_MESH_KEYS + TETRAHEDRAL_MESH_KEYS, "mesh")
+        mesh_type = data.get("type", cls.type)
+        if mesh_type not in MESH_TYPES:
+            raise ConfigError(f"mesh.type must be one of: {', '.join(MESH_TYPES)}")
+        foreign = STRUCTURED_MESH_KEYS if mesh_type == "tetrahedral" else TETRAHEDRAL_MESH_KEYS
+        given = [key for key in foreign if key in data]
+        if given:
+            raise ConfigError(
+                f"mesh key(s) {', '.join(given)} do not apply to type '{mesh_type}'"
+                + ("; set 'type: structured' to use them" if mesh_type == "tetrahedral" else "")
+            )
+
+        if mesh_type == "structured":
+            values = {
+                key: _number(data.get(key, getattr(cls, key)), f"mesh.{key}", positive=True)
+                for key in STRUCTURED_MESH_KEYS
+            }
+            if values["growth_rate"] <= 1.0:
+                raise ConfigError("mesh.growth_rate must be greater than 1")
+            for key in ("wall_cell_size", "electrode_edge_cell_size"):
+                if values[key] > values["cell_size"]:
+                    raise ConfigError(f"mesh.{key} cannot be larger than mesh.cell_size")
+            return cls(type=mesh_type, **values)
+
         size_min = (
             None
             if data.get("size_min") is None
@@ -113,7 +158,9 @@ class MeshConfig:
         size_factor = _number(data.get("size_factor", 1.0), "mesh.size_factor", positive=True)
         if size_min is not None and size_max is not None and size_min > size_max:
             raise ConfigError("mesh.size_min cannot be greater than mesh.size_max")
-        return cls(size_min=size_min, size_max=size_max, size_factor=size_factor)
+        return cls(
+            type=mesh_type, size_min=size_min, size_max=size_max, size_factor=size_factor
+        )
 
 
 @dataclass(frozen=True)
@@ -215,12 +262,36 @@ class PhysicsConfig:
     B_field: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     inlet_velocity: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     inlet_temperature: float = 300.0
+    # Fixed wall temperatures [K]; None makes that surface adiabatic. Walls are
+    # uncooled and start at room temperature; over a <10 s run a copper
+    # electrode surface warms ~10 K and a ceramic one tens to a few hundred K.
+    insulator_wall_temperature: Optional[float] = 300.0
+    electrode_wall_temperature: Optional[float] = 300.0
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "PhysicsConfig":
         data = _mapping(raw or {}, "physics")
-        _known_keys(data, ("B_field", "inlet_velocity", "inlet_temperature"), "physics")
+        _known_keys(
+            data,
+            (
+                "B_field",
+                "inlet_velocity",
+                "inlet_temperature",
+                "insulator_wall_temperature",
+                "electrode_wall_temperature",
+            ),
+            "physics",
+        )
+
+        def wall_temperature(key: str) -> Optional[float]:
+            value = data.get(key, getattr(cls, key))
+            if value is None:
+                return None
+            return _number(value, f"physics.{key}", positive=True)
+
         return cls(
+            insulator_wall_temperature=wall_temperature("insulator_wall_temperature"),
+            electrode_wall_temperature=wall_temperature("electrode_wall_temperature"),
             B_field=_vector(data.get("B_field", (0, 0, 0)), "physics.B_field"),
             inlet_velocity=_vector(
                 data.get("inlet_velocity", (0, 0, 0)), "physics.inlet_velocity"
@@ -323,7 +394,7 @@ class CouplingConfig:
     """
 
     velocity_tolerance: float = 0.0  # max |U - U_sent| / max |U_sent|
-    temperature_tolerance: float = 0.0  # max |T - T_sent| / T_sent
+    temperature_tolerance: float = 0.0  # Joule-power-weighted RMS of |T - T_sent| / T_sent
     pressure_tolerance: float = 0.0  # max |p - p_sent| / absolute pressure
     max_steps_between_updates: int = 0  # 0 = no limit
 
@@ -391,7 +462,17 @@ class CaseConfig:
         return {
             "schema_version": self.schema_version,
             "channel": asdict(self.channel),
-            "mesh": asdict(self.mesh),
+            "mesh": {
+                key: value
+                for key, value in asdict(self.mesh).items()
+                if key == "type"
+                or key
+                in (
+                    STRUCTURED_MESH_KEYS
+                    if self.mesh.type == "structured"
+                    else TETRAHEDRAL_MESH_KEYS
+                )
+            },
             "electrodes": {
                 "length": self.electrodes.length,
                 "pairs": [asdict(pair) for pair in self.electrodes.pairs],
@@ -400,6 +481,8 @@ class CaseConfig:
                 "B_field": list(self.physics.B_field),
                 "inlet_velocity": list(self.physics.inlet_velocity),
                 "inlet_temperature": self.physics.inlet_temperature,
+                "insulator_wall_temperature": self.physics.insulator_wall_temperature,
+                "electrode_wall_temperature": self.physics.electrode_wall_temperature,
             },
             "plasma": asdict(self.plasma),
             "coupling": asdict(self.coupling),

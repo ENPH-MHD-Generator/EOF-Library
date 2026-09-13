@@ -1,4 +1,5 @@
 import argparse
+import math
 from pathlib import Path
 
 import gmsh
@@ -387,6 +388,190 @@ def generate(
         gmsh.finalize()
 
     return boundary_tags
+
+
+# ─── Structured (graded hexahedral) mesh ───────────────────────────
+
+def graded_coordinates(length, size_start, size_end, size_max, growth_rate):
+    """Node coordinates on [0, length] with cell sizes graded from both ends.
+
+    The target size grows geometrically away from each end, by ``growth_rate``
+    per cell, from ``size_start`` / ``size_end`` up to ``size_max``. Nodes are
+    placed so that the local cell size follows that target; the ends are exact.
+    """
+    if length <= 0:
+        raise ValueError("Segment length must be positive")
+    size_start = min(size_start, size_max)
+    size_end = min(size_end, size_max)
+    slope = growth_rate - 1.0  # geometric growth ~ linear growth of size with distance
+
+    def target(s):
+        return min(size_start + slope * s, size_end + slope * (length - s), size_max)
+
+    samples = 4000
+    ds = length / samples
+    cumulative = [0.0]
+    for k in range(samples):
+        s_mid = (k + 0.5) * ds
+        cumulative.append(cumulative[-1] + ds / target(s_mid))
+    # Round up so the configured sizes are upper bounds
+    n_cells = max(1, int(math.ceil(cumulative[-1] - 1e-9)))
+    scale = n_cells / cumulative[-1]
+
+    coords = [0.0]
+    k = 0
+    for j in range(1, n_cells):
+        goal = j / scale
+        while cumulative[k + 1] < goal:
+            k += 1
+        frac = (goal - cumulative[k]) / (cumulative[k + 1] - cumulative[k])
+        coords.append((k + frac) * ds)
+    coords.append(length)
+    return coords
+
+
+def _extrusion_heights(coords):
+    """Cumulative layer fractions for Gmsh extrusion from node coordinates."""
+    length = coords[-1] - coords[0]
+    return [(c - coords[0]) / length for c in coords[1:]]
+
+
+def _verify_hexahedra_only():
+    elem_types, _, _ = gmsh.model.mesh.getElements(3)
+    bad_types = []
+    for et in elem_types:
+        name, dim, _, _, _, _ = gmsh.model.mesh.getElementProperties(et)
+        if dim != 3 or "hexahedron" not in name.lower():
+            bad_types.append((et, name))
+    if bad_types:
+        raise RuntimeError(
+            "3D mesh contains non-hexahedral elements: "
+            + ", ".join(f"type={et}:{name}" for et, name in bad_types)
+        )
+
+
+def generate_structured(
+    out_msh="channel.msh",
+    channel_config=None,
+    cell_size=0.0025,
+    wall_cell_size=0.00025,
+    electrode_edge_cell_size=0.001,
+    growth_rate=1.2,
+):
+    """Generate a graded, structured hexahedral mesh of the channel.
+
+    Cells are finest at the insulating and electrode walls, to resolve the cold
+    thermal boundary layer, and streamwise at the electrode edges, where the
+    current concentrates; they grow by at most ``growth_rate`` per cell up to
+    ``cell_size`` in the core. The channel is extruded along x in segments split
+    at every electrode edge, so each electrode is its own boundary surface.
+    Boundary names and tags are identical to the tetrahedral generator.
+    """
+    cfg = {**DEFAULTS, **(channel_config or {})}
+    num_pairs = cfg["num_pairs"]
+    L = cfg["channel_length"]
+    H = cfg["channel_height"]
+    W = cfg["channel_width"]
+    el = cfg["electrode_length"]
+    centers = compute_electrode_centers(L, num_pairs, cfg.get("electrode_centers"))
+    tags = build_boundary_tags(num_pairs)
+
+    # Streamwise segments between the inlet, every electrode edge, and the outlet
+    tol = 1e-9 * L
+    electrode_spans = [(xc - el / 2, xc + el / 2) for xc in centers]
+    edges = sorted({0.0, L} | {x for span in electrode_spans for x in span})
+    breaks = [edges[0]]
+    for x in edges[1:]:
+        if x - breaks[-1] > tol:
+            breaks.append(x)
+    electrode_edges = {x for span in electrode_spans for x in span}
+
+    def is_electrode_edge(x):
+        return any(abs(x - e) <= tol for e in electrode_edges)
+
+    def electrode_pair_of_segment(x0, x1):
+        for index, (a, b) in enumerate(electrode_spans, start=1):
+            if abs(x0 - a) <= tol and abs(x1 - b) <= tol:
+                return index
+        return None
+
+    y_coords = graded_coordinates(H, wall_cell_size, wall_cell_size, cell_size, growth_rate)
+    z_coords = graded_coordinates(W, wall_cell_size, wall_cell_size, cell_size, growth_rate)
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 1)
+        gmsh.model.add("linear_hall_channel_structured")
+        geo = gmsh.model.geo
+
+        # Cross-section at the inlet (x = 0): point -> y line -> y-z surface
+        p0 = geo.addPoint(0.0, 0.0, 0.0)
+        line = geo.extrude([(0, p0)], 0, H, 0,
+                           numElements=[1] * (len(y_coords) - 1),
+                           heights=_extrusion_heights(y_coords), recombine=True)
+        line_tag = [t for d, t in line if d == 1][0]
+        surf = geo.extrude([(1, line_tag)], 0, 0, W,
+                           numElements=[1] * (len(z_coords) - 1),
+                           heights=_extrusion_heights(z_coords), recombine=True)
+        inlet_surface = [t for d, t in surf if d == 2][0]
+
+        groups = {name: [] for name in tags}
+        groups["InletX"].append(inlet_surface)
+        volumes = []
+        base = inlet_surface
+        segments = []
+        for x0, x1 in zip(breaks[:-1], breaks[1:]):
+            size0 = electrode_edge_cell_size if is_electrode_edge(x0) else cell_size
+            size1 = electrode_edge_cell_size if is_electrode_edge(x1) else cell_size
+            x_coords = graded_coordinates(x1 - x0, size0, size1, cell_size, growth_rate)
+            out = geo.extrude([(2, base)], x1 - x0, 0, 0,
+                              numElements=[1] * (len(x_coords) - 1),
+                              heights=_extrusion_heights(x_coords), recombine=True)
+            top = out[0][1]
+            volume = out[1][1]
+            laterals = [t for d, t in out[2:] if d == 2]
+            volumes.append(volume)
+            segments.append((x0, x1, laterals))
+            base = top
+        groups["OutletX"].append(base)
+
+        geo.synchronize()
+
+        rel = 1e-6 * max(L, H, W)
+        for x0, x1, laterals in segments:
+            pair = electrode_pair_of_segment(x0, x1)
+            for stag in laterals:
+                _, ymin, zmin, _, ymax, zmax = gmsh.model.getBoundingBox(2, stag)
+                on_y0 = abs(ymin) <= rel and abs(ymax) <= rel
+                on_yH = abs(ymin - H) <= rel and abs(ymax - H) <= rel
+                if pair is not None and on_y0:
+                    groups[f"CathodeSurface_{pair}"].append(stag)
+                elif pair is not None and on_yH:
+                    groups[f"AnodeSurface_{pair}"].append(stag)
+                else:
+                    groups["InsulatorSurface"].append(stag)
+
+        gmsh.model.addPhysicalGroup(3, volumes, tag=MATERIAL_TAGS["Plasma"])
+        gmsh.model.setPhysicalName(3, MATERIAL_TAGS["Plasma"], "Plasma")
+        for name, ptag in tags.items():
+            stags = sorted(set(groups[name]))
+            if not stags:
+                raise RuntimeError(f"Boundary group '{name}' is empty.")
+            gmsh.model.addPhysicalGroup(2, stags, tag=ptag)
+            gmsh.model.setPhysicalName(2, ptag, name)
+
+        gmsh.model.mesh.generate(3)
+        _verify_every_boundary_has_exactly_one_physical(volumes)
+        _verify_all_boundary_faces_mapped(volumes)
+        _verify_hexahedra_only()
+
+        gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+        gmsh.option.setNumber("Mesh.Binary", 0)
+        gmsh.write(str(Path(out_msh).resolve()))
+    finally:
+        gmsh.finalize()
+
+    return tags
 
 
 # ─── CLI entry point ───────────────────────────────────────────────

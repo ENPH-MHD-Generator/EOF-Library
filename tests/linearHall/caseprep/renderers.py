@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Dict, Iterable, List, Mapping
+from typing import Dict, Iterable, List, Mapping, Optional
 
 from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
 from .config import CaseConfig
@@ -241,7 +241,21 @@ class ElmerCaseRenderer:
     def render(self, config: CaseConfig, boundary_indices: Mapping[str, int]) -> str:
         material = asdict(config.plasma)
         material["two_temperature"] = "True" if config.plasma.two_temperature else "False"
-        lines = [CASE_SIF_HEADER, MATERIAL_TEMPLATE.format_map(material)]
+        header = CASE_SIF_HEADER
+        if config.mesh.type == "structured":
+            # Graded hexahedra have thin, high-aspect wall cells: without row
+            # scaling ILU-GCR stalls, and 1e-3 leaves ~10% error in the load
+            # power. (Scaling hurts on tetrahedral meshes, so it stays off there.)
+            for old, new in (
+                ("  Linear System Scaling = False", "  Linear System Scaling = True"),
+                (
+                    "  Linear System Convergence Tolerance = 1.0e-3",
+                    "  Linear System Convergence Tolerance = 1.0e-4",
+                ),
+            ):
+                assert header.count(old) == 1, old
+                header = header.replace(old, new)
+        lines = [header, MATERIAL_TEMPLATE.format_map(material)]
         lines.extend(
             (
                 "! -------------------------",
@@ -475,7 +489,8 @@ FoamFile
 
 // Elmer is re-solved when U, T or p has changed by more than these relative
 // tolerances since the last update, or after maxStepsBetweenUpdates steps
-// (0 = no limit). Zero tolerances update every time step.
+// (0 = no limit). Zero tolerances update every time step. U and p use the
+// largest cell change; T uses the RMS change weighted by Joule heating power.
 velocityTolerance       {velocity_tolerance:g};
 temperatureTolerance    {temperature_tolerance:g};
 pressureTolerance       {pressure_tolerance:g};
@@ -506,9 +521,27 @@ class OpenFoamCaseRenderer:
         }
         result: Dict[str, str] = {}
         for definition in FIELD_DEFINITIONS:
+            if definition["name"] == "T":
+                definition = self._with_wall_temperatures(definition, config)
             result[str(definition["name"])] = self._render_field(
                 definition, electrode_patch_names(len(config.electrodes.pairs)), substitutions
             )
+        return result
+
+    @staticmethod
+    def _with_wall_temperatures(
+        definition: Mapping[str, object], config: CaseConfig
+    ) -> Dict[str, object]:
+        """Fixed-temperature (heat-losing) or adiabatic insulator and electrode walls."""
+
+        def condition(temperature: Optional[float]) -> Dict[str, str]:
+            if temperature is None:
+                return {"type": "zeroGradient"}
+            return {"type": "fixedValue", "value": f"uniform {temperature:g}"}
+
+        result = dict(definition)
+        result["wall"] = condition(config.physics.insulator_wall_temperature)
+        result["electrode"] = condition(config.physics.electrode_wall_temperature)
         return result
 
     @staticmethod
@@ -532,8 +565,12 @@ class OpenFoamCaseRenderer:
             )
         wall = definition["wall"]
         assert isinstance(wall, Mapping)
+        electrode = definition.get("electrode", wall)
+        assert isinstance(electrode, Mapping)
         for name in electrodes:
-            patches.append(_render_patch(name, _resolve_boundary_condition(wall, substitutions)))
+            patches.append(
+                _render_patch(name, _resolve_boundary_condition(electrode, substitutions))
+            )
         patches.append(
             _render_patch(
                 "defaultFaces", _resolve_boundary_condition(wall, substitutions)
