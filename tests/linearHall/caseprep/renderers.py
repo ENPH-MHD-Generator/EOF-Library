@@ -19,11 +19,14 @@ Simulation
   Coordinate System = String "Cartesian 3D"
   Simulation Type = Steady
 
-  Steady State Max Iterations = 1000
-  Steady State Min Iterations = 1000
+  ! One iteration per OpenFOAM coupling update; OpenFOAM ends the run by
+  ! sending a final status, so these must exceed the number of updates
+  Steady State Max Iterations = 100000000
+  Steady State Min Iterations = 100000000
 
-  Output Intervals = 1
-  Post File = case.ep
+  ! No Elmer result files: results are viewed through OpenFOAM, and an ElmerPost
+  ! file here would be rewritten every coupling update (tens of MB per run)
+  Output Intervals = 0
 End
 
 
@@ -183,10 +186,12 @@ Solver 12
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
 
-  Target Variable 1 = String "Volume Current 1"
-  Target Variable 2 = String "Volume Current 2"
-  Target Variable 3 = String "Volume Current 3"
-  Target Variable 4 = String "Joule Heating"
+  ! Element-wise: nodal averaging would smear the electrode-edge peaks of the
+  ! current and heating, inflating what OpenFOAM integrates
+  Target Variable 1 = String "Element Volume Current 1"
+  Target Variable 2 = String "Element Volume Current 2"
+  Target Variable 3 = String "Element Volume Current 3"
+  Target Variable 4 = String "Element Joule Heating"
   Target Variable 5 = String "Potential"
   Target Variable 6 = String "Electric Conductivity"
   Target Variable 7 = String "Ionization Fraction"
@@ -448,6 +453,46 @@ def _render_patch(name: str, condition: Mapping[str, str]) -> str:
         lines.append(f"        value   {condition['value']};")
     lines.append("    }")
     return "\n".join(lines)
+
+
+COUPLING_PROPERTIES_TEMPLATE = """\
+/*--------------------------------*- C++ -*----------------------------------*\\
+| =========                 |                                                 |
+| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\\\    /   O peration     | Version:  dev                                   |
+|   \\\\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\\\/     M anipulation  |                                                 |
+\\*---------------------------------------------------------------------------*/
+FoamFile
+{{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      couplingProperties;
+}}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Elmer is re-solved when U, T or p has changed by more than these relative
+// tolerances since the last update, or after maxStepsBetweenUpdates steps
+// (0 = no limit). Zero tolerances update every time step.
+velocityTolerance       {velocity_tolerance:g};
+temperatureTolerance    {temperature_tolerance:g};
+pressureTolerance       {pressure_tolerance:g};
+maxStepsBetweenUpdates  {max_steps_between_updates:d};
+
+// Absolute pressure at OpenFOAM p = 0 [Pa], for the relative pressure change
+referencePressure       {reference_pressure:g};
+
+// ************************************************************************* //
+"""
+
+
+def render_coupling_properties(config: CaseConfig) -> str:
+    """Render constant/couplingProperties for the OpenFOAM solver."""
+    values = asdict(config.coupling)
+    values["reference_pressure"] = config.plasma.reference_pressure
+    return COUPLING_PROPERTIES_TEMPLATE.format_map(values)
 
 
 class OpenFoamCaseRenderer:

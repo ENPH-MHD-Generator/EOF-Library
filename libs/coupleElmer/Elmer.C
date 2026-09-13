@@ -540,7 +540,7 @@ void Foam::Elmer<meshT>::MPI_Test_Sleep(MPI_Request& req)
         //nanosleep((const struct timespec[]){{0, 1000000L}}, NULL);
         struct timespec tim;
         tim.tv_sec = 0;
-        tim.tv_nsec = 1000000L;
+        tim.tv_nsec = 100000L;  // 0.1 ms: polling latency adds up over many exchanges
         nanosleep(&tim, NULL);
     }
 }

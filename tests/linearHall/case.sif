@@ -7,11 +7,14 @@ Simulation
   Coordinate System = String "Cartesian 3D"
   Simulation Type = Steady
 
-  Steady State Max Iterations = 1000
-  Steady State Min Iterations = 1000
+  ! One iteration per OpenFOAM coupling update; OpenFOAM ends the run by
+  ! sending a final status, so these must exceed the number of updates
+  Steady State Max Iterations = 100000000
+  Steady State Min Iterations = 100000000
 
-  Output Intervals = 1
-  Post File = case.ep
+  ! No Elmer result files: results are viewed through OpenFOAM, and an ElmerPost
+  ! file here would be rewritten every coupling update (tens of MB per run)
+  Output Intervals = 0
 End
 
 
@@ -171,10 +174,12 @@ Solver 12
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
 
-  Target Variable 1 = String "Volume Current 1"
-  Target Variable 2 = String "Volume Current 2"
-  Target Variable 3 = String "Volume Current 3"
-  Target Variable 4 = String "Joule Heating"
+  ! Element-wise: nodal averaging would smear the electrode-edge peaks of the
+  ! current and heating, inflating what OpenFOAM integrates
+  Target Variable 1 = String "Element Volume Current 1"
+  Target Variable 2 = String "Element Volume Current 2"
+  Target Variable 3 = String "Element Volume Current 3"
+  Target Variable 4 = String "Element Joule Heating"
   Target Variable 5 = String "Potential"
   Target Variable 6 = String "Electric Conductivity"
   Target Variable 7 = String "Ionization Fraction"

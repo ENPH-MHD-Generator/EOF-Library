@@ -7,7 +7,9 @@
       + turbulence->divDevRhoReff(rho, U)
      ==
         fvOptions(rho, U)
-    //   + fLorentz
+      + fLorentz
+      - fvm::Sp(lorentzDamping, U)
+      + lorentzDamping*U_old
     );
 
     UEqn.relax();

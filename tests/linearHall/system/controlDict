@@ -21,18 +21,18 @@ startFrom       startTime;
 startTime       0;
 
 stopAt          endTime;
-endTime         0.00000001;
+endTime         1e-4;      // flow-through time is ~5e-4 s
 
 deltaT          0.1;
 
-writeControl    timeStep;
-writeInterval   1;
+writeControl    adjustableRunTime;
+writeInterval   1e-5;
 
 adjustTimeStep  yes; 
 
 purgeWrite      0;
 
-maxCo           0.002;
+maxCo           0.5;
 maxDeltaT       1;
 
 functions { }

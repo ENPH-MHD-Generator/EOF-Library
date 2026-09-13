@@ -15,7 +15,7 @@ import yaml
 from .boundaries import elmer_boundary_indices
 from .config import CaseConfig, ConfigError, load_case_config
 from .mesh import ProceduralMeshGenerator
-from .renderers import ElmerCaseRenderer, OpenFoamCaseRenderer
+from .renderers import ElmerCaseRenderer, OpenFoamCaseRenderer, render_coupling_properties
 
 
 class PreparationError(RuntimeError):
@@ -48,7 +48,7 @@ class CasePreparer:
     ) -> List[str]:
         self._validate_options(generate_mesh, reuse_mesh)
         self._validate_base_case(config, reuse_mesh=reuse_mesh)
-        files = ["case.sif", "resolved-config.yaml", "manifest.json"]
+        files = ["case.sif", "constant/couplingProperties", "resolved-config.yaml", "manifest.json"]
         files.extend(f"0/{name}" for name in self.openfoam_renderer.render(config))
         files.extend(("constant/", "system/"))
         if generate_mesh or reuse_mesh:
@@ -110,6 +110,9 @@ class CasePreparer:
         reuse_mesh: bool,
     ) -> None:
         self._copy_static_case_files(destination)
+        self._write_text(
+            destination / "constant" / "couplingProperties", render_coupling_properties(config)
+        )
 
         indices = elmer_boundary_indices(len(config.electrodes.pairs))
         self._write_text(destination / "case.sif", self.elmer_renderer.render(config, indices))

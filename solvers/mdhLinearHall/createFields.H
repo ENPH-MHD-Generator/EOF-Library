@@ -30,6 +30,44 @@ volVectorField U
     mesh
 );
 
+// -------------------------------------------------------------------------
+// Coupling controls (constant/couplingProperties, written by caseprep).
+// Elmer is re-solved when U, T or p has changed by more than these relative
+// tolerances since the last update, or after maxStepsBetweenUpdates steps.
+// Zero tolerances update every step.
+// -------------------------------------------------------------------------
+
+IOdictionary couplingProperties
+(
+    IOobject
+    (
+        "couplingProperties",
+        runTime.constant(),
+        mesh,
+        IOobject::READ_IF_PRESENT,
+        IOobject::NO_WRITE
+    )
+);
+
+const scalar couplingVelocityTolerance =
+    couplingProperties.lookupOrDefault<scalar>("velocityTolerance", 0);
+const scalar couplingTemperatureTolerance =
+    couplingProperties.lookupOrDefault<scalar>("temperatureTolerance", 0);
+const scalar couplingPressureTolerance =
+    couplingProperties.lookupOrDefault<scalar>("pressureTolerance", 0);
+const label couplingMaxSteps =
+    couplingProperties.lookupOrDefault<label>("maxStepsBetweenUpdates", 0);
+const scalar couplingReferencePressure =
+    couplingProperties.lookupOrDefault<scalar>("referencePressure", 101325);
+
+Info<< "Elmer coupling tolerances: U " << couplingVelocityTolerance
+    << "  T " << couplingTemperatureTolerance
+    << "  p " << couplingPressureTolerance
+    << "  max steps between updates " << couplingMaxSteps << nl << endl;
+
+label stepsSinceElmer = 0;
+label nElmerUpdates = 0;
+
 Info<< "Initializing field U_old\n" << endl;
 volVectorField U_old
 (
@@ -316,6 +354,18 @@ volScalarField p
     p_rgh + rho*gh
 );
 
+// Temperature and pressure at the last Elmer update
+volScalarField T_sent
+(
+    IOobject("T_sent", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
+    T
+);
+volScalarField p_sent
+(
+    IOobject("p_sent", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
+    p
+);
+
 label pRefCell = 0;
 scalar pRefValue = 0.0;
 
@@ -539,4 +589,21 @@ volScalarField Te
     mesh,
     dimensionedScalar("zero", dimTemperature, 0.0),
     zeroGradientFvPatchScalarField::typeName
+);
+
+// Semi-implicit Lorentz drag coefficient K = sigma |B|^2 [kg/(m^3 s)]. The
+// momentum equation adds -K (U - U_old) to the lagged J x B force: it damps
+// the explicit coupling in transients and vanishes at convergence. It ignores
+// the Hall reduction sigma B^2/(1 + beta^2), so it over-damps (safely).
+volScalarField lorentzDamping
+(
+    IOobject
+    (
+        "lorentzDamping",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::NO_WRITE
+    ),
+    elcond_elmer*magSqr(B)
 );

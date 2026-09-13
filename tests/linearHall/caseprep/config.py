@@ -312,12 +312,54 @@ class PlasmaConfig:
 
 
 @dataclass(frozen=True)
+class CouplingConfig:
+    """When OpenFOAM re-solves the electrical problem in Elmer.
+
+    The electrical problem is quasi-static: the current depends only on the
+    instantaneous velocity, temperature and pressure. Elmer is re-solved once
+    any of them has changed by more than its relative tolerance since the last
+    update, or after max_steps_between_updates steps. All zero (the default)
+    updates every time step.
+    """
+
+    velocity_tolerance: float = 0.0  # max |U - U_sent| / max |U_sent|
+    temperature_tolerance: float = 0.0  # max |T - T_sent| / T_sent
+    pressure_tolerance: float = 0.0  # max |p - p_sent| / absolute pressure
+    max_steps_between_updates: int = 0  # 0 = no limit
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CouplingConfig":
+        data = _mapping(raw or {}, "coupling")
+        defaults = cls()
+        _known_keys(data, asdict(defaults), "coupling")
+        return cls(
+            velocity_tolerance=_nonnegative_number(
+                data.get("velocity_tolerance", defaults.velocity_tolerance),
+                "coupling.velocity_tolerance",
+            ),
+            temperature_tolerance=_nonnegative_number(
+                data.get("temperature_tolerance", defaults.temperature_tolerance),
+                "coupling.temperature_tolerance",
+            ),
+            pressure_tolerance=_nonnegative_number(
+                data.get("pressure_tolerance", defaults.pressure_tolerance),
+                "coupling.pressure_tolerance",
+            ),
+            max_steps_between_updates=_integer(
+                data.get("max_steps_between_updates", defaults.max_steps_between_updates),
+                "coupling.max_steps_between_updates",
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class CaseConfig:
     channel: ChannelConfig
     mesh: MeshConfig
     electrodes: ElectrodeConfig
     physics: PhysicsConfig
     plasma: PlasmaConfig = PlasmaConfig()
+    coupling: CouplingConfig = CouplingConfig()
     schema_version: int = 1
 
     @classmethod
@@ -325,7 +367,7 @@ class CaseConfig:
         data = _mapping(raw, "configuration")
         _known_keys(
             data,
-            ("schema_version", "channel", "mesh", "electrodes", "physics", "plasma"),
+            ("schema_version", "channel", "mesh", "electrodes", "physics", "plasma", "coupling"),
             "configuration",
         )
         schema_version = _integer(data.get("schema_version", 1), "schema_version", positive=True)
@@ -340,6 +382,7 @@ class CaseConfig:
             electrodes=ElectrodeConfig.from_mapping(data["electrodes"], channel),
             physics=PhysicsConfig.from_mapping(data.get("physics", {})),
             plasma=PlasmaConfig.from_mapping(data.get("plasma", {})),
+            coupling=CouplingConfig.from_mapping(data.get("coupling", {})),
             schema_version=schema_version,
         )
 
@@ -359,6 +402,7 @@ class CaseConfig:
                 "inlet_temperature": self.physics.inlet_temperature,
             },
             "plasma": asdict(self.plasma),
+            "coupling": asdict(self.coupling),
         }
 
 

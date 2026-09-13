@@ -372,6 +372,10 @@ def generate(
             gmsh.model.setPhysicalName(2, ptag, bname)
 
         gmsh.model.mesh.generate(3)
+        # Remove sliver tetrahedra. They set OpenFOAM's Courant time step for the
+        # whole mesh; Netgen optimization raises the worst cell quality from about
+        # 0.33 to 0.5 and allows roughly 1.5x larger time steps.
+        gmsh.model.mesh.optimize("Netgen")
         _verify_every_boundary_has_exactly_one_physical(plasma_vols)
         _verify_all_boundary_faces_mapped(plasma_vols)
         _verify_tetra_only()

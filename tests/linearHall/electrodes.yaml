@@ -76,3 +76,12 @@ plasma:
   energy_loss_factor: 1.0         # delta; 1 = elastic losses only (monatomic)
   electron_temperature_max: 20000 # K
   electron_temperature_relaxation: 0.5
+
+# How often Elmer re-solves the electrical problem. Updates happen when U, T or
+# p has changed by more than these relative tolerances since the last update;
+# all zero updates every step. Check "change since last update" in the log.
+coupling:
+  velocity_tolerance: 0.05
+  temperature_tolerance: 0.005    # sigma is exponential in T: keep this tight
+  pressure_tolerance: 0.05
+  max_steps_between_updates: 250

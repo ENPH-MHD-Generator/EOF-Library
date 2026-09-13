@@ -27,7 +27,7 @@ kappa 0.0866;  // Thermal conductivity (W/m/K) at 2500 K
 
 // Electrical conductivity, ionization fraction and Hall coefficient come from
 // the seeded-plasma (Saha) model in Elmer; configure it under "plasma:" in the
-// experiment YAML.
-maxRelDiff 0; // Call elmer on very time step
+// experiment YAML. How often Elmer is updated is set under "coupling:" and
+// written to constant/couplingProperties.
 
 // ************************************************************************* //

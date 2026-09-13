@@ -44,6 +44,7 @@ MODULE Elmer2OpenFOAMSolverUtils
     TYPE(Mesh_t), POINTER :: OFMesh
     LOGICAL,POINTER :: foundCells(:)
     INTEGER,POINTER :: foundCellsIndx(:)
+    INTEGER,ALLOCATABLE :: elemOfCell(:)  ! Elmer element containing each found cell
     INTEGER :: nFoundCells
     LOGICAL :: boxOverlap
   END TYPE OFproc_t
@@ -55,6 +56,97 @@ MODULE Elmer2OpenFOAMSolverUtils
   REAL(KIND=dp) :: myBoundBox(3,2) ! [x,y,z][min,max]
   REAL(KIND=dp), POINTER :: ELboundBoxes(:,:,:,:) ! [x,y,z][min,max][rank][body]
   INTEGER, POINTER :: OF_EL_overlap(:,:,:) ! [ELrank][OFrank][body]
+
+CONTAINS
+
+!------------------------------------------------------------------------------
+!> Element of the Elmer mesh that contains each interpolated OpenFOAM cell
+!> centre. The projector row of a cell holds the basis weights of the element
+!> containing it, so its columns are that element's nodes: the element is the
+!> one sharing all of them. Needed to send element-wise (-elem) variables,
+!> which have no nodal representation to interpolate.
+!------------------------------------------------------------------------------
+SUBROUTINE FindElementsOfCells( Mesh, Proc )
+
+  TYPE(Mesh_t), POINTER :: Mesh
+  TYPE(OFproc_t) :: Proc
+  !------------------------------------------------------------------------------
+  TYPE(Matrix_t), POINTER :: A
+  TYPE(Element_t), POINTER :: Elem
+  INTEGER, ALLOCATABLE :: ElemPtr(:), ElemList(:), Cursor(:)
+  INTEGER :: i, j, k, n, e, row, col, node, nNodes, nBulk, nMissing
+  LOGICAL :: AllShared
+
+  IF (Proc % nFoundCells == 0) RETURN
+  IF (.NOT. ASSOCIATED(Proc % OFMesh % Projector)) RETURN
+
+  A => Proc % OFMesh % Projector % Matrix
+  nNodes = Mesh % NumberOfNodes
+  nBulk = Mesh % NumberOfBulkElements
+
+  ! Elements attached to each node, in compressed form
+  ALLOCATE( ElemPtr(nNodes+2) )
+  ElemPtr = 0
+  DO e = 1, nBulk
+    Elem => Mesh % Elements(e)
+    DO i = 1, Elem % TYPE % NumberOfNodes
+      node = Elem % NodeIndexes(i)
+      ElemPtr(node+1) = ElemPtr(node+1) + 1
+    END DO
+  END DO
+  DO i = 2, nNodes+1
+    ElemPtr(i) = ElemPtr(i) + ElemPtr(i-1)
+  END DO
+  ! Segment of node i is ElemList(ElemPtr(i)+1 : ElemPtr(i+1)); fill it with a
+  ! separate cursor so the segment ends stay intact
+  ALLOCATE( ElemList(ElemPtr(nNodes+1)), Cursor(nNodes) )
+  Cursor(1:nNodes) = ElemPtr(1:nNodes)
+  DO e = 1, nBulk
+    Elem => Mesh % Elements(e)
+    DO i = 1, Elem % TYPE % NumberOfNodes
+      node = Elem % NodeIndexes(i)
+      Cursor(node) = Cursor(node) + 1
+      ElemList(Cursor(node)) = e
+    END DO
+  END DO
+
+  ALLOCATE( Proc % elemOfCell(Proc % nFoundCells) )
+  Proc % elemOfCell = 0
+  nMissing = 0
+
+  DO row = 1, MIN(Proc % nFoundCells, A % NumberOfRows)
+    IF (A % Rows(row) > A % Rows(row+1)-1) CYCLE
+    node = A % Cols(A % Rows(row))
+
+    DO k = ElemPtr(node)+1, ElemPtr(node+1)
+      e = ElemList(k)
+      Elem => Mesh % Elements(e)
+      n = Elem % TYPE % NumberOfNodes
+      AllShared = .TRUE.
+      DO j = A % Rows(row), A % Rows(row+1)-1
+        col = A % Cols(j)
+        IF (.NOT. ANY(Elem % NodeIndexes(1:n) == col)) THEN
+          AllShared = .FALSE.
+          EXIT
+        END IF
+      END DO
+      IF (AllShared) THEN
+        Proc % elemOfCell(row) = e
+        EXIT
+      END IF
+    END DO
+
+    IF (Proc % elemOfCell(row) == 0) nMissing = nMissing + 1
+  END DO
+
+  IF (nMissing > 0) THEN
+    CALL Warn('Elmer2OpenFOAMSolver','Could not identify the element of '// &
+        TRIM(I2S(nMissing))//' cell(s); element-wise variables are sent as zero there')
+  END IF
+
+  DEALLOCATE( ElemPtr, ElemList, Cursor )
+
+END SUBROUTINE FindElementsOfCells
 
 END MODULE Elmer2OpenFOAMSolverUtils
 
@@ -81,7 +173,7 @@ SUBROUTINE MPI_TEST_SLEEP( req, ierr )
   DO WHILE ( .TRUE. )
     CALL MPI_TEST( req, Flag, MPI_STATUS_IGNORE, ierr )
     IF (Flag) EXIT
-    CALL usleep(1000_c_int32_t)
+    CALL usleep(100_c_int32_t)   ! 0.1 ms: polling latency adds up over many exchanges
   END DO
 
 END SUBROUTINE MPI_TEST_SLEEP
@@ -142,6 +234,8 @@ SUBROUTINE Elmer2OpenFOAMSolver( Model,Solver,dt,TransientSimulation )
   REAL(KIND=dp) :: commTime
   CHARACTER(LEN=15) :: timeStr
   INTEGER, POINTER :: Blist(:)
+  LOGICAL, SAVE :: AnyElemVars = .FALSE.
+  INTEGER :: cell, elem, ip
   
   INTERFACE
     SUBROUTINE InterpolateMeshToMeshQ( OldMesh, NewMesh, OldVariables, NewVariables, &
@@ -186,6 +280,7 @@ SUBROUTINE Elmer2OpenFOAMSolver( Model,Solver,dt,TransientSimulation )
           CALL Fatal('Elmer2OpenFOAMSolver','Variable '//TRIM(VarName)//' does not exist in Elmer mesh!')
         ELSE
           nVars = nVars + 1
+          IF (Var % TYPE == Variable_on_elements) AnyElemVars = .TRUE.
         END IF
       END IF
     END DO
@@ -324,6 +419,8 @@ SUBROUTINE Elmer2OpenFOAMSolver( Model,Solver,dt,TransientSimulation )
         OFp(i,s) % OFVar % Perm = (/ (j, j = 1, OFp(i,s) % nFoundCells) /)
         OFp(i,s) % foundCellsIndx = PACK((/ (j, j = 0, OFp(i,s) % OFMesh % NumberOfNodes-1) /),OFp(i,s) % foundCells)
 
+        IF (AnyElemVars) CALL FindElementsOfCells( Mesh, OFp(i,s) )
+
         ! Indexes for cells that were found on this piece of Elmer mesh
         CALL MPI_ISEND( OFp(i,s) % foundCellsIndx, OFp(i,s) % nFoundCells, MPI_INTEGER, &
                         OFp(i,s) % globalRank, 994, MPI_COMM_WORLD, OFp(i,s) % reqSend, ierr)
@@ -359,8 +456,21 @@ SUBROUTINE Elmer2OpenFOAMSolver( Model,Solver,dt,TransientSimulation )
       DO i = 0, totOFRanks - 1
         IF ( OFp(i,s) % nFoundCells == 0 ) CYCLE
         OFp(i,s) % OFVar % Values = 0
-        CALL CRS_ApplyProjector( OFp(i,s) % OFMesh % Projector % Matrix, Var % Values, &
-                     Var % Perm, OFp(i,s) % OFVar % Values, OFp(i,s) % OFVar % Perm )
+
+        IF ( Var % TYPE == Variable_on_elements .AND. &
+             ALLOCATED(OFp(i,s) % elemOfCell) .AND. ASSOCIATED(Var % Perm) ) THEN
+          ! One value per element: hand each cell the value of the element it
+          ! sits in, with no interpolation to smear it
+          DO cell = 1, OFp(i,s) % nFoundCells
+            elem = OFp(i,s) % elemOfCell(cell)
+            IF (elem <= 0 .OR. elem > SIZE(Var % Perm)) CYCLE
+            ip = Var % Perm(elem)
+            IF (ip > 0) OFp(i,s) % OFVar % Values(cell) = Var % Values(ip)
+          END DO
+        ELSE
+          CALL CRS_ApplyProjector( OFp(i,s) % OFMesh % Projector % Matrix, Var % Values, &
+                       Var % Perm, OFp(i,s) % OFVar % Values, OFp(i,s) % OFVar % Perm )
+        END IF
 
         CALL MPI_ISEND( OFp(i,s) % OFVar % Values, OFp(i,s) % nFoundCells, MPI_DOUBLE, &
                         OFp(i,s) % globalRank, 1000, MPI_COMM_WORLD, OFp(i,s) % reqSend, ierr)

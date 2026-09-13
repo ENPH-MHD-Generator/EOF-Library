@@ -42,9 +42,15 @@ interpolationSchemes
 {
     default         linear;
     elcond          cellPoint;
-    Ux              cellPoint;
-    Uy              cellPoint;
-    Uz              cellPoint;
+    // Velocity uses the cell value, not cellPoint: cellPoint blends in vertex
+    // values, which are exactly zero on no-slip walls, so every Elmer node on a
+    // wall would see zero velocity and lose its U x B EMF over a whole cell.
+    // The boundary layer is far thinner than a cell here, so the cell average
+    // (what the momentum equation itself carries) is the better estimate.
+    // Revisit if the near-wall layer is ever resolved.
+    Ux              cell;
+    Uy              cell;
+    Uz              cell;
 
     Bx              cellPoint;
     By              cellPoint;

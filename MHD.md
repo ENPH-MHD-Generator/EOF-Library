@@ -208,6 +208,57 @@ The run writes `ionizationFraction` (`n_e / n_heavy`), `Te`, and
 `elcond_elmer` as OpenFOAM fields, including initial values at `t = 0`. The
 channel's initial temperature is the inlet temperature.
 
+Elmer receives the velocity as cell values (`interpolationSchemes` in
+`system/fvSchemes` uses `cell` for `Ux/Uy/Uz`, not `cellPoint`). `cellPoint`
+blends in vertex values, which are exactly zero on no-slip walls, so every
+Elmer node on a wall would lose its `U x B` EMF across a whole cell. Because
+the boundary layer is far thinner than a cell here, that removed most of the
+generated power. The Elmer log prints the volume-averaged velocity it sees:
+it should be close to the inlet velocity, and a much lower value means the
+EMF is being damped this way.
+
+The current and Joule heating are transferred per element rather than
+interpolated from nodes, so the peaks at the electrode edges reach OpenFOAM
+undiminished.
+
+The full Lorentz force `J x B` acts on the bulk gas. Electrons and ions pass
+their momentum to the neutrals by collisions within nanoseconds, and ion slip
+(`beta_i ~ 1e-3`) is negligible. The force uses the current from the previous
+coupling step; a semi-implicit drag, `-sigma |B|^2 (U - U_sent)`, stabilizes
+that lag and vanishes at convergence. The Elmer log prints a power balance,
+`P_emf = int J.(U x B) dV` against Joule heating plus the power delivered to
+the electrode loads, and the OpenFOAM log prints the mechanical power the flow
+loses, `P_mech`, which should match `P_emf`. The flow is incompressible, so
+extracted power appears as a pressure drop rather than a fall in gas
+enthalpy.
+
+`coupling` is optional and sets how often OpenFOAM re-solves the electrical
+problem in Elmer:
+
+```yaml
+coupling:
+  velocity_tolerance: 0.05        # max |U - U_sent| / max |U_sent|
+  temperature_tolerance: 0.005    # max |T - T_sent| / T_sent
+  pressure_tolerance: 0.05        # max |p - p_sent| / absolute pressure
+  max_steps_between_updates: 250  # 0 = no limit
+```
+
+The electrical problem is quasi-static: the current depends only on the
+instantaneous velocity, temperature and pressure, so skipping an Elmer update
+only means using slightly stale inputs. Elmer is re-solved once any input has
+changed by more than its relative tolerance since the last update, after
+`max_steps_between_updates` steps, and always on the final step. All zero (the
+default) updates every time step. Between updates the Lorentz force is held,
+with the implicit drag term correcting it for the velocity change.
+
+Conductivity is exponential in temperature (about 1% per 2.5 K at 2500 K), so
+keep `temperature_tolerance` roughly ten times tighter than the velocity
+tolerance. To check a setting, read the OpenFOAM log: each update prints the
+input changes that triggered it and `change since last update`, the relative
+jump in `J x B` when it is refreshed, which is the error the skipped updates
+carried. Keep it to a few percent, and compare integral results (`P_emf`,
+electrode currents) against a run with all tolerances at zero.
+
 Unknown keys and invalid values fail during validation instead of being
 silently ignored.
 
@@ -297,6 +348,25 @@ Validate and print the execution command without launching the solvers:
 ```sh
 mhd run linear-hall --dry-run
 ```
+
+### Run time and mesh size
+
+Cost grows roughly as the fourth power of mesh refinement: halving the cell
+size gives about 8x the cells and, through the Courant limit, about 2x the
+time steps. Measured for 1e-4 s of simulated time:
+
+| `size_factor` | Elements | 2 ranks | 4 ranks |
+|---|---|---|---|
+| 0.25 | ~18k | 20 s | |
+| 0.2 | ~33k | 27 s | 20 s |
+| 0.15 | ~77k | 100 s | 73 s |
+
+Use `--ranks 4` from about `size_factor` 0.2 down; on coarser meshes the fixed
+start-up and coupling costs dominate and extra ranks do not help. The mesh is
+Netgen-optimized after generation because sliver tetrahedra otherwise set the
+time step for the whole mesh. Each Elmer update prints the electron
+temperature convergence; nodes whose updates oscillate are damped
+automatically, and the count appears as `damped`.
 
 ## Where cases and results live
 
