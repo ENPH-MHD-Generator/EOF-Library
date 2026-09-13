@@ -12,10 +12,15 @@ endif
 
 FOAM_MAJOR_VERSION=$(firstword $(subst ., ,$(WM_PROJECT_VERSION)))
 
-ifeq ($(shell test $(FOAM_MAJOR_VERSION) -lt 6; echo $$?),0)
+ifeq ($(FOAM_MAJOR_VERSION),v2112)
+    $(info ************  OF version v2112 ************)
+    EOF_INC += -I$(LIB_SRC)/Pstream/mpi/lnInclude
+    EOF_LIBS =
+else ifeq ($(shell test $(FOAM_MAJOR_VERSION) -lt 6; echo $$?),0)
     $(info ************  OF version <6 ************)
     EOF_LIBS = -lPstream
 else
+    EOF_INC += -I$(LIB_SRC)/Pstream/mpi/lnInclude
     EOF_LIBS =
 endif
 

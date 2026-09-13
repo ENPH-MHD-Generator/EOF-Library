@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
     #include "initContinuityErrs.H"
     #include "createFields.H"
     #include "createFvOptions.H"
-    #include "correctPhi.H"
+    #include "localCorrectPhi.H"
 
     turbulence->validate();
 

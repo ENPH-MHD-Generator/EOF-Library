@@ -57,6 +57,7 @@ Original Date: 12.12.2016.
 #endif
 #endif
 #include "PstreamGlobals.H"
+#include <mpi.h>
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 

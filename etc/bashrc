@@ -1,4 +1,4 @@
-export EOF_HOME="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"/..
+export EOF_HOME=$(cd $(dirname $(readlink -f $0))/.. && pwd)  # https://stackoverflow.com/a/246128
 export EOF_SRC=$EOF_HOME/libs
 export LD_LIBRARY_PATH=$EOF_SRC:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=$FOAM_USER_LIBBIN:$LD_LIBRARY_PATH
@@ -8,9 +8,12 @@ eofPull() {
 }
 
 eofCompile() {
+    wclean $EOF_SRC/coupleElmer
     wmake $EOF_SRC/coupleElmer
-    elmerf90 -o $EOF_SRC/Elmer2OpenFOAM.so -J$EOF_SRC $EOF_SRC/Elmer2OpenFOAM.F90
-    elmerf90 -o $EOF_SRC/OpenFOAM2Elmer.so -J$EOF_SRC $EOF_SRC/OpenFOAM2Elmer.F90
+
+    elmerf90 -o $EOF_SRC/Elmer2OpenFOAM.so -J$EOF_SRC $EOF_SRC/Elmer2OpenFOAM.F90 $(mpifort --showme:link)
+    elmerf90 -o $EOF_SRC/OpenFOAM2Elmer.so -J$EOF_SRC $EOF_SRC/OpenFOAM2Elmer.F90 $(mpifort --showme:link)
+    elmerf90 -o $EOF_SRC/MHDSolve.so -J$EOF_SRC $EOF_SRC/solvers/MHDSolve/MHDUtils.F90 $EOF_SRC/solvers/MHDSolve/MHDSolve.F90 $(mpifort --showme:link)
 }
 
 eofUpdate() {

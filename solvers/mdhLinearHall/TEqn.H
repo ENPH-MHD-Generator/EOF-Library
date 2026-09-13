@@ -1,6 +1,17 @@
 {
     // Effective thermal diffusivity: conductive + turbulent part
-    volScalarField kappaf = kappa/cp + rho*turbulence->nut()/0.7;
+    volScalarField kappaf
+    (
+        IOobject
+        (
+            "kappaf",
+            runTime.timeName(),
+            mesh,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+        kappa/cp + rho*turbulence->nut()/0.7
+    );
 
     fvScalarMatrix TEqn
     (
