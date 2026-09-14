@@ -326,14 +326,33 @@ volScalarField Te
     zeroGradientFvPatchScalarField::typeName
 );
 
-// Semi-implicit Lorentz drag coefficient K = sigma |B|^2 [kg/(m^3 s)]. The
-// momentum equation adds -K (U - U_old) to the lagged J x B force: it damps
-// the explicit coupling in transients and vanishes at convergence. It ignores
-// the Hall reduction sigma B^2/(1 + beta^2), so it over-damps (safely).
+// Electron Hall parameter (Hall / Pedersen mobility) and the conductivity
+// across B (electrons and ions)
+volScalarField hallParameter
+(
+    IOobject("hallParameter", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
+    mesh,
+    dimensionedScalar("zero", dimless, 0.0),
+    zeroGradientFvPatchScalarField::typeName
+);
+
+volScalarField pedersenConductivity
+(
+    IOobject("pedersenConductivity", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
+    mesh,
+    dimensionedScalar("zero", dimensionSet(-1, -3, 3, 0, 0, 2, 0), 0.0),
+    zeroGradientFvPatchScalarField::typeName
+);
+
+// Semi-implicit Lorentz drag coefficient K = sigma_P |B|^2 [kg/(m^3 s)], with
+// the Pedersen conductivity. The momentum equation adds -K (U - U_old) to the
+// lagged J x B force: it damps the explicit coupling in transients and
+// vanishes at convergence. Without Hall shorting the true drag is smaller, so
+// it over-damps (safely).
 volScalarField lorentzDamping
 (
     IOobject("lorentzDamping", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
-    elcond_elmer*magSqr(B)
+    pedersenConductivity*magSqr(B)
 );
 
 #include "createMRF.H"

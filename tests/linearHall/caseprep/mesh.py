@@ -32,6 +32,9 @@ class ProceduralMeshGenerator:
                 wall_cell_size=mesh.wall_cell_size,
                 electrode_edge_cell_size=mesh.electrode_edge_cell_size,
                 growth_rate=mesh.growth_rate,
+                electrode_wall_cell_size=mesh.electrode_wall_cell_size,
+                side_wall_cell_size=mesh.side_wall_cell_size,
+                streamwise_cell_size=mesh.streamwise_cell_size,
             )
             return
         generate(

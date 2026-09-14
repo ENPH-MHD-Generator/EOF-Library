@@ -331,7 +331,9 @@ def generate(
 
         gxmin, gymin, gzmin, gxmax, gymax, gzmax = gmsh.model.getBoundingBox(-1, -1)
         dom = max(gxmax - gxmin, gymax - gymin, gzmax - gzmin)
-        tol = max(1e-9, 1e-6 * dom)
+        # OpenCASCADE pads bounding boxes by ~1e-7 m, so a purely relative
+        # tolerance rejected the inlet and outlet of channels shorter than ~0.1 m
+        tol = max(1e-6, 1e-5 * dom)
 
         groups = {name: [] for name in boundary_tags}
         exterior_surfs = _collect_external_surfaces(plasma_vols)
@@ -457,16 +459,26 @@ def generate_structured(
     wall_cell_size=0.00025,
     electrode_edge_cell_size=0.001,
     growth_rate=1.2,
+    electrode_wall_cell_size=None,
+    side_wall_cell_size=None,
+    streamwise_cell_size=None,
 ):
     """Generate a graded, structured hexahedral mesh of the channel.
 
-    Cells are finest at the insulating and electrode walls, to resolve the cold
-    thermal boundary layer, and streamwise at the electrode edges, where the
-    current concentrates; they grow by at most ``growth_rate`` per cell up to
-    ``cell_size`` in the core. The channel is extruded along x in segments split
-    at every electrode edge, so each electrode is its own boundary surface.
-    Boundary names and tags are identical to the tetrahedral generator.
+    Cells are finest at the walls, to resolve the cold thermal boundary layer,
+    and streamwise at the electrode edges, where the current concentrates; they
+    grow by at most ``growth_rate`` per cell up to the core size. The walls
+    carrying the electrodes (y = 0 and y = H) and the insulating side walls
+    (z = 0 and z = W) take separate first-cell sizes, because the cold layer on
+    the electrode walls sets the electrode voltage drop. The cross-section core
+    size is ``cell_size`` and the streamwise core size ``streamwise_cell_size``.
+    The channel is extruded along x in segments split at every electrode edge,
+    so each electrode is its own boundary surface. Boundary names and tags are
+    identical to the tetrahedral generator.
     """
+    electrode_wall_cell_size = electrode_wall_cell_size or wall_cell_size
+    side_wall_cell_size = side_wall_cell_size or wall_cell_size
+    streamwise_cell_size = streamwise_cell_size or cell_size
     cfg = {**DEFAULTS, **(channel_config or {})}
     num_pairs = cfg["num_pairs"]
     L = cfg["channel_length"]
@@ -495,8 +507,10 @@ def generate_structured(
                 return index
         return None
 
-    y_coords = graded_coordinates(H, wall_cell_size, wall_cell_size, cell_size, growth_rate)
-    z_coords = graded_coordinates(W, wall_cell_size, wall_cell_size, cell_size, growth_rate)
+    y_coords = graded_coordinates(
+        H, electrode_wall_cell_size, electrode_wall_cell_size, cell_size, growth_rate
+    )
+    z_coords = graded_coordinates(W, side_wall_cell_size, side_wall_cell_size, cell_size, growth_rate)
 
     gmsh.initialize()
     try:
@@ -521,9 +535,9 @@ def generate_structured(
         base = inlet_surface
         segments = []
         for x0, x1 in zip(breaks[:-1], breaks[1:]):
-            size0 = electrode_edge_cell_size if is_electrode_edge(x0) else cell_size
-            size1 = electrode_edge_cell_size if is_electrode_edge(x1) else cell_size
-            x_coords = graded_coordinates(x1 - x0, size0, size1, cell_size, growth_rate)
+            size0 = electrode_edge_cell_size if is_electrode_edge(x0) else streamwise_cell_size
+            size1 = electrode_edge_cell_size if is_electrode_edge(x1) else streamwise_cell_size
+            x_coords = graded_coordinates(x1 - x0, size0, size1, streamwise_cell_size, growth_rate)
             out = geo.extrude([(2, base)], x1 - x0, 0, 0,
                               numElements=[1] * (len(x_coords) - 1),
                               heights=_extrusion_heights(x_coords), recombine=True)

@@ -52,9 +52,13 @@ END MODULE MHDUtils
 !------------------------------------------------------------------------------
 ! MHDPlasma – seeded-plasma physics (no Elmer types)
 !
-! Only the alkali seed ionizes; the carrier gas is neutral. Heavy particles are
-! at the gas temperature, electrons at T (two-temperature Saha). Collisions are
-! electron-neutral only, with the carrier and with neutral seed atoms.
+! Argon seeded with potassium. Only the seed ionizes (two-temperature Saha at
+! the electron temperature); heavy particles are at the gas temperature.
+! Electron collision data come from plasma_collisions (a Maxwellian EEDF at Te),
+! tabulated by case preparation into electron_collisions.dat: electron-neutral
+! momentum transfer, recoil energy losses and K(4p) excitation. Electron-ion
+! (Coulomb) collisions use the NRL Coulomb logarithm. Ions carry current with a
+! polarization mobility (ion slip).
 !------------------------------------------------------------------------------
 MODULE MHDPlasma
   IMPLICIT NONE
@@ -65,46 +69,224 @@ MODULE MHDPlasma
   REAL(KIND=r8), PARAMETER :: eCharge = 1.602176634d-19
   REAL(KIND=r8), PARAMETER, PRIVATE :: hPlanck = 6.62607015d-34
   REAL(KIND=r8), PARAMETER, PRIVATE :: Pi = 3.14159265358979323846d0
+  REAL(KIND=r8), PARAMETER :: KelvinPerEV = eCharge / kBoltz
+  !> Loschmidt number, m^-3 (273.15 K, 101325 Pa): reference for reduced mobility
+  REAL(KIND=r8), PARAMETER :: Loschmidt = 2.6867811d25
+  !> NRL electron-ion collision frequency coefficient, m^3 eV^(3/2)/s
+  REAL(KIND=r8), PARAMETER, PRIVATE :: NrlCoefficient = 2.91d-12
 
   TYPE SeedPlasma_t
     REAL(KIND=r8) :: SeedFrac      ! seed atoms per heavy particle
     REAL(KIND=r8) :: ChiJ          ! seed ionization energy [J]
     REAL(KIND=r8) :: WeightRatio   ! g_ion / g_neutral of the seed
-    REAL(KIND=r8) :: Qseed         ! electron-seed cross section [m^2]
-    REAL(KIND=r8) :: Qcarrier      ! electron-carrier cross section [m^2]
-    REAL(KIND=r8) :: Mseed         ! seed particle mass [kg]
-    REAL(KIND=r8) :: Mcarrier      ! carrier particle mass [kg]
-    REAL(KIND=r8) :: LossFactor    ! inelastic loss factor delta (1 = elastic)
+    REAL(KIND=r8) :: IonReducedMobility = 0.0_r8  ! m^2/(V s) at Loschmidt density
+    LOGICAL :: Lorentz = .FALSE.   ! Lorentz electron transport (else drifting)
+    LOGICAL :: ExcitedAtGas = .FALSE.  ! K(4p) population at the gas temperature
   END TYPE SeedPlasma_t
+
+  !> Tables from electron_collisions.dat, natural logarithms of the values
+  TYPE CollisionData_t
+    LOGICAL :: Loaded = .FALSE.
+    CHARACTER(LEN=512) :: FileName = ''
+    INTEGER :: nT = 0, nA = 0, nW = 0
+    REAL(KIND=r8), ALLOCATABLE :: LnT(:), LnA(:), LnW(:)
+    REAL(KIND=r8), ALLOCATABLE :: LnNuN(:), LnElastic(:), LnEi(:), LnKexc(:), LnKsup(:)
+    REAL(KIND=r8), ALLOCATABLE :: LnMu(:,:,:), LnMuP(:,:,:), LnMuH(:,:,:)
+    REAL(KIND=r8) :: ExcEnergy = 0.0_r8, ExcWeight = 1.0_r8
+  END TYPE CollisionData_t
+
+  TYPE(CollisionData_t), SAVE :: CD
+
+  !> Local transport state at one point
+  TYPE PlasmaTransport_t
+    REAL(KIND=r8) :: ne = 0.0_r8           ! electron density, m^-3
+    REAL(KIND=r8) :: LnLambda = 0.0_r8     ! Coulomb logarithm
+    REAL(KIND=r8) :: Mu0 = 0.0_r8, MuP = 0.0_r8, MuH = 0.0_r8   ! electron mobilities, m^2/(V s)
+    REAL(KIND=r8) :: MuI = 0.0_r8, MuIP = 0.0_r8, MuIH = 0.0_r8 ! ion mobilities (Hall opposite)
+    REAL(KIND=r8) :: CollisionFrequency = 0.0_r8  ! e / (me Mu0), 1/s
+  END TYPE PlasmaTransport_t
 
 CONTAINS
 
-  !> Electron density and collision frequencies at electron temperature T for
-  !> heavy-particle density nH and seed density nS:
-  !>   ne^2 / (nS - ne) = 2 (g_i/g_n) (2 pi me kB T / h^2)^(3/2) exp(-chi / (kB T))
-  !>   nu = vth [ (nH - nS) Qc + (nS - ne) Qs ],  NuOverMass = sum_s nu_s / M_s
-  SUBROUTINE SeedPlasmaState( Pl, T, nH, nS, ne, nu, NuOverMass )
-    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
-    REAL(KIND=r8), INTENT(IN)  :: T, nH, nS
-    REAL(KIND=r8), INTENT(OUT) :: ne, nu, NuOverMass
-    REAL(KIND=r8) :: SahaS, vth, nuC, nuS
+  !> Read the collision tables once; a later call with the same file does nothing
+  SUBROUTINE ReadCollisionData( FileName, Lorentz, ErrorMessage )
+    CHARACTER(LEN=*), INTENT(IN) :: FileName
+    LOGICAL, INTENT(IN) :: Lorentz
+    CHARACTER(LEN=*), INTENT(OUT) :: ErrorMessage
+    CHARACTER(LEN=4096) :: Line
+    CHARACTER(LEN=64) :: BlockName
+    INTEGER :: Unit, Count, ios
+    REAL(KIND=r8), ALLOCATABLE :: Values(:)
+    REAL(KIND=r8) :: Scalar
 
-    SahaS = SahaFactor( Pl, T )
+    ErrorMessage = ''
+    IF (CD % Loaded .AND. TRIM(CD % FileName) == TRIM(FileName)) RETURN
+    CALL FreeCollisionData()
 
-    ! Positive root of ne^2 + S ne - S nS = 0, in a form that avoids
-    ! cancellation when S >> nS
-    IF (SahaS > 0.0_r8) THEN
-      ne = 2.0_r8 * SahaS * nS / (SahaS + SQRT(SahaS*SahaS + 4.0_r8*SahaS*nS))
-    ELSE
-      ne = 0.0_r8
+    OPEN(NEWUNIT=Unit, FILE=TRIM(FileName), STATUS='OLD', ACTION='READ', IOSTAT=ios)
+    IF (ios /= 0) THEN
+      ErrorMessage = 'Cannot open electron collision data '//TRIM(FileName)//'; rerun mhd prepare'
+      RETURN
     END IF
+    DO
+      READ(Unit, '(A)', IOSTAT=ios) Line
+      IF (ios /= 0) EXIT
+      Line = ADJUSTL(Line)
+      IF (LEN_TRIM(Line) == 0 .OR. Line(1:1) == '!') CYCLE
+      READ(Line, *, IOSTAT=ios) BlockName, Count
+      IF (ios /= 0) THEN
+        ErrorMessage = 'Malformed block header in '//TRIM(FileName)//': '//TRIM(Line)
+        EXIT
+      END IF
+      IF (TRIM(BlockName) == 'end') EXIT
+      IF (ALLOCATED(Values)) DEALLOCATE(Values)
+      ALLOCATE(Values(Count))
+      READ(Unit, *, IOSTAT=ios) Values
+      IF (ios /= 0) THEN
+        ErrorMessage = 'Short block '//TRIM(BlockName)//' in '//TRIM(FileName)
+        EXIT
+      END IF
+      Scalar = Values(1)
+      SELECT CASE (TRIM(BlockName))
+      CASE ('format')
+        IF (NINT(Scalar) /= 1) ErrorMessage = 'Unsupported collision data format in '//TRIM(FileName)
+      CASE ('theta')
+        CD % nT = Count
+        CD % LnT = LOG(Values)
+      CASE ('momentum_frequency_n')
+        CD % LnNuN = SafeLog(Values)
+      CASE ('elastic_recoil_n')
+        CD % LnElastic = SafeLog(Values)
+      CASE ('ei_recoil_per_coulomb')
+        CD % LnEi = SafeLog(Values)
+      CASE ('k_excitation_K')
+        CD % LnKexc = SafeLog(Values)
+      CASE ('k_superelastic_K')
+        CD % LnKsup = SafeLog(Values)
+      CASE ('excitation_energy_K')
+        CD % ExcEnergy = Scalar
+      CASE ('excitation_weight_ratio_K')
+        CD % ExcWeight = Scalar
+      CASE ('coulomb_parameter')
+        CD % nA = Count
+        CD % LnA = LOG(Values)
+      CASE ('magnetic_parameter')
+        CD % nW = Count
+        CD % LnW = LOG(Values)
+      CASE ('mobility_n')
+        CD % LnMu = Cube(Values)
+      CASE ('pedersen_mobility_n')
+        CD % LnMuP = Cube(Values)
+      CASE ('hall_mobility_n')
+        CD % LnMuH = Cube(Values)
+      END SELECT
+      IF (LEN_TRIM(ErrorMessage) > 0) EXIT
+    END DO
+    CLOSE(Unit)
+    IF (LEN_TRIM(ErrorMessage) > 0) RETURN
 
-    vth = SQRT(8.0_r8*kBoltz*T / (Pi*eMass))
-    nuC = vth * (nH - nS) * Pl % Qcarrier
-    nuS = vth * (nS - ne) * Pl % Qseed
-    nu  = nuC + nuS
-    NuOverMass = nuC / Pl % Mcarrier + nuS / Pl % Mseed
-  END SUBROUTINE SeedPlasmaState
+    IF (CD % nT < 2 .OR. .NOT. ALLOCATED(CD % LnNuN) .OR. .NOT. ALLOCATED(CD % LnElastic) &
+        .OR. .NOT. ALLOCATED(CD % LnEi) .OR. .NOT. ALLOCATED(CD % LnKexc) &
+        .OR. .NOT. ALLOCATED(CD % LnKsup)) THEN
+      ErrorMessage = 'Incomplete electron collision data in '//TRIM(FileName)
+      RETURN
+    END IF
+    IF (Lorentz .AND. .NOT. (ALLOCATED(CD % LnMu) .AND. ALLOCATED(CD % LnMuP) &
+        .AND. ALLOCATED(CD % LnMuH))) THEN
+      ErrorMessage = 'Lorentz transport needs the mobility tables; regenerate '//TRIM(FileName)// &
+          ' with electron_transport_model: lorentz'
+      RETURN
+    END IF
+    CD % FileName = FileName
+    CD % Loaded = .TRUE.
+
+  CONTAINS
+
+    FUNCTION SafeLog(V) RESULT(L)
+      REAL(KIND=r8), INTENT(IN) :: V(:)
+      REAL(KIND=r8) :: L(SIZE(V))
+      L = LOG(MAX(V, 1.0d-300))
+    END FUNCTION SafeLog
+
+    FUNCTION Cube(V) RESULT(L)
+      REAL(KIND=r8), INTENT(IN) :: V(:)
+      REAL(KIND=r8), ALLOCATABLE :: L(:,:,:)
+      IF (CD % nT * CD % nA * CD % nW /= SIZE(V)) THEN
+        ErrorMessage = 'Mobility table size does not match its grids in '//TRIM(FileName)
+        ALLOCATE(L(1,1,1)); L = 0.0_r8
+        RETURN
+      END IF
+      L = RESHAPE(SafeLog(V), (/ CD % nT, CD % nA, CD % nW /))
+    END FUNCTION Cube
+
+  END SUBROUTINE ReadCollisionData
+
+
+  SUBROUTINE FreeCollisionData()
+    IF (ALLOCATED(CD % LnT)) DEALLOCATE(CD % LnT)
+    IF (ALLOCATED(CD % LnA)) DEALLOCATE(CD % LnA)
+    IF (ALLOCATED(CD % LnW)) DEALLOCATE(CD % LnW)
+    IF (ALLOCATED(CD % LnNuN)) DEALLOCATE(CD % LnNuN)
+    IF (ALLOCATED(CD % LnElastic)) DEALLOCATE(CD % LnElastic)
+    IF (ALLOCATED(CD % LnEi)) DEALLOCATE(CD % LnEi)
+    IF (ALLOCATED(CD % LnKexc)) DEALLOCATE(CD % LnKexc)
+    IF (ALLOCATED(CD % LnKsup)) DEALLOCATE(CD % LnKsup)
+    IF (ALLOCATED(CD % LnMu)) DEALLOCATE(CD % LnMu)
+    IF (ALLOCATED(CD % LnMuP)) DEALLOCATE(CD % LnMuP)
+    IF (ALLOCATED(CD % LnMuH)) DEALLOCATE(CD % LnMuH)
+    CD % nT = 0; CD % nA = 0; CD % nW = 0
+    CD % Loaded = .FALSE.
+  END SUBROUTINE FreeCollisionData
+
+
+  !> Bracketing index and weight of x on an increasing grid, clamped to its ends
+  PURE SUBROUTINE Locate( Grid, x, i, w )
+    REAL(KIND=r8), INTENT(IN) :: Grid(:), x
+    INTEGER, INTENT(OUT) :: i
+    REAL(KIND=r8), INTENT(OUT) :: w
+    INTEGER :: lo, hi, mid, n
+    n = SIZE(Grid)
+    IF (x <= Grid(1)) THEN
+      i = 1; w = 0.0_r8; RETURN
+    ELSE IF (x >= Grid(n)) THEN
+      i = n - 1; w = 1.0_r8; RETURN
+    END IF
+    lo = 1; hi = n
+    DO WHILE (hi - lo > 1)
+      mid = (lo + hi) / 2
+      IF (Grid(mid) <= x) THEN
+        lo = mid
+      ELSE
+        hi = mid
+      END IF
+    END DO
+    i = lo
+    w = (x - Grid(lo)) / (Grid(lo+1) - Grid(lo))
+  END SUBROUTINE Locate
+
+  !> exp of a log-tabulated column at electron temperature Te [K] (log-log)
+  FUNCTION Table1( LnValues, Te ) RESULT(V)
+    REAL(KIND=r8), INTENT(IN) :: LnValues(:), Te
+    REAL(KIND=r8) :: V, w
+    INTEGER :: i
+    CALL Locate( CD % LnT, LOG(Te / KelvinPerEV), i, w )
+    V = EXP( (1.0_r8 - w) * LnValues(i) + w * LnValues(i+1) )
+  END FUNCTION Table1
+
+  !> exp of a log-tabulated cube at (theta, Coulomb parameter, magnetic parameter)
+  FUNCTION Table3( LnValues, Te, A, W ) RESULT(V)
+    REAL(KIND=r8), INTENT(IN) :: LnValues(:,:,:), Te, A, W
+    REAL(KIND=r8) :: V, wt, wa, ww
+    INTEGER :: it, ia, iw
+    CALL Locate( CD % LnT, LOG(Te / KelvinPerEV), it, wt )
+    CALL Locate( CD % LnA, LOG(MAX(A, 1.0d-300)), ia, wa )
+    CALL Locate( CD % LnW, LOG(MAX(W, 1.0d-300)), iw, ww )
+    V = EXP( &
+        (1-ww) * ( (1-wa) * ((1-wt) * LnValues(it,ia,iw)   + wt * LnValues(it+1,ia,iw)) &
+                 +    wa  * ((1-wt) * LnValues(it,ia+1,iw) + wt * LnValues(it+1,ia+1,iw)) ) &
+      +    ww  * ( (1-wa) * ((1-wt) * LnValues(it,ia,iw+1)   + wt * LnValues(it+1,ia,iw+1)) &
+                 +    wa  * ((1-wt) * LnValues(it,ia+1,iw+1) + wt * LnValues(it+1,ia+1,iw+1)) ) )
+  END FUNCTION Table3
 
 
   !> Right-hand side S(T) of the Saha equation ne^2 / (nS - ne) = S [m^-3]
@@ -122,6 +304,20 @@ CONTAINS
     END IF
   END FUNCTION SahaFactor
 
+  !> Saha electron density at electron temperature T and seed density nS
+  FUNCTION SahaDensity( Pl, T, nS ) RESULT(ne)
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN) :: T, nS
+    REAL(KIND=r8) :: ne, SahaS
+    ! Positive root of ne^2 + S ne - S nS = 0, in a form that avoids
+    ! cancellation when S >> nS
+    SahaS = SahaFactor( Pl, T )
+    IF (SahaS > 0.0_r8) THEN
+      ne = 2.0_r8 * SahaS * nS / (SahaS + SQRT(SahaS*SahaS + 4.0_r8*SahaS*nS))
+    ELSE
+      ne = 0.0_r8
+    END IF
+  END FUNCTION SahaDensity
 
   !> Derivative d(ne)/dT of the Saha electron density ne at electron
   !> temperature T and fixed seed density nS. From ne^2 + S ne - S nS = 0,
@@ -138,64 +334,130 @@ CONTAINS
   END FUNCTION SeedDensityDerivative
 
 
-  !> Electron heating Te - Tg sustained at electron temperature T by the field
-  !> E' = E + U x B (squared components along and across B), from the
-  !> Kerrebrock energy balance
-  !>   J^2/sigma = 3 delta ne me kB (Te - Tg) sum_s nu_s / M_s
-  !> With the Hall effect, J^2/sigma = sigma E_eff^2 where
-  !>   E_eff^2 = E'_par^2 + E'_perp^2 / (1 + beta^2),  beta = mu_e |B|,
-  !> so ne cancels:
-  !>   Te - Tg = e^2 E_eff^2 / (3 delta kB me^2 nu sum_s nu_s / M_s)
-  FUNCTION ElectronHeating( Pl, T, nH, nS, Epar2, Eperp2, Bmag ) RESULT(DT)
-    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
-    REAL(KIND=r8), INTENT(IN) :: T, nH, nS, Epar2, Eperp2, Bmag
-    REAL(KIND=r8) :: DT, ne, nu, NuOverMass, beta, E2
-
-    CALL SeedPlasmaState( Pl, T, nH, nS, ne, nu, NuOverMass )
-    IF (nu > 0.0_r8 .AND. NuOverMass > 0.0_r8) THEN
-      beta = eCharge * Bmag / (eMass * nu)
-      E2 = Epar2 + Eperp2 / (1.0_r8 + beta*beta)
-      DT = eCharge*eCharge * E2 / &
-          (3.0_r8 * Pl % LossFactor * kBoltz * eMass*eMass * nu * NuOverMass)
-    ELSE
-      DT = HUGE(1.0_r8)
+  !> NRL electron-ion Coulomb logarithm (Z = 1, Te below 10 eV), floored at 1
+  FUNCTION CoulombLogarithm( ne, Te ) RESULT(LnL)
+    REAL(KIND=r8), INTENT(IN) :: ne, Te
+    REAL(KIND=r8) :: LnL, theta
+    theta = Te / KelvinPerEV
+    IF (ne <= 0.0_r8) THEN
+      LnL = 0.0_r8
+      RETURN
     END IF
-  END FUNCTION ElectronHeating
+    LnL = MAX(23.0_r8 - LOG(SQRT(ne * 1.0d-6) * theta**(-1.5_r8)), 1.0_r8)
+  END FUNCTION CoulombLogarithm
 
 
-  !> Electron temperature balancing electron heating by E' against collisional
-  !> losses, bracketed and bisected on [Tg, TeMax]. AtMax is set when the
-  !> balance lies above TeMax and Te is capped there.
-  FUNCTION ElectronTemperature( Pl, Tg, nH, nS, Epar2, Eperp2, Bmag, TeMax, AtMax ) RESULT(Te)
+  !> Electron and ion mobilities at electron temperature Te, heavy-particle
+  !> density N, electron density ne and |B|. Parallel (DC), Pedersen and Hall
+  !> mobilities; for ions the Hall current runs the opposite way.
+  !>
+  !> Drifting: nu = N nu_en/N(theta) + 2.91e-12 ne lnL theta^-3/2 (NRL), and
+  !>   the tensor of a single collision frequency, beta = mu |B|.
+  !> Lorentz: collision frequencies add inside the velocity average, so the
+  !>   Pedersen and Hall mobilities are tabulated on (theta, ne lnL / N,
+  !>   omega_ce / N) and are not those of any single frequency.
+  !> Ions: mu_i = mu_i0 N0 / N (polarization collisions, independent of speed).
+  SUBROUTINE PlasmaTransport( Pl, Te, N, ne, Bmag, Tr )
     TYPE(SeedPlasma_t), INTENT(IN) :: Pl
-    REAL(KIND=r8), INTENT(IN) :: Tg, nH, nS, Epar2, Eperp2, Bmag, TeMax
+    REAL(KIND=r8), INTENT(IN) :: Te, N, ne, Bmag
+    TYPE(PlasmaTransport_t), INTENT(OUT) :: Tr
+    REAL(KIND=r8) :: theta, nu, beta, betaI, A, W
+
+    theta = Te / KelvinPerEV
+    Tr % ne = ne
+    Tr % LnLambda = CoulombLogarithm( ne, Te )
+    IF (Pl % Lorentz) THEN
+      A = ne * Tr % LnLambda / N
+      W = eCharge * Bmag / (eMass * N)
+      Tr % Mu0 = Table3( CD % LnMu, Te, A, W ) / N
+      Tr % MuP = Table3( CD % LnMuP, Te, A, W ) / N
+      Tr % MuH = Table3( CD % LnMuH, Te, A, W ) / N
+      IF (Bmag <= 0.0_r8) THEN
+        Tr % MuP = Tr % Mu0
+        Tr % MuH = 0.0_r8
+      END IF
+    ELSE
+      nu = N * Table1( CD % LnNuN, Te ) + NrlCoefficient * ne * Tr % LnLambda * theta**(-1.5_r8)
+      Tr % Mu0 = eCharge / (eMass * nu)
+      beta = Tr % Mu0 * Bmag
+      Tr % MuP = Tr % Mu0 / (1.0_r8 + beta*beta)
+      Tr % MuH = Tr % Mu0 * beta / (1.0_r8 + beta*beta)
+    END IF
+    Tr % CollisionFrequency = eCharge / (eMass * Tr % Mu0)
+
+    Tr % MuI = Pl % IonReducedMobility * Loschmidt / N
+    betaI = Tr % MuI * Bmag
+    Tr % MuIP = Tr % MuI / (1.0_r8 + betaI*betaI)
+    Tr % MuIH = Tr % MuI * betaI / (1.0_r8 + betaI*betaI)
+  END SUBROUTINE PlasmaTransport
+
+
+  !> Elastic (recoil) energy loss coefficients of the electrons, W/(m^3 K), so
+  !> that the loss is (Cn + Cei) (Te - Tg): to neutrals, e ne N G(theta) / Te,
+  !> and to ions, e ne^2 lnL Gei(theta) / Te (the tables hold the
+  !> electron-temperature integrals; (1 - Tg/Te) = (Te - Tg)/Te).
+  SUBROUTINE ElasticLossCoefficients( Te, N, Tr, Cn, Cei )
+    REAL(KIND=r8), INTENT(IN) :: Te, N
+    TYPE(PlasmaTransport_t), INTENT(IN) :: Tr
+    REAL(KIND=r8), INTENT(OUT) :: Cn, Cei
+    Cn  = eCharge * Tr % ne * N * Table1( CD % LnElastic, Te ) / Te
+    Cei = eCharge * Tr % ne * Tr % ne * Tr % LnLambda * Table1( CD % LnEi, Te ) / Te
+  END SUBROUTINE ElasticLossCoefficients
+
+
+  !> Net inelastic (K 4s-4p) energy loss of the electrons, W/m^3, for K(4p)
+  !> populations at the gas temperature Tg (ExcitedAtGas). Zero when the
+  !> excited states follow the electrons: excitation and de-excitation then
+  !> balance by detailed balance.
+  FUNCTION InelasticLoss( Pl, Te, Tg, ne, nK ) RESULT(L)
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN) :: Te, Tg, ne, nK
+    REAL(KIND=r8) :: L, r, yLow, yUp
+    L = 0.0_r8
+    IF (.NOT. Pl % ExcitedAtGas .OR. ne <= 0.0_r8 .OR. nK <= 0.0_r8) RETURN
+    r = CD % ExcWeight * EXP(-MIN(CD % ExcEnergy * KelvinPerEV / Tg, 700.0_r8))
+    yLow = 1.0_r8 / (1.0_r8 + r)
+    yUp  = r / (1.0_r8 + r)
+    L = eCharge * ne * nK * CD % ExcEnergy * &
+        (yLow * Table1( CD % LnKexc, Te ) - yUp * Table1( CD % LnKsup, Te ))
+  END FUNCTION InelasticLoss
+
+
+  !> Electron temperature from the local balance of Joule heating of the
+  !> electrons, e ne (mu_0 E'_par^2 + mu_P E'_perp^2), against elastic and
+  !> inelastic losses, bracketed and bisected on [Tg, TeMax]. ne follows Te
+  !> through the Saha equation. AtMax is set when the balance lies above TeMax
+  !> and Te is capped there.
+  FUNCTION ElectronTemperature( Pl, Tg, N, nS, Epar2, Eperp2, Bmag, TeMax, AtMax ) RESULT(Te)
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN) :: Tg, N, nS, Epar2, Eperp2, Bmag, TeMax
     LOGICAL, INTENT(OUT) :: AtMax
-    REAL(KIND=r8) :: Te, TeLo, TeHi, TeCap
+    REAL(KIND=r8) :: Te, TeLo, TeHi
     INTEGER :: k
 
     AtMax = .FALSE.
     Te = Tg
     IF (Epar2 + Eperp2 <= 0.0_r8 .OR. TeMax <= Tg) RETURN
 
-    ! Residual (Te - Tg) - ElectronHeating(Te) is negative at Tg; grow the
-    ! upper bracket until it turns positive or reaches the cap
-    TeCap = TeMax
+    ! Residual (heating - loss per electron) is positive at Tg; grow the upper
+    ! bracket until it turns negative or reaches the cap
     TeLo = Tg
-    TeHi = MIN(Tg + MAX(ElectronHeating(Pl, Tg, nH, nS, Epar2, Eperp2, Bmag), 1.0_r8), TeCap)
+    TeHi = MIN(1.1_r8 * Tg, TeMax)
     DO k = 1, 60
-      IF (Residual(TeHi) >= 0.0_r8) EXIT
-      IF (TeHi >= TeCap) THEN
+      IF (Residual(TeHi) <= 0.0_r8) EXIT
+      IF (TeHi >= TeMax) THEN
         AtMax = .TRUE.
-        Te = TeCap
+        Te = TeMax
         RETURN
       END IF
-      TeHi = MIN(Tg + 2.0_r8 * (TeHi - Tg), TeCap)
+      TeLo = TeHi
+      TeHi = MIN(Tg + 2.0_r8 * (TeHi - Tg), TeMax)
     END DO
 
     DO k = 1, 100
       Te = 0.5_r8 * (TeLo + TeHi)
       IF (TeHi - TeLo < 1.0e-3_r8) EXIT
-      IF (Residual(Te) < 0.0_r8) THEN
+      IF (Residual(Te) > 0.0_r8) THEN
         TeLo = Te
       ELSE
         TeHi = Te
@@ -206,8 +468,15 @@ CONTAINS
 
     FUNCTION Residual(T) RESULT(R)
       REAL(KIND=r8), INTENT(IN) :: T
-      REAL(KIND=r8) :: R
-      R = (T - Tg) - ElectronHeating(Pl, T, nH, nS, Epar2, Eperp2, Bmag)
+      REAL(KIND=r8) :: R, ne, neEff, Cn, Cei
+      TYPE(PlasmaTransport_t) :: Tr
+      ne = SahaDensity( Pl, T, nS )
+      ! A tiny floor keeps the per-electron balance defined in cold gas
+      neEff = MAX(ne, 1.0d-12 * nS)
+      CALL PlasmaTransport( Pl, T, N, neEff, Bmag, Tr )
+      CALL ElasticLossCoefficients( T, N, Tr, Cn, Cei )
+      R = eCharge * (Tr % Mu0 * Epar2 + Tr % MuP * Eperp2) &
+          - ((Cn + Cei) * (T - Tg) + InelasticLoss( Pl, T, Tg, neEff, MAX(nS - ne, 0.0_r8) )) / neEff
     END FUNCTION Residual
 
   END FUNCTION ElectronTemperature

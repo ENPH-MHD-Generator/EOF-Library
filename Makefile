@@ -86,8 +86,13 @@ build_environment:
 setup: build_environment
 	mkdir -p ./experiments ./out
 
+# plasma_collisions (a private GitHub repository) is fetched during the image
+# build with this token: GITHUB_TOKEN if set, otherwise the GitHub CLI login.
+build: export GITHUB_TOKEN ?= $(shell gh auth token 2>/dev/null)
 build: setup
+	@test -n "$$GITHUB_TOKEN" || { echo "No GitHub token: run 'gh auth login' or set GITHUB_TOKEN (needs read access to ENPH-MHD-Generator/plasma_collisions)" >&2; exit 1; }
 	docker build \
+	  --secret id=github_token,env=GITHUB_TOKEN \
 	  --build-arg ELMER_DEBUG=$(ELMER_DEBUG) \
 	  --progress=plain \
 	  --network host \

@@ -116,8 +116,20 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
        NextFreeKeyword('Exported Variable ', Params), 'Ionization Fraction' )
   CALL ListAddString( Params, &
        NextFreeKeyword('Exported Variable ', Params), 'Electron Density' )
+  ! Electron mobilities along B (DC) and across it (Pedersen, Hall), and the
+  ! total conductivity tensor (electrons and ions, clamped) the current uses
   CALL ListAddString( Params, &
        NextFreeKeyword('Exported Variable ', Params), 'Electron Mobility' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Electron Pedersen Mobility' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Electron Hall Mobility' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Pedersen Conductivity' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Hall Conductivity' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Hall Parameter' )
   CALL ListAddString( Params, &
        NextFreeKeyword('Exported Variable ', Params), &
        'Effective Electric Field[Effective Electric Field:3]' )
@@ -190,11 +202,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CHARACTER(LEN=MAX_NAME_LEN) :: EquationName
   CHARACTER(LEN=256) :: LogMsg
 
-  LOGICAL :: GetCondAtIp
   ! Gauss points for linear tetrahedra in assembly and current evaluation
   INTEGER :: TetraPoints
-  TYPE(ValueHandle_t) :: CondAtIp_h
-  REAL(KIND=dp) :: CondAtIp
 
   ! Velocity and Magnetic field values
   REAL(KIND=dp), POINTER :: UxVals(:), UyVals(:), UzVals(:)
@@ -210,6 +219,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
   ! Seeded-plasma outputs (exported variables of this solver, one shared perm)
   REAL(KIND=dp), POINTER :: IonFrac(:), ElecTemp(:), ElecDens(:), ElecMob(:)
+  REAL(KIND=dp), POINTER :: ElecMobP(:), ElecMobH(:), SigPed(:), SigHall(:), HallPar(:)
   REAL(KIND=dp), POINTER :: EffField(:)   ! E' = -grad(phi) + U x B, like VolCurrent
 
   ! Element-wise current and heating sent to OpenFOAM (shared Perm over elements)
@@ -265,6 +275,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   PVals, TgasVals, SigVals, &
   PPerm, TgasPerm, SigPerm, &
   IonFrac, ElecTemp, ElecDens, ElecMob, PlasmaPerm, EffField, TePerm, TeSolver, HaveCurrent, &
+  ElecMobP, ElecMobH, SigPed, SigHall, HallPar, &
   TeNodeRelax, TeLastStep, TeNodeWeight, &
   ElemCurr1, ElemCurr2, ElemCurr3, ElemHeating, ElemPerm
 
@@ -339,7 +350,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       'Nonlinear System Max Iterations', GotIt )
   IF ( .NOT. GotIt ) NonlinearIter = 1
 
-  GetCondAtIp = ListGetLogical( Params,'Conductivity At Ip',GotIt )
+  IF ( ListGetLogical( Params,'Conductivity At Ip',GotIt ) ) CALL Fatal('StatCurrentSolver', &
+      'Conductivity At Ip is not supported: the conductivity tensor comes from the plasma model')
 
   ! Linear tetrahedra have constant basis gradients and our fields vary
   ! linearly, so the one-point centroid rule is the standard choice; Elmer's
@@ -478,6 +490,21 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     Var => VariableGet( Solver % Mesh % Variables, 'Electron Mobility' )
     IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Mobility not found')
     ElecMob => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Electron Pedersen Mobility' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Pedersen Mobility not found')
+    ElecMobP => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Electron Hall Mobility' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Hall Mobility not found')
+    ElecMobH => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Pedersen Conductivity' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Pedersen Conductivity not found')
+    SigPed => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Hall Conductivity' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Hall Conductivity not found')
+    SigHall => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Hall Parameter' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Hall Parameter not found')
+    HallPar => Var % Values
 
     Var => VariableGet( Solver % Mesh % Variables, 'Effective Electric Field' )
     IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Effective Electric Field not found')
@@ -598,10 +625,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     !    Do the assembly
     !------------------------------------------------------------
 
-    IF( GetCondAtIp ) THEN
-      CALL ListInitElementKeyword( CondAtIp_h,'Material','Electric Conductivity')
-    END IF
-      
     DO t = 1, Solver % NumberOfActiveElements
 
       IF ( RealTime() - at0 > 1.0 ) THEN
@@ -634,11 +657,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       IF ( gotIt ) THEN
         Load(1:n) = ListGetReal( Model % BodyForces(bf_id) % Values, &
             'Current Source',n,NodeIndexes, Gotit )
-      END IF
-
-      IF( .NOT. GetCondAtIp ) THEN
-
-        CALL NodalConductivity( Conductivity, NodeIndexes, n )
       END IF
 
       !------------------------------------------------------------------------------
@@ -918,32 +936,24 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CONTAINS
 
 !------------------------------------------------------------------------------
-!> Evaluate the seeded-plasma state at every node. Only the alkali seed
-!> ionizes; the carrier gas (e.g. argon) is treated as fully neutral.
-!> Heavy particles are at the gas temperature Tg, electrons at Te.
+!> Evaluate the seeded-plasma state at every node: potassium in argon, only the
+!> seed ionizes, heavy particles at the gas temperature Tg, electrons at Te.
 !>
-!>   n     = p / (kB Tg)                            heavy-particle density
-!>   n_s   = x_s n                                  seed density
+!>   N     = p / (kB Tg)                            heavy-particle density
+!>   n_s   = x_s N                                  seed density
 !>   ne^2 / (n_s - ne) = S(Te)                      two-temperature Saha
-!>   S     = 2 (g_i/g_n) (2 pi me kB Te / h^2)^(3/2) exp(-chi / (kB Te))
-!>   nu_c  = vth (n - n_s) Q_c,  nu_s = vth (n_s - ne) Q_s,  nu = nu_c + nu_s
-!>   mu_e  = e / (me nu),   sigma = e ne mu_e,   vth = sqrt(8 kB Te / (pi me))
 !>
-!> p is OpenFOAM's absolute pressure (plus Reference Pressure, 0 by default).
+!> Transport (PlasmaTransport in MHDUtils.F90): electron mobilities along B and
+!> across it from the plasma_collisions tables (electron-neutral, NRL
+!> electron-ion), and ion mobilities (ion slip). The node's conductivity tensor
+!> is e ne (mu_e + mu_i): parallel, Pedersen and Hall components, scaled
+!> together into [Sigma Min, Sigma Max] on the parallel value.
 !>
-!> Two-temperature mode: Joule heating of the electrons against their elastic
-!> collisional losses to heavy particles. With Electron Energy Transport the
-!> electron energy equation is solved (SolveElectronEnergy). Otherwise the
-!> local balance (Kerrebrock)
-!>   J^2/sigma = 3 delta ne me kB (Te - Tg) sum_s nu_s / M_s,
-!> which with E = |J|/sigma becomes
-!>   Te - Tg = e^2 E^2 / (3 delta kB me^2 nu sum_s nu_s / M_s),
-!> is solved by bisection at every node, with E from the previous current
+!> Two-temperature mode: Joule heating of the electrons against elastic and
+!> inelastic losses. With Electron Energy Transport the electron energy
+!> equation is solved (SolveElectronEnergy); otherwise the local balance is
+!> solved by bisection at every node, with E' from the previous current
 !> solution. Either update is under-relaxed. Equilibrium mode sets Te = Tg.
-!>
-!> Fills Electric Conductivity (clamped to [Sigma Min, Sigma Max]), Ionization
-!> Fraction (ne/n), Electron Temperature, Electron Density and Electron
-!> Mobility. The mobility sets the Hall coefficient, see HallCoefficient.
 !------------------------------------------------------------------------------
 SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
   !> Volume-weighted RMS of the relative electron temperature change. This,
@@ -957,18 +967,20 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
 
   TYPE(ValueList_t), POINTER :: Mat
   TYPE(SeedPlasma_t) :: Pl
+  TYPE(PlasmaTransport_t) :: Tr
   INTEGER :: i, ipT, ipP, ipS, ipX, ipJ, ipE, matId
   INTEGER :: nOwned, nSigClamped, nTeClamped, nTeFloor
   REAL(KIND=dp) :: Pref, TeRelax, TeMax, SigmaMin, SigmaMax
   REAL(KIND=dp) :: Tg, Te, TeOld, TeStep, Pabs, nHeavy, nSeed
   REAL(KIND=dp) :: WorstChange, WorstPos(3)
   INTEGER :: nDamped
-  REAL(KIND=dp) :: ne, nu, NuOverMass, mu, sigma
+  REAL(KIND=dp) :: ne, S0, SP, SH, Scale
   REAL(KIND=dp) :: Ep(3), Bn(3), Bmag, Epar2, Eperp2
   REAL(KIND=dp) :: IonMin, IonMax, SigMin, SigMax, TeMinSeen, TeMaxSeen, DTeMax
+  REAL(KIND=dp) :: BetaMax, NuEiShare, NuEiShareMax
   LOGICAL :: Found, TwoTemperature, ElectronTransport, Owned, AtMax
-
-  REAL(KIND=dp), PARAMETER :: NA = 6.02214076d23
+  CHARACTER(LEN=512) :: TableFile, TableError
+  CHARACTER(LEN=128) :: ModelName
 
   ! Single conducting body: use the material of Body 1
   matId = ListGetInteger(Model % Bodies(1) % Values, 'Material', Found, &
@@ -979,31 +991,40 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
   Pl % SeedFrac    = RequiredMaterialReal(Mat, 'Seed Mole Fraction')
   Pl % ChiJ        = RequiredMaterialReal(Mat, 'Seed Ionization Energy') * eCharge   ! eV -> J
   Pl % WeightRatio = RequiredMaterialReal(Mat, 'Seed Statistical Weight Ratio')
-  Pl % Qseed       = RequiredMaterialReal(Mat, 'Seed Electron Neutral Cross Section')
-  Pl % Qcarrier    = RequiredMaterialReal(Mat, 'Carrier Electron Neutral Cross Section')
-  Pl % Mseed       = 1.0_dp
-  Pl % Mcarrier    = 1.0_dp
-  Pl % LossFactor  = 1.0_dp
+  Pl % IonReducedMobility = ListGetCReal(Mat, 'Ion Reduced Mobility', Found)
+  IF (.NOT. Found) Pl % IonReducedMobility = 0.0_dp
+
+  ModelName = ListGetString(Mat, 'Electron Transport Model', Found)
+  IF (.NOT. Found) CALL Fatal('UpdateSeededPlasma', 'Missing Material keyword: Electron Transport Model')
+  SELECT CASE (TRIM(ModelName))
+  CASE ('drifting')
+    Pl % Lorentz = .FALSE.
+  CASE ('lorentz')
+    Pl % Lorentz = .TRUE.
+  CASE DEFAULT
+    CALL Fatal('UpdateSeededPlasma', 'Electron Transport Model must be "drifting" or "lorentz"')
+  END SELECT
+  ModelName = ListGetString(Mat, 'Excited State Temperature', Found)
+  Pl % ExcitedAtGas = Found .AND. TRIM(ModelName) == 'gas'
+
+  TableFile = ListGetString(Mat, 'Electron Collision Data', Found)
+  IF (.NOT. Found) CALL Fatal('UpdateSeededPlasma', 'Missing Material keyword: Electron Collision Data')
+  CALL ReadCollisionData( TableFile, Pl % Lorentz, TableError )
+  IF (LEN_TRIM(TableError) > 0) CALL Fatal('UpdateSeededPlasma', TRIM(TableError))
 
   IF (Pl % SeedFrac <= 0.0_dp .OR. Pl % SeedFrac >= 1.0_dp) &
       CALL Fatal('UpdateSeededPlasma','Seed Mole Fraction must be in (0, 1)')
   IF (Pl % WeightRatio <= 0.0_dp) &
       CALL Fatal('UpdateSeededPlasma','Seed Statistical Weight Ratio must be positive')
-  IF (Pl % Qseed < 0.0_dp .OR. Pl % Qcarrier < 0.0_dp .OR. Pl % Qseed + Pl % Qcarrier <= 0.0_dp) &
-      CALL Fatal('UpdateSeededPlasma','Electron-neutral cross sections must be non-negative and not both zero')
 
   TwoTemperature = ListGetLogical(Mat, 'Two Temperature', Found)
   ElectronTransport = .FALSE.
   IF (TwoTemperature) THEN
     IF (.NOT. CalculateCurrent) CALL Fatal('UpdateSeededPlasma', &
         'Two Temperature requires Calculate Volume Current = True')
-    Pl % Mseed      = RequiredMaterialReal(Mat, 'Seed Molar Mass') * 1.0e-3_dp / NA      ! g/mol -> kg
-    Pl % Mcarrier   = RequiredMaterialReal(Mat, 'Carrier Molar Mass') * 1.0e-3_dp / NA  ! g/mol -> kg
-    Pl % LossFactor = RequiredMaterialReal(Mat, 'Electron Energy Loss Factor')
     TeMax   = RequiredMaterialReal(Mat, 'Electron Temperature Max')
     TeRelax = RequiredMaterialReal(Mat, 'Electron Temperature Relaxation')
-    IF (Pl % Mseed <= 0.0_dp .OR. Pl % Mcarrier <= 0.0_dp .OR. Pl % LossFactor <= 0.0_dp .OR. &
-        TeMax <= 0.0_dp .OR. TeRelax <= 0.0_dp .OR. TeRelax > 1.0_dp) &
+    IF (TeMax <= 0.0_dp .OR. TeRelax <= 0.0_dp .OR. TeRelax > 1.0_dp) &
         CALL Fatal('UpdateSeededPlasma', 'Invalid two-temperature parameters')
     ElectronTransport = ListGetLogical(Mat, 'Electron Energy Transport', Found)
   END IF
@@ -1021,6 +1042,7 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
   SigMin = HUGE(1.0_dp); SigMax = 0.0_dp
   TeMinSeen = HUGE(1.0_dp); TeMaxSeen = 0.0_dp
   DTeMax = 0.0_dp
+  BetaMax = 0.0_dp; NuEiShareMax = 0.0_dp
   MaxRelChange = 0.0_dp
   RmsRelChange = 0.0_dp
   SumW = 0.0_dp; SumWC2 = 0.0_dp
@@ -1067,6 +1089,11 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
 
     Tg   = TgasVals(ipT)
     Pabs = PVals(ipP) + Pref
+    Bn = 0.0_dp
+    IF (BxPerm(i) > 0) Bn(1) = BxVals(BxPerm(i))
+    IF (ByPerm(i) > 0) Bn(2) = ByVals(ByPerm(i))
+    IF (BzPerm(i) > 0) Bn(3) = BzVals(BzPerm(i))
+    Bmag = SQRT(SUM(Bn**2))
 
     ! Non-physical input (T <= 0, NaN, or negative absolute pressure):
     ! non-conducting, no Hall effect
@@ -1074,8 +1101,8 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
       Te = MAX(Tg, 0.0_dp)
       ne = 0.0_dp
       nHeavy = 1.0_dp
-      mu = 0.0_dp
-      sigma = SigmaMin
+      Tr % Mu0 = 0.0_dp; Tr % MuP = 0.0_dp; Tr % MuH = 0.0_dp
+      S0 = 0.0_dp; SP = 0.0_dp; SH = 0.0_dp
     ELSE
       nHeavy = Pabs / (kBoltz * Tg)
       nSeed  = Pl % SeedFrac * nHeavy
@@ -1091,11 +1118,6 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
         Ep = 0.0_dp
         ipJ = PotentialPerm(i)
         IF (ipJ > 0) Ep(1:DIM) = EffField(DIM*(ipJ-1)+1 : DIM*(ipJ-1)+DIM)
-        Bn = 0.0_dp
-        IF (BxPerm(i) > 0) Bn(1) = BxVals(BxPerm(i))
-        IF (ByPerm(i) > 0) Bn(2) = ByVals(ByPerm(i))
-        IF (BzPerm(i) > 0) Bn(3) = BzVals(BzPerm(i))
-        Bmag = SQRT(SUM(Bn**2))
         Epar2 = 0.0_dp
         IF (Bmag > 0.0_dp) Epar2 = (SUM(Ep*Bn) / Bmag)**2
         Eperp2 = MAX(SUM(Ep**2) - Epar2, 0.0_dp)
@@ -1136,30 +1158,46 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
         Te = MAX(Tg, TeOld + TeNodeRelax(ipX) * TeStep)
       END IF
 
-      CALL SeedPlasmaState( Pl, Te, nHeavy, nSeed, ne, nu, NuOverMass )
-      IF (nu > 0.0_dp) THEN
-        mu    = eCharge / (eMass * nu)
-        sigma = eCharge * ne * mu
-      ELSE
-        mu    = 0.0_dp
-        sigma = SigmaMin
+      ne = SahaDensity( Pl, Te, nSeed )
+      CALL PlasmaTransport( Pl, Te, nHeavy, ne, Bmag, Tr )
+      ! Electrons and ions (Hall senses opposite)
+      S0 = eCharge * ne * (Tr % Mu0 + Tr % MuI)
+      SP = eCharge * ne * (Tr % MuP + Tr % MuIP)
+      SH = eCharge * ne * (Tr % MuH - Tr % MuIH)
+      IF (Owned .AND. Tr % CollisionFrequency > 0.0_dp .AND. ne > 0.0_dp .AND. .NOT. Pl % Lorentz) THEN
+        NuEiShare = 2.91d-12 * ne * Tr % LnLambda * (Te / KelvinPerEV)**(-1.5_dp) / Tr % CollisionFrequency
+        NuEiShareMax = MAX(NuEiShareMax, NuEiShare)
       END IF
     END IF
 
+    ! Clamp the parallel conductivity, scaling the whole tensor with it so the
+    ! Hall parameter stays physical
     IF (Owned) THEN
       nOwned = nOwned + 1
-      IF (sigma < SigmaMin .OR. sigma > SigmaMax) nSigClamped = nSigClamped + 1
+      IF (S0 < SigmaMin .OR. S0 > SigmaMax) nSigClamped = nSigClamped + 1
     END IF
-    sigma = MIN(MAX(sigma, SigmaMin), SigmaMax)
+    IF (S0 <= 0.0_dp) THEN
+      S0 = SigmaMin; SP = SigmaMin; SH = 0.0_dp
+    ELSE
+      Scale = MIN(MAX(S0, SigmaMin), SigmaMax) / S0
+      S0 = Scale * S0; SP = Scale * SP; SH = Scale * SH
+    END IF
 
-    SigVals(ipS)  = sigma
+    SigVals(ipS)  = S0
+    SigPed(ipX)   = SP
+    SigHall(ipX)  = SH
     IonFrac(ipX)  = ne / nHeavy
     ElecTemp(ipE) = Te
     ElecDens(ipX) = ne
-    ElecMob(ipX)  = mu
+    ElecMob(ipX)  = Tr % Mu0
+    ElecMobP(ipX) = Tr % MuP
+    ElecMobH(ipX) = Tr % MuH
+    HallPar(ipX)  = 0.0_dp
+    IF (Tr % MuP > 0.0_dp) HallPar(ipX) = Tr % MuH / Tr % MuP
+    IF (Owned) BetaMax = MAX(BetaMax, HallPar(ipX))
 
     IonMin = MIN(IonMin, IonFrac(ipX)); IonMax = MAX(IonMax, IonFrac(ipX))
-    SigMin = MIN(SigMin, sigma);        SigMax = MAX(SigMax, sigma)
+    SigMin = MIN(SigMin, S0);           SigMax = MAX(SigMax, S0)
     TeMinSeen = MIN(TeMinSeen, Te);     TeMaxSeen = MAX(TeMaxSeen, Te)
     DTeMax = MAX(DTeMax, Te - Tg)
   END DO
@@ -1172,6 +1210,8 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
     TeMinSeen = ParallelReduction(TeMinSeen, 1)
     TeMaxSeen = ParallelReduction(TeMaxSeen, 2)
     DTeMax = ParallelReduction(DTeMax, 2)
+    BetaMax = ParallelReduction(BetaMax, 2)
+    NuEiShareMax = ParallelReduction(NuEiShareMax, 2)
     MaxRelChange = ParallelReduction(MaxRelChange, 2)
     SumW = ParallelReduction(SumW)
     SumWC2 = ParallelReduction(SumWC2)
@@ -1190,6 +1230,10 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
       'Ionization fraction [', IonMin, ', ', IonMax, &
       ']  sigma [', SigMin, ', ', SigMax, '] S/m, clamped at ', &
       nSigClamped, ' of ', nOwned, ' nodes'
+  CALL Info('UpdateSeededPlasma', Message, Level=4)
+  WRITE(Message,'(A,F8.3,A)') 'Max electron Hall parameter ', BetaMax, '  (Pedersen/Hall mobility ratio)'
+  IF (.NOT. Pl % Lorentz) WRITE(Message,'(A,F8.3,A,F6.3)') 'Max electron Hall parameter ', BetaMax, &
+      '  max electron-ion share of collisions ', NuEiShareMax
   CALL Info('UpdateSeededPlasma', Message, Level=4)
   IF (TwoTemperature) THEN
     WRITE(Message,'(A,ES10.3,A,ES10.3,A,ES10.3,A,ES10.3,A,I0,A,I0,A)') &
@@ -1221,25 +1265,30 @@ END SUBROUTINE UpdateSeededPlasma
 !> quasi-static current. Per unit volume,
 !>
 !>   (5/2) kB Gamma_e . grad(Te) + ((5/2) kB Te + chi) div(ne U)
-!>     - div(kappa_e grad(Te)) = J^2/sigma - 3 delta ne me kB (Te - Tg) sum_s nu_s/M_s
+!>     - div(K_e grad(Te)) = J_e . E' - L_el - L_inel
 !>
-!> with electron flux Gamma_e = ne U - J/e (div J = 0), electron thermal
-!> conductivity kappa_e = (5/2) ne kB^2 Te / (me nu), and ionization energy chi.
-!> The chi term carries the energy that ionizing the seed takes from the
-!> electrons (and recombination returns) as ne changes along the flow; with
-!> Saha equilibrium ne = ne(Te, n), so ionization kinetics would replace this
-!> term. The current is evaluated from the potential, U and B at each
-!> integration point. J^2/sigma and J/e use the physical conductivity
-!> e ne mu rather than the clamped one the potential solve uses, so cold gas
-!> with a conductivity floor does not heat a vanishing electron population.
+!> - Gamma_e = ne U - J_e/e is the electron flux; J_e = S_e E' with the
+!>   electron conductivity tensor S_e = e ne M_e (parallel, Pedersen, Hall
+!>   mobilities from PlasmaTransport), so J_e . E' is the electron Joule
+!>   heating. The ion current heats the gas directly.
+!> - K_e = (5/2) (kB^2 Te / e^2) S_e: electron heat conduction with the same
+!>   anisotropy as the mobility, strongly reduced across B.
+!> - chi is the seed ionization energy: with Saha equilibrium ne = ne(Te, n),
+!>   so ionizing the seed takes energy from the electrons as ne rises along the
+!>   flow (recombination returns it). Ionization kinetics would replace it.
+!> - L_el = (Cn + Cei)(Te - Tg): recoil to neutrals and ions; L_inel: net
+!>   K(4p) excitation loss when the excited states sit at the gas temperature.
+!> Heating, drift and conduction use the physical electron density (floored at
+!> a tiny fraction of the seed), not the conductivity clamped for the potential
+!> solve, so cold gas does not heat a vanishing electron population.
 !>
 !> Linearization (one Newton step per call, with the rest lagged):
-!>   ne(Te)  ~ ne_k + g_k (Te - Te_k),  g = d(ne)/dTe at fixed n
-!> in div(ne U) and in the collisional loss; kappa_e, nu and the heating are
-!> lagged. Galerkin with SUPG on the convective terms and lumped reaction
-!> (monotone for reaction-dominated cells). Boundary conditions come from the
-!> SIF (the inlet sets Te = Tg); elsewhere they are natural (no conductive
-!> flux through walls, electrodes or the outlet). The
+!>   ne(Te) ~ ne_k + g_k (Te - Te_k),  g = d(ne)/dTe at fixed N
+!> in div(ne U) and the elastic loss, and L_inel(Te) linearized in Te. The
+!> mobilities and the heating are lagged. Galerkin with SUPG on the convective
+!> terms and lumped reaction (monotone for reaction-dominated cells). Boundary
+!> conditions come from the SIF (the inlet sets Te = Tg); elsewhere they are
+!> natural (no conductive flux through walls, electrodes or the outlet). The
 !> solution change is limited to 100% of Te per iteration, under-relaxed like
 !> the local balance (including its per-node oscillation damping), and
 !> clamped to [0.5 Tg, TeMax].
@@ -1267,28 +1316,38 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
   TYPE(Element_t), POINTER :: Elem
   TYPE(Nodes_t), SAVE :: EN
   TYPE(GaussIntegrationPoints_t) :: IP
-  INTEGER :: nNodes, nMax, t, gp, a, b, j, nn, ipE, ipX
+  TYPE(PlasmaTransport_t) :: Tr
+  INTEGER :: nNodes, nMax, t, gp, a, j, k, nn, ipE, ipX
   INTEGER, POINTER :: Ind(:)
   LOGICAL :: stat, Owned
-  REAL(KIND=dp), ALLOCATABLE, SAVE :: NdTe0(:), NdTg(:), NdNe(:), NdG(:), NdKap(:), NdC(:), &
-      NdCp(:), NdMu(:), NdSig(:), NdChiP(:), NdU(:,:), NdB(:,:)
+  ! Nodal coefficients at Te_k: electron conductivity tensor components (S*),
+  ! conduction factor (5/2) kB^2 Te/e^2, density, dne/dTe, loss terms
+  REAL(KIND=dp), ALLOCATABLE, SAVE :: NdTe0(:), NdTg(:), NdNe(:), NdG(:), NdS0(:), NdSP(:), NdSH(:), &
+      NdKf(:), NdC(:), NdCp(:), NdL(:), NdLp(:), NdChiP(:), NdU(:,:), NdB(:,:)
   LOGICAL, ALLOCATABLE, SAVE :: NdOK(:)
   REAL(KIND=dp), ALLOCATABLE :: Kmat(:,:), Fvec(:), Basis(:), dBasisdx(:,:), Pot(:)
-  REAL(KIND=dp) :: DetJ, sw, Tg, Te0, Pabs, nH, nS, ne, nu, NuOverMass, neEff, g
-  REAL(KIND=dp) :: Ugp(3), Bgp(3), UxB(3), Grad(3), Ep(3), Jhat(3), Minv(3,3), M(3,3)
-  REAL(KIND=dp) :: SigC, Eta, Alpha, neG, gG, kapG, CG, CpG, muG, sigG, chiPG, Te0G, TgG
-  REAL(KIND=dp) :: Dn, Dg, DgT, QJ, Adv(3), r, f, AdvMag, AdvGrad(Model % MaxElementNodes)
+  REAL(KIND=dp) :: DetJ, sw, Tg, Te0, Pabs, nH, nS, ne, neEff, g, Cn, Cei, dT, Lp, Lm
+  REAL(KIND=dp) :: Ugp(3), Bgp(3), UxB(3), Grad(3), Ep(3), Se(3,3), Ke(3,3), SeE(3), b(3), Bmag
+  REAL(KIND=dp) :: KdB(Model % MaxElementNodes, 3)
+  REAL(KIND=dp) :: S0G, SPG, SHG, KfG, neG, gG, CG, CpG, LG, LpG, chiPG, Te0G, TgG
+  REAL(KIND=dp) :: Dn, Dg, DgT, QJ, Adv(3), r, f, AdvMag, AdvGrad(Model % MaxElementNodes), KStream
   REAL(KIND=dp) :: h, tau, SumAbs, Norm, TeSol, TeNew, TeStep, RelChange, TeLo
-  REAL(KIND=dp) :: PowerJoule, PowerLoss, PowerIon, tAsm, tSol
+  REAL(KIND=dp) :: PowerJoule, PowerLoss, PowerIon, PowerInel, PowerWall, tAsm, tSol
+  ! Sheath energy loss at walls: q = Gamma_h 0.61 ne kB Te sqrt(kB Te / M_ion)
+  TYPE(ValueList_t), POINTER :: BCList
+  REAL(KIND=dp) :: HeatTransmission, WallCoeff, qG, dqG, NdQ(Model % MaxElementNodes), NdDQ(Model % MaxElementNodes)
+  INTEGER :: bc
+  LOGICAL :: GotBC
+  REAL(KIND=dp), PARAMETER :: IonMassK = 39.0983_dp * 1.66053906660d-27
   CHARACTER(LEN=256) :: Msg
 
   nNodes = Solver % Mesh % NumberOfNodes
   nMax = Model % MaxElementNodes
 
   IF (.NOT. ALLOCATED(NdTe0)) THEN
-    ALLOCATE( NdTe0(nNodes), NdTg(nNodes), NdNe(nNodes), NdG(nNodes), NdKap(nNodes), &
-        NdC(nNodes), NdCp(nNodes), NdMu(nNodes), NdSig(nNodes), NdChiP(nNodes), &
-        NdU(3,nNodes), NdB(3,nNodes), NdOK(nNodes) )
+    ALLOCATE( NdTe0(nNodes), NdTg(nNodes), NdNe(nNodes), NdG(nNodes), NdS0(nNodes), &
+        NdSP(nNodes), NdSH(nNodes), NdKf(nNodes), NdC(nNodes), NdCp(nNodes), NdL(nNodes), &
+        NdLp(nNodes), NdChiP(nNodes), NdU(3,nNodes), NdB(3,nNodes), NdOK(nNodes) )
     ALLOCATE( EN % x(nMax), EN % y(nMax), EN % z(nMax) )
   ELSE IF (SIZE(NdTe0) /= nNodes) THEN
     CALL Fatal('SolveElectronEnergy', 'Mesh size changed')
@@ -1307,8 +1366,8 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
     IF (ByPerm(j) > 0) NdB(2,j) = ByVals(ByPerm(j))
     IF (BzPerm(j) > 0) NdB(3,j) = BzVals(BzPerm(j))
     NdTe0(j) = 0.0_dp; NdTg(j) = 0.0_dp; NdNe(j) = 0.0_dp; NdG(j) = 0.0_dp
-    NdKap(j) = 0.0_dp; NdC(j) = 0.0_dp; NdCp(j) = 0.0_dp; NdMu(j) = 0.0_dp
-    NdSig(j) = 0.0_dp; NdChiP(j) = 0.0_dp
+    NdS0(j) = 0.0_dp; NdSP(j) = 0.0_dp; NdSH(j) = 0.0_dp; NdKf(j) = 0.0_dp
+    NdC(j) = 0.0_dp; NdCp(j) = 0.0_dp; NdL(j) = 0.0_dp; NdLp(j) = 0.0_dp; NdChiP(j) = 0.0_dp
 
     IF (TgasPerm(j) <= 0 .OR. PPerm(j) <= 0 .OR. TePerm(j) <= 0) CYCLE
     Tg = TgasVals(TgasPerm(j))
@@ -1319,22 +1378,35 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
 
     nH = Pabs / (kBoltz * Tg)
     nS = Pl % SeedFrac * nH
-    CALL SeedPlasmaState( Pl, Te0, nH, nS, ne, nu, NuOverMass )
-    IF (.NOT. (nu > 0.0_dp)) CYCLE
+    ne = SahaDensity( Pl, Te0, nS )
     neEff = MAX(ne, NeFloorFraction * nS)
     g = SeedDensityDerivative( Pl, Te0, nS, ne )
+    Bmag = SQRT(SUM(NdB(:,j)**2))
+    CALL PlasmaTransport( Pl, Te0, nH, neEff, Bmag, Tr )
+    CALL ElasticLossCoefficients( Te0, nH, Tr, Cn, Cei )
 
     NdOK(j)   = .TRUE.
     NdTe0(j)  = Te0
     NdTg(j)   = Tg
     NdNe(j)   = neEff
     NdG(j)    = g
-    NdKap(j)  = 2.5_dp * neEff * kBoltz**2 * Te0 / (eMass * nu)
-    NdC(j)    = 3.0_dp * Pl % LossFactor * neEff * eMass * kBoltz * NuOverMass
-    ! d(loss coefficient)/dTe through ne only (nu is lagged)
-    IF (ne > NeFloorFraction * nS) NdCp(j) = NdC(j) * g / neEff
-    NdMu(j)   = eCharge / (eMass * nu)
-    NdSig(j)  = eCharge * neEff * NdMu(j)
+    NdS0(j)   = eCharge * neEff * Tr % Mu0
+    NdSP(j)   = eCharge * neEff * Tr % MuP
+    NdSH(j)   = eCharge * neEff * Tr % MuH
+    NdKf(j)   = 2.5_dp * kBoltz**2 * Te0 / eCharge**2
+    NdC(j)    = Cn + Cei
+    ! d(loss coefficient)/dTe through ne only (the neutral part is linear in
+    ! ne, the ion part quadratic)
+    IF (ne > NeFloorFraction * nS) NdCp(j) = (Cn + 2.0_dp * Cei) * g / neEff
+    IF (Pl % ExcitedAtGas) THEN
+      dT = 1.0d-3 * Te0
+      Lp = InelasticLoss( Pl, Te0 + dT, Tg, MAX(SahaDensity(Pl, Te0 + dT, nS), NeFloorFraction * nS), &
+          MAX(nS - SahaDensity(Pl, Te0 + dT, nS), 0.0_dp) )
+      Lm = InelasticLoss( Pl, Te0 - dT, Tg, MAX(SahaDensity(Pl, Te0 - dT, nS), NeFloorFraction * nS), &
+          MAX(nS - SahaDensity(Pl, Te0 - dT, nS), 0.0_dp) )
+      NdL(j)  = InelasticLoss( Pl, Te0, Tg, neEff, MAX(nS - ne, 0.0_dp) )
+      NdLp(j) = (Lp - Lm) / (2.0_dp * dT)
+    END IF
     NdChiP(j) = Pl % ChiJ + 2.5_dp * kBoltz * Te0
   END DO
 
@@ -1350,7 +1422,7 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
   ! Assembly
   !------------------------------------------------------------------------------
   ALLOCATE( Kmat(nMax,nMax), Fvec(nMax), Basis(nMax), dBasisdx(nMax,3), Pot(nMax) )
-  PowerJoule = 0.0_dp; PowerLoss = 0.0_dp; PowerIon = 0.0_dp
+  PowerJoule = 0.0_dp; PowerLoss = 0.0_dp; PowerIon = 0.0_dp; PowerInel = 0.0_dp
   tAsm = CPUTime()
 
   CALL DefaultInitialize( USolver=TeSolver )
@@ -1364,7 +1436,7 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
     Fvec(1:nn) = 0.0_dp
 
     IF ( Elem % PartIndex == ParEnv % MyPE .AND. ALL(NdOK(Ind(1:nn))) .AND. &
-         ALL(PotentialPerm(Ind(1:nn)) > 0) .AND. ALL(SigPerm(Ind(1:nn)) > 0) ) THEN
+         ALL(PotentialPerm(Ind(1:nn)) > 0) ) THEN
       EN % x(1:nn) = Solver % Mesh % Nodes % x(Ind(1:nn))
       EN % y(1:nn) = Solver % Mesh % Nodes % y(Ind(1:nn))
       EN % z(1:nn) = Solver % Mesh % Nodes % z(Ind(1:nn))
@@ -1376,8 +1448,6 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
             Basis, dBasisdx )
         sw = DetJ * IP % s(gp)
 
-        ! Current from the generalized Ohm's law with the conductivity and
-        ! mobility of the potential solve, as in StatCurrentCompose
         DO j = 1, 3
           Ugp(j) = SUM( Basis(1:nn) * NdU(j,Ind(1:nn)) )
           Bgp(j) = SUM( Basis(1:nn) * NdB(j,Ind(1:nn)) )
@@ -1388,35 +1458,42 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
         UxB(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
         Ep = -Grad + UxB
 
-        SigC = SUM( Basis(1:nn) * SigVals(SigPerm(Ind(1:nn))) )
-        IF (.NOT. (SigC > 0.0_dp)) CYCLE
-        Eta = 1.0_dp / SigC
-        Alpha = HallCoefficient( Basis, Ind, nn, Eta )
-        M = 0.0_dp
-        DO j = 1, 3
-          M(j,j) = Eta
-        END DO
-        M(1,2) = M(1,2) - Alpha * (-Bgp(3))
-        M(1,3) = M(1,3) - Alpha * ( Bgp(2))
-        M(2,1) = M(2,1) - Alpha * ( Bgp(3))
-        M(2,3) = M(2,3) - Alpha * (-Bgp(1))
-        M(3,1) = M(3,1) - Alpha * (-Bgp(2))
-        M(3,2) = M(3,2) - Alpha * ( Bgp(1))
-        CALL Invert3x3( M, Minv, stat )
-        IF (.NOT. stat) CYCLE
-        ! J / sigma: the effective field, independent of the conductivity level
-        Jhat = MATMUL( Minv, Ep ) * Eta
-
+        S0G   = SUM( Basis(1:nn) * NdS0(Ind(1:nn)) )
+        SPG   = SUM( Basis(1:nn) * NdSP(Ind(1:nn)) )
+        SHG   = SUM( Basis(1:nn) * NdSH(Ind(1:nn)) )
+        KfG   = SUM( Basis(1:nn) * NdKf(Ind(1:nn)) )
         neG   = SUM( Basis(1:nn) * NdNe(Ind(1:nn)) )
         gG    = SUM( Basis(1:nn) * NdG(Ind(1:nn)) )
-        kapG  = SUM( Basis(1:nn) * NdKap(Ind(1:nn)) )
         CG    = SUM( Basis(1:nn) * NdC(Ind(1:nn)) )
         CpG   = SUM( Basis(1:nn) * NdCp(Ind(1:nn)) )
-        muG   = SUM( Basis(1:nn) * NdMu(Ind(1:nn)) )
-        sigG  = SUM( Basis(1:nn) * NdSig(Ind(1:nn)) )
+        LG    = SUM( Basis(1:nn) * NdL(Ind(1:nn)) )
+        LpG   = SUM( Basis(1:nn) * NdLp(Ind(1:nn)) )
         chiPG = SUM( Basis(1:nn) * NdChiP(Ind(1:nn)) )
         Te0G  = SUM( Basis(1:nn) * NdTe0(Ind(1:nn)) )
         TgG   = SUM( Basis(1:nn) * NdTg(Ind(1:nn)) )
+
+        ! Electron conductivity tensor S_e and conduction tensor K_e = Kf S_e
+        Se = 0.0_dp
+        Bmag = SQRT(SUM(Bgp**2))
+        IF (Bmag > 0.0_dp) THEN
+          b = Bgp / Bmag
+          DO j = 1, 3
+            DO k = 1, 3
+              Se(j,k) = (S0G - SPG) * b(j) * b(k)
+            END DO
+            Se(j,j) = Se(j,j) + SPG
+          END DO
+          Se(1,2) = Se(1,2) - SHG * b(3); Se(1,3) = Se(1,3) + SHG * b(2)
+          Se(2,1) = Se(2,1) + SHG * b(3); Se(2,3) = Se(2,3) - SHG * b(1)
+          Se(3,1) = Se(3,1) - SHG * b(2); Se(3,2) = Se(3,2) + SHG * b(1)
+        ELSE
+          b = 0.0_dp
+          DO j = 1, 3
+            Se(j,j) = S0G
+          END DO
+        END IF
+        Ke = KfG * Se
+        SeE = MATMUL( Se, Ep )
 
         ! div(ne U), div(g U), div(g U Te_k)
         Dn = 0.0_dp; Dg = 0.0_dp; DgT = 0.0_dp
@@ -1427,15 +1504,17 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
           DgT = DgT + SUM( dBasisdx(a,:) * NdU(:,j) ) * NdG(j) * NdTe0(j)
         END DO
 
-        QJ = sigG * SUM( Jhat**2 )
+        ! Electron Joule heating J_e . E'
+        QJ = SUM( SeE * Ep )
 
         ! Convective velocity of the linearized operator [W/(m^2 K)]: electron
-        ! enthalpy with the electron flux ne (U - mu J/sigma), and ionization
-        ! energy with the change of ne along the gas flow
-        Adv = 2.5_dp * kBoltz * neG * (Ugp - muG * Jhat) + chiPG * gG * Ugp
+        ! enthalpy with the electron flux ne U - J_e/e, and ionization energy
+        ! with the change of ne along the gas flow
+        Adv = 2.5_dp * kBoltz * (neG * Ugp - SeE / eCharge) + chiPG * gG * Ugp
         ! Reaction [W/(m^3 K)] and source [W/m^3]
-        r = 2.5_dp * kBoltz * Dn + chiPG * Dg + CG + CpG * (Te0G - TgG)
-        f = QJ - Pl % ChiJ * Dn + chiPG * DgT + CG * TgG + CpG * (Te0G - TgG) * Te0G
+        r = 2.5_dp * kBoltz * Dn + chiPG * Dg + CG + CpG * (Te0G - TgG) + LpG
+        f = QJ - Pl % ChiJ * Dn + chiPG * DgT + CG * TgG + CpG * (Te0G - TgG) * Te0G &
+            - LG + LpG * Te0G
         ! A negative reaction (recombining flow) is kept explicit
         IF (r < 0.0_dp) THEN
           f = f - r * Te0G
@@ -1444,10 +1523,11 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
 
         PowerJoule = PowerJoule + sw * QJ
         PowerLoss  = PowerLoss  + sw * CG * (Te0G - TgG)
+        PowerInel  = PowerInel  + sw * LG
         PowerIon   = PowerIon   + sw * chiPG * Dn
 
         ! SUPG: streamline element size and the Shakib-type parameter with
-        ! convection, diffusion and reaction
+        ! convection, diffusion along the streamline and reaction
         DO a = 1, nn
           AdvGrad(a) = SUM( Adv * dBasisdx(a,:) )
         END DO
@@ -1456,14 +1536,19 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
         SumAbs = SUM( ABS(AdvGrad(1:nn)) )
         IF (AdvMag > 0.0_dp .AND. SumAbs > 0.0_dp) THEN
           h = 2.0_dp * AdvMag / SumAbs
-          tau = 1.0_dp / SQRT( (2.0_dp*AdvMag/h)**2 + 9.0_dp*(4.0_dp*kapG/h**2)**2 + r**2 )
+          KStream = KfG * (SPG + (S0G - SPG) * (SUM(Adv * b) / AdvMag)**2)
+          tau = 1.0_dp / SQRT( (2.0_dp*AdvMag/h)**2 + 9.0_dp*(4.0_dp*KStream/h**2)**2 + r**2 )
         END IF
 
+        ! K_e grad(phi_j), once per basis function
+        DO j = 1, nn
+          KdB(j,:) = MATMUL( Ke, dBasisdx(j,:) )
+        END DO
         DO a = 1, nn
-          DO b = 1, nn
-            Kmat(a,b) = Kmat(a,b) + sw * ( Basis(a) * AdvGrad(b) &
-                + kapG * SUM( dBasisdx(a,:) * dBasisdx(b,:) ) &
-                + tau * AdvGrad(a) * ( AdvGrad(b) + r * Basis(b) ) )
+          DO j = 1, nn
+            Kmat(a,j) = Kmat(a,j) + sw * ( Basis(a) * AdvGrad(j) &
+                + SUM( dBasisdx(a,:) * KdB(j,:) ) &
+                + tau * AdvGrad(a) * ( AdvGrad(j) + r * Basis(j) ) )
           END DO
           Kmat(a,a) = Kmat(a,a) + sw * r * Basis(a)
           Fvec(a) = Fvec(a) + sw * ( Basis(a) + tau * AdvGrad(a) ) * f
@@ -1475,6 +1560,57 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
   END DO
 
   CALL DefaultFinishBulkAssembly( TeSolver )
+
+  !------------------------------------------------------------------------------
+  ! Sheath energy loss through walls with Electron Wall Heat Transmission > 0:
+  ! electrons reaching a floating wall at the Bohm flux 0.61 ne sqrt(kB Te/M)
+  ! each carry Gamma_h kB Te into it (Gamma_h ~ 2 + 0.5 ln(M/(2 pi me)), 6.7 for
+  ! K+). Linearized in Te through ne(Te) and Te^(3/2); lumped on the face.
+  !------------------------------------------------------------------------------
+  PowerWall = 0.0_dp
+  DO t = Solver % Mesh % NumberOfBulkElements + 1, &
+      Solver % Mesh % NumberOfBulkElements + Solver % Mesh % NumberOfBoundaryElements
+    Elem => Solver % Mesh % Elements(t)
+    IF (.NOT. ASSOCIATED(Elem % BoundaryInfo)) CYCLE
+    HeatTransmission = 0.0_dp
+    DO bc = 1, Model % NumberOfBCs
+      IF (Elem % BoundaryInfo % Constraint /= Model % BCs(bc) % Tag) CYCLE
+      BCList => Model % BCs(bc) % Values
+      HeatTransmission = ListGetCReal(BCList, 'Electron Wall Heat Transmission', GotBC)
+      EXIT
+    END DO
+    IF (HeatTransmission <= 0.0_dp) CYCLE
+    nn = Elem % TYPE % NumberOfNodes
+    Ind => Elem % NodeIndexes
+    IF (ANY(TePerm(Ind(1:nn)) <= 0) .OR. .NOT. ALL(NdOK(Ind(1:nn)))) CYCLE
+    Model % CurrentElement => Elem
+    WallCoeff = HeatTransmission * 0.61_dp * kBoltz * SQRT(kBoltz / IonMassK)
+    DO a = 1, nn
+      j = Ind(a)
+      ! q = W ne Te^1.5, dq/dTe = W (g Te^1.5 + 1.5 ne Te^0.5)
+      NdQ(a)  = WallCoeff * NdNe(j) * NdTe0(j)**1.5_dp
+      NdDQ(a) = WallCoeff * (NdG(j) * NdTe0(j)**1.5_dp + 1.5_dp * NdNe(j) * SQRT(NdTe0(j)))
+    END DO
+    EN % x(1:nn) = Solver % Mesh % Nodes % x(Ind(1:nn))
+    EN % y(1:nn) = Solver % Mesh % Nodes % y(Ind(1:nn))
+    EN % z(1:nn) = Solver % Mesh % Nodes % z(Ind(1:nn))
+    Kmat(1:nn,1:nn) = 0.0_dp
+    Fvec(1:nn) = 0.0_dp
+    IP = GaussPoints( Elem )
+    DO gp = 1, IP % n
+      stat = ElementInfo( Elem, EN, IP % u(gp), IP % v(gp), IP % w(gp), DetJ, Basis, dBasisdx )
+      sw = DetJ * IP % s(gp)
+      qG  = SUM( Basis(1:nn) * NdQ(1:nn) )
+      dqG = SUM( Basis(1:nn) * NdDQ(1:nn) )
+      Te0G = SUM( Basis(1:nn) * NdTe0(Ind(1:nn)) )
+      DO a = 1, nn
+        Kmat(a,a) = Kmat(a,a) + sw * dqG * Basis(a)
+        Fvec(a) = Fvec(a) + sw * (dqG * Te0G - qG) * Basis(a)
+      END DO
+      IF (Elem % PartIndex == ParEnv % MyPE .OR. ParEnv % PEs == 1) PowerWall = PowerWall + sw * qG
+    END DO
+    CALL DefaultUpdateEquations( Kmat(1:nn,1:nn), Fvec(1:nn), UElement=Elem, USolver=TeSolver )
+  END DO
   CALL DefaultFinishAssembly( TeSolver )
   CALL DefaultDirichletBCs( USolver=TeSolver )
   tSol = CPUTime()
@@ -1488,11 +1624,18 @@ SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelCh
   IF (ParEnv % PEs > 1) THEN
     PowerJoule = ParallelReduction(PowerJoule)
     PowerLoss  = ParallelReduction(PowerLoss)
+    PowerInel  = ParallelReduction(PowerInel)
     PowerIon   = ParallelReduction(PowerIon)
+    PowerWall  = ParallelReduction(PowerWall)
   END IF
-  WRITE(Msg,'(A,ES11.3,A,ES11.3,A,ES11.3,A)') 'Electron energy: Joule ', PowerJoule, &
-      ' W  collisional loss ', PowerLoss, ' W  ionization ', PowerIon, ' W (previous Te)'
+  WRITE(Msg,'(A,ES11.3,A,ES11.3,A,ES11.3,A,ES11.3,A)') 'Electron energy: Joule ', PowerJoule, &
+      ' W  elastic loss ', PowerLoss, ' W  inelastic loss ', PowerInel, ' W  ionization ', PowerIon, &
+      ' W (previous Te)'
   CALL Info('SolveElectronEnergy', Msg, Level=4)
+  IF (PowerWall > 0.0_dp) THEN
+    WRITE(Msg,'(A,ES11.3,A)') 'Electron energy: sheath loss to walls ', PowerWall, ' W (previous Te)'
+    CALL Info('SolveElectronEnergy', Msg, Level=4)
+  END IF
   WRITE(Msg,'(A,F8.3,A,F8.3,A)') 'Electron energy: assembly ', tAsm, ' s  solve ', tSol, ' s (rank 0 CPU)'
   CALL Info('SolveElectronEnergy', Msg, Level=5)
 
@@ -1582,25 +1725,48 @@ END SUBROUTINE ComputeNodeWeights
 
 
 !------------------------------------------------------------------------------
-!> Isotropic nodal conductivity of an element, read straight from the
-!> Electric Conductivity variable that UpdateSeededPlasma fills. Going through
-!> the Material keyword instead evaluates its MATC expression for every node of
-!> every element, which dominated the assembly and current-evaluation time.
+!> Conductivity tensor at an integration point from the nodal parallel,
+!> Pedersen and Hall conductivities (electrons and ions, clamped) that
+!> UpdateSeededPlasma fills, for the local field direction b = B/|B|:
+!>   J = sigma_0 (b.E') b + sigma_P E'_perp + sigma_H b x E'
+!> i.e. C = sigma_P I + (sigma_0 - sigma_P) b b^T + sigma_H [b x].
+!> For a single collision frequency this is the inverse of the generalized
+!> Ohm's law E' = J/sigma + J x B/(ne e).
 !------------------------------------------------------------------------------
-SUBROUTINE NodalConductivity( Cond, NodeIndexes, n )
-  REAL(KIND=dp) :: Cond(:,:,:)
+FUNCTION ConductivityTensor( Basis, NodeIndexes, n, Bgp ) RESULT(C)
+  REAL(KIND=dp) :: Basis(:), Bgp(3)
   INTEGER :: NodeIndexes(:), n
-  INTEGER :: p, d, ipS
+  REAL(KIND=dp) :: C(3,3), S0, SP, SH, Bmag, b(3)
+  INTEGER :: i, j, ipS, ipX
 
-  Cond = 0.0_dp
-  DO p = 1, n
-    ipS = SigPerm(NodeIndexes(p))
-    IF (ipS <= 0) CYCLE
-    DO d = 1, 3
-      Cond(d,d,p) = SigVals(ipS)
-    END DO
+  S0 = 0.0_dp; SP = 0.0_dp; SH = 0.0_dp
+  DO i = 1, n
+    ipS = SigPerm(NodeIndexes(i))
+    ipX = PlasmaPerm(NodeIndexes(i))
+    IF (ipS <= 0 .OR. ipX <= 0) CYCLE
+    S0 = S0 + Basis(i) * SigVals(ipS)
+    SP = SP + Basis(i) * SigPed(ipX)
+    SH = SH + Basis(i) * SigHall(ipX)
   END DO
-END SUBROUTINE NodalConductivity
+  C = 0.0_dp
+  Bmag = SQRT(SUM(Bgp**2))
+  IF (Bmag <= 0.0_dp) THEN
+    DO i = 1, 3
+      C(i,i) = S0
+    END DO
+    RETURN
+  END IF
+  b = Bgp / Bmag
+  DO i = 1, 3
+    DO j = 1, 3
+      C(i,j) = (S0 - SP) * b(i) * b(j)
+    END DO
+    C(i,i) = C(i,i) + SP
+  END DO
+  C(1,2) = C(1,2) - SH * b(3); C(1,3) = C(1,3) + SH * b(2)
+  C(2,1) = C(2,1) + SH * b(3); C(2,3) = C(2,3) - SH * b(1)
+  C(3,1) = C(3,1) - SH * b(2); C(3,2) = C(3,2) + SH * b(1)
+END FUNCTION ConductivityTensor
 
 
 !------------------------------------------------------------------------------
@@ -1631,25 +1797,6 @@ FUNCTION RequiredMaterialReal(Mat, Name) RESULT(Val)
 END FUNCTION RequiredMaterialReal
 
 
-!------------------------------------------------------------------------------
-!> Hall coefficient 1/(ne e) of the generalized Ohm's law
-!>   E + U x B = eta J + (1/(ne e)) J x B
-!> written as mu_e * eta, which equals 1/(ne e) when sigma = e ne mu_e and
-!> keeps the Hall parameter beta = mu_e |B| physical where sigma is clamped.
-!------------------------------------------------------------------------------
-FUNCTION HallCoefficient(Basis, NodeIndexes, n, Eta) RESULT(Alpha)
-  REAL(KIND=dp) :: Basis(:), Eta
-  INTEGER :: NodeIndexes(:), n
-  REAL(KIND=dp) :: Alpha, MobGp
-  INTEGER :: i, ip
-
-  MobGp = 0.0_dp
-  DO i = 1, n
-    ip = PlasmaPerm(NodeIndexes(i))
-    IF (ip > 0) MobGp = MobGp + Basis(i) * ElecMob(ip)
-  END DO
-  Alpha = MobGp * Eta
-END FUNCTION HallCoefficient
 
 !------------------------------------------------------------------------------
 !> Compute the Current and Joule Heating at model nodes.
@@ -1665,7 +1812,6 @@ END FUNCTION HallCoefficient
 
     REAL(KIND=dp), POINTER :: U_Integ(:), V_Integ(:), W_Integ(:), S_Integ(:)
     REAL(KIND=dp), ALLOCATABLE :: SumOfWeights(:), tmp(:)
-    REAL(KIND=dp) :: Conductivity(3,3,Model % MaxElementNodes)
     REAL(KIND=dp) :: Basis(Model % MaxElementNodes)
     REAL(KIND=dp) :: dBasisdx(Model % MaxElementNodes,3)
     REAL(KIND=DP) :: SqrtElementMetric, ElemVol
@@ -1682,9 +1828,8 @@ END FUNCTION HallCoefficient
     INTEGER :: ip
     REAL(KIND=dp) :: Cgp(3,3)
 
-    REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso, JouleGp
+    REAL(KIND=dp) :: JouleGp
     REAL(KIND=dp) :: RHS(3), Jgp(3)
-    REAL(KIND=dp) :: M(3,3), Minv(3,3)
 
     ALLOCATE( Nodes % x( Model % MaxElementNodes ) )
     ALLOCATE( Nodes % y( Model % MaxElementNodes ) )
@@ -1715,10 +1860,6 @@ END FUNCTION HallCoefficient
     END IF
 
 
-    IF( GetCondAtIp ) THEN
-      CALL ListInitElementKeyword( CondAtIp_h,'Material','Electric Conductivity')
-    END IF
-     
 !------------------------------------------------------------------------------
 !   Go through model elements, we will compute on average of elementwise
 !   fluxes to nodes of the model
@@ -1756,10 +1897,6 @@ END FUNCTION HallCoefficient
 
 !------------------------------------------------------------------------------
 
-       IF( .NOT. GetCondAtIp ) THEN
-         CALL NodalConductivity( Conductivity, NodeIndexes, n )
-       END IF
-         
 !------------------------------------------------------------------------------
 ! Loop over Gauss integration points
 !------------------------------------------------------------------------------
@@ -1837,41 +1974,7 @@ END FUNCTION HallCoefficient
           UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
 
 
-          Cgp = 0.0_dp
-          IF( GetCondAtIp ) THEN
-            CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = tg )
-            DO i = 1, dim
-              Cgp(i,i) = CondAtIp
-            END DO
-          ELSE
-            DO i = 1, dim
-              DO j = 1, dim
-                Cgp(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
-              END DO
-            END DO
-          END IF
-        
-          ! Caluclate resistivity from conductivity
-          SigmaIso = (Cgp(1,1) + Cgp(2,2) + Cgp(3,3)) / REAL(dim,dp)
-          IF (SigmaIso > 0.0_dp) THEN
-            EtaGP = 1.0_dp / SigmaIso
-          ELSE
-            EtaGP = 0.0_dp
-          END IF
-          HallCoeffAlpha = HallCoefficient( Basis, NodeIndexes, n, EtaGP )
-
-          ! Build the M matrix
-          M = 0.0_dp
-          DO i=1,dim
-            M(i,i) = EtaGP
-          END DO
-
-          M(1,2) = M(1,2) - HallCoeffAlpha * (-Bgp(3))
-          M(1,3) = M(1,3) - HallCoeffAlpha * ( Bgp(2))
-          M(2,1) = M(2,1) - HallCoeffAlpha * ( Bgp(3))
-          M(2,3) = M(2,3) - HallCoeffAlpha * (-Bgp(1))
-          M(3,1) = M(3,1) - HallCoeffAlpha * (-Bgp(2))
-          M(3,2) = M(3,2) - HallCoeffAlpha * ( Bgp(1))
+          Cgp = ConductivityTensor( Basis, NodeIndexes, n, Bgp )
 
           RHS = 0.0_dp
           DO j=1,dim
@@ -1882,25 +1985,11 @@ END FUNCTION HallCoefficient
           VolTot = VolTot + s
 
           IF( Control .OR. CalculateHeating .OR. CalculateCurrent .OR. CalculateNodalHeating ) THEN
-            ! Invert the hall matrix
-            CALL Invert3x3(M, Minv, Stat)
-              
-            IF (.NOT. Stat) THEN
-              WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-              CALL Fatal( &
-                'GeneralCurrent / Hall MHD', &
-                'Hall conductivity matrix is singular or ill-conditioned at Gauss point.' )
-            END IF
-            Jgp = 0.0_dp
-            DO i=1,3
-              DO j=1,3
-                Jgp(i) = Jgp(i) + Minv(i,j) * RHS(j)
-              END DO
-            END DO
+            Jgp = MATMUL( Cgp, RHS )
 
-            ! Resistive Joule heating for generalized Ohm law:
-            ! J·(E + UxB) = eta*|J|^2 since Hall term is non-dissipative.
-            JouleGp = EtaGP * SUM( Jgp(1:DIM) * Jgp(1:DIM) )
+            ! Joule heating J.E' (E' = E + U x B); the Hall part of the
+            ! tensor is antisymmetric and does no work
+            JouleGp = SUM( Jgp(1:DIM) * RHS(1:DIM) )
             HeatingTot = HeatingTot + s * JouleGp
             PowerEmf = PowerEmf + s * SUM( Jgp(1:DIM) * UxBgp(1:DIM) )
             UxAvg = UxAvg + s * Ugp(1)
@@ -2034,7 +2123,7 @@ END FUNCTION HallCoefficient
 !------------------------------------------------------------------------------
       REAL(KIND=dp) :: SqrtMetric,Metric(3,3),Symb(3,3,3),dSymb(3,3,3,3)
       REAL(KIND=dp) :: Basis(n),dBasisdx(n,3)
-      REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,C(3,3),x,y,z
+      REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,x,y,z
       LOGICAL :: Stat
 
       INTEGER :: i,j,p,q,t,DIM
@@ -2045,8 +2134,7 @@ END FUNCTION HallCoefficient
       INTEGER, POINTER :: NodeIndexes(:)
       INTEGER :: ip
 
-      REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso
-      REAL(KIND=dp) :: M(3,3), Minv(3,3)
+      REAL(KIND=dp) :: Minv(3,3)
 
       ! Guard against element is not part of this rank
       IF ( Element % PartIndex /= ParEnv % MyPE ) THEN
@@ -2098,28 +2186,6 @@ END FUNCTION HallCoefficient
 
         L = SUM( Load(1:n) * Basis )
 
-        IF( GetCondAtIp ) THEN
-          CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = t )
-          C(1:dim,1:dim) = 0.0_dp
-          DO i=1,dim
-            C(i,i) = CondAtIp
-          END DO
-        ELSE
-          DO i=1,DIM
-            DO j=1,DIM
-              C(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
-            END DO
-          END DO
-        END IF
-
-        ! Caluclate resistivity from conductivity
-        SigmaIso = (C(1,1) + C(2,2) + C(3,3)) / REAL(dim,dp)
-        IF (SigmaIso > 0.0_dp) THEN
-          EtaGP = 1.0_dp / SigmaIso
-        ELSE
-          EtaGP = 0.0_dp
-        END IF
-
 
         ! Reset Gauss-point velocity and magnetic field
         Ugp = 0.0_dp
@@ -2151,30 +2217,8 @@ END FUNCTION HallCoefficient
           END IF
         END DO
 
-        HallCoeffAlpha = HallCoefficient( Basis, NodeIndexes, n, EtaGP )
-
-        ! Build the M matrix
-        M = 0.0_dp
-        DO i=1,dim
-          M(i,i) = EtaGP
-        END DO
-
-        M(1,2) = M(1,2) - HallCoeffAlpha * (-Bgp(3))
-        M(1,3) = M(1,3) - HallCoeffAlpha * ( Bgp(2))
-        M(2,1) = M(2,1) - HallCoeffAlpha * ( Bgp(3))
-        M(2,3) = M(2,3) - HallCoeffAlpha * (-Bgp(1))
-        M(3,1) = M(3,1) - HallCoeffAlpha * (-Bgp(2))
-        M(3,2) = M(3,2) - HallCoeffAlpha * ( Bgp(1))
-
-        ! Invert the hall matrix
-        CALL Invert3x3(M, Minv, Stat)
-
-
-        IF (.NOT. Stat) THEN
-          WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-          CALL Fatal('GeneralCurrent / Hall MHD', &
-                    'Hall conductivity matrix is singular or ill-conditioned at Gauss point.')
-        END IF
+        ! Conductivity tensor: stiffness grad(phi) . C . grad(v), EMF load C . (U x B)
+        Minv = ConductivityTensor( Basis, NodeIndexes, n, Bgp )
 
         ! Cross product UxB = U x B
         UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)

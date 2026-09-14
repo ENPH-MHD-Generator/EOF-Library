@@ -91,7 +91,21 @@ class ChannelConfig:
 
 
 MESH_TYPES = ("structured", "tetrahedral")
-STRUCTURED_MESH_KEYS = ("cell_size", "wall_cell_size", "electrode_edge_cell_size", "growth_rate")
+STRUCTURED_MESH_KEYS = (
+    "cell_size",
+    "wall_cell_size",
+    "electrode_edge_cell_size",
+    "growth_rate",
+    "electrode_wall_cell_size",
+    "side_wall_cell_size",
+    "streamwise_cell_size",
+)
+# Optional structured sizes that default to another key when omitted
+STRUCTURED_MESH_FALLBACKS = {
+    "electrode_wall_cell_size": "wall_cell_size",
+    "side_wall_cell_size": "wall_cell_size",
+    "streamwise_cell_size": "cell_size",
+}
 TETRAHEDRAL_MESH_KEYS = ("size_min", "size_max", "size_factor")
 
 
@@ -101,7 +115,11 @@ class MeshConfig:
 
     ``tetrahedral`` (default): the unstructured Gmsh mesh controlled by the
     size_* keys. ``structured``: graded hexahedra, finest at the walls (cold
-    thermal boundary layer) and streamwise at the electrode edges. With the
+    thermal boundary layer) and streamwise at the electrode edges. The walls
+    carrying the electrodes (y) and the insulating side walls (z) can take
+    separate first-cell sizes (electrode_wall_cell_size, side_wall_cell_size,
+    both defaulting to wall_cell_size), and the streamwise core size can differ
+    from the cross-section one (streamwise_cell_size, default cell_size). With the
     local electron energy balance (plasma.electron_energy_transport false) the
     two-temperature model does not converge on structured meshes: their wall
     cells are far smaller than the ~1 mm electron energy relaxation length,
@@ -110,10 +128,15 @@ class MeshConfig:
 
     type: str = "tetrahedral"
     # structured [m]
-    cell_size: float = 0.0025  # core cell size
-    wall_cell_size: float = 0.00025  # first cell at every wall
-    electrode_edge_cell_size: float = 0.001  # streamwise size at electrode edges
+    # Defaults resolve the cold thermal boundary layer on the electrode walls
+    # (~0.1-0.5 mm thick): converged to ~0.05 V in the near-wall voltage drop.
+    cell_size: float = 0.003  # cross-section core cell size
+    wall_cell_size: float = 0.0005  # first cell at walls without a specific size
+    electrode_edge_cell_size: float = 0.0005  # streamwise size at electrode edges
     growth_rate: float = 1.2  # maximum size ratio of neighbouring cells
+    electrode_wall_cell_size: Optional[float] = 1.5e-5  # y walls (electrodes); null: wall_cell_size
+    side_wall_cell_size: Optional[float] = None  # z walls; null: wall_cell_size
+    streamwise_cell_size: Optional[float] = 0.005  # x core; null: cell_size
     # tetrahedral
     size_min: Optional[float] = None
     size_max: Optional[float] = None
@@ -135,15 +158,27 @@ class MeshConfig:
             )
 
         if mesh_type == "structured":
-            values = {
-                key: _number(data.get(key, getattr(cls, key)), f"mesh.{key}", positive=True)
-                for key in STRUCTURED_MESH_KEYS
-            }
+            values = {}
+            for key in STRUCTURED_MESH_KEYS:
+                raw_value = data.get(key, getattr(cls, key))
+                if raw_value is None and key in STRUCTURED_MESH_FALLBACKS:
+                    values[key] = None
+                    continue
+                values[key] = _number(raw_value, f"mesh.{key}", positive=True)
             if values["growth_rate"] <= 1.0:
                 raise ConfigError("mesh.growth_rate must be greater than 1")
-            for key in ("wall_cell_size", "electrode_edge_cell_size"):
-                if values[key] > values["cell_size"]:
+            resolved = {
+                key: values[key] if values[key] is not None else values[fallback]
+                for key, fallback in STRUCTURED_MESH_FALLBACKS.items()
+            }
+            for key in ("wall_cell_size", "electrode_wall_cell_size", "side_wall_cell_size"):
+                size = resolved.get(key, values[key])
+                if size > values["cell_size"]:
                     raise ConfigError(f"mesh.{key} cannot be larger than mesh.cell_size")
+            if values["electrode_edge_cell_size"] > resolved["streamwise_cell_size"]:
+                raise ConfigError(
+                    "mesh.electrode_edge_cell_size cannot be larger than mesh.streamwise_cell_size"
+                )
             return cls(type=mesh_type, **values)
 
         size_min = (
@@ -315,43 +350,74 @@ class PhysicsConfig:
 
 @dataclass(frozen=True)
 class PlasmaConfig:
-    """Alkali-seeded carrier gas; defaults are potassium seed in argon.
+    """Argon seeded with potassium.
 
-    Only the seed ionizes (Saha equation at the electron temperature).
-    Conductivity comes from electron-neutral collisions with both the carrier
-    gas and neutral seed. With two_temperature, Te is raised above the gas
-    temperature by Joule heating of the electrons; otherwise Te = Tgas.
+    Only the seed ionizes (Saha equation at the electron temperature). Electron
+    collision data come from ``plasma_collisions`` for a Maxwellian EEDF: argon
+    (Phelps) and potassium cross sections, with electron-ion Coulomb collisions
+    and the magnetic field included in the transport. Ions carry current too
+    (ion slip), with ``ion_reduced_mobility``. With two_temperature, Te is raised
+    above the gas temperature by Joule heating of the electrons; otherwise
+    Te = Tgas.
+
+    electron_transport_model: how electrons of different speeds share the
+    drift, which a Maxwellian EEDF does not fix. ``drifting`` (strong
+    electron-electron collisions; collision frequencies add, a lower bound on
+    the conductivity) or ``lorentz`` (none; an upper bound). See MHD.md.
+
+    electron_wall_heat_transmission: electron energy lost through a sheath at
+    walls and electrodes, as a multiple of kB Te per electron at the Bohm flux
+    (about 6.7 for a floating wall with K+ ions); 0 makes walls adiabatic for
+    the electrons. Only used with the electron energy equation.
+
+    excited_state_temperature: the K(4p) population that superelastic
+    collisions return energy from. ``electron``: excitation and de-excitation
+    by electrons balance, so there is no net inelastic loss. ``gas``: excited
+    atoms are quenched to the gas temperature, and resonance excitation becomes
+    the dominant electron energy loss.
 
     electron_energy_transport selects how Te is found: true solves the electron
-    energy equation (Joule heating, collisional loss to the gas, conduction,
-    convection with the gas and the current, and transport of ionization
-    energy); false uses the local balance of heating and collisional loss
-    (Kerrebrock), which ignores all transport.
+    energy equation; false uses the local balance of heating and collisional
+    loss, which ignores all transport.
     """
 
     seed_mole_fraction: float = 0.01  # seed atoms per heavy particle
-    seed_ionization_energy: float = 4.3407  # eV (K)
-    seed_gi_over_gn: float = 0.5  # g(K+) / g(K) = 1 / 2
-    seed_cross_section: float = 4.0e-18  # m^2, electron-seed momentum transfer
-    carrier_cross_section: float = 1.0e-19  # m^2, electron-carrier momentum transfer
+    electron_transport_model: str = "drifting"
+    potassium_elastic_scale: float = 1.0  # multiplier on the e-K momentum cross section (+-30%)
+    excited_state_temperature: str = "electron"
+    ion_reduced_mobility: float = 2.43e-4  # m^2/(V s) at 2.6868e25 m^-3; Langevin, K+ in Ar
+    # Electron sheath heat transmission coefficient at walls and electrodes; 0 = adiabatic
+    electron_wall_heat_transmission: float = 0.0
     sigma_min: float = 1.0e-2  # S/m, conductivity floor for matrix conditioning
     sigma_max: float = 1.0e6  # S/m
     two_temperature: bool = True
     electron_energy_transport: bool = True  # electron energy PDE (false: local balance)
-    carrier_molar_mass: float = 39.948  # g/mol (Ar)
-    seed_molar_mass: float = 39.098  # g/mol (K)
-    energy_loss_factor: float = 1.0  # delta; 1 for elastic losses in monatomic gas
     electron_temperature_max: float = 20000.0  # K, cap on the energy-balance solution
     electron_temperature_relaxation: float = 0.5  # under-relaxation of Te per iteration
+
+    REMOVED_KEYS = {
+        "seed_ionization_energy": "taken from plasma_collisions",
+        "seed_gi_over_gn": "taken from plasma_collisions",
+        "seed_cross_section": "energy-dependent cross sections come from plasma_collisions; "
+        "scale the potassium one with potassium_elastic_scale",
+        "carrier_cross_section": "energy-dependent cross sections come from plasma_collisions",
+        "carrier_molar_mass": "taken from plasma_collisions",
+        "seed_molar_mass": "taken from plasma_collisions",
+        "energy_loss_factor": "inelastic losses come from plasma_collisions; "
+        "see excited_state_temperature",
+        "reference_pressure": "the flow is compressible and OpenFOAM's pressure is absolute; "
+        "set physics.outlet_pressure instead",
+    }
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "PlasmaConfig":
         data = _mapping(raw or {}, "plasma")
         defaults = cls()
-        if "reference_pressure" in data:
+        removed = [key for key in data if key in cls.REMOVED_KEYS]
+        if removed:
             raise ConfigError(
-                "plasma.reference_pressure was removed: the flow is compressible and "
-                "OpenFOAM's pressure is absolute; set physics.outlet_pressure instead"
+                "Removed plasma key(s): "
+                + "; ".join(f"{key} ({cls.REMOVED_KEYS[key]})" for key in removed)
             )
         _known_keys(data, asdict(defaults), "plasma")
 
@@ -368,6 +434,12 @@ class PlasmaConfig:
                 return _number(raw_value, location, positive=True)
             return _nonnegative_number(raw_value, location)
 
+        def choice(key: str, options: Tuple[str, ...]) -> str:
+            selected = data.get(key, getattr(defaults, key))
+            if selected not in options:
+                raise ConfigError(f"plasma.{key} must be one of: {', '.join(options)}")
+            return selected
+
         switches = {}
         for key in ("two_temperature", "electron_energy_transport"):
             switches[key] = data.get(key, getattr(defaults, key))
@@ -376,26 +448,20 @@ class PlasmaConfig:
 
         result = cls(
             seed_mole_fraction=value("seed_mole_fraction"),
-            seed_ionization_energy=value("seed_ionization_energy"),
-            seed_gi_over_gn=value("seed_gi_over_gn"),
-            seed_cross_section=value("seed_cross_section", positive=False),
-            carrier_cross_section=value("carrier_cross_section", positive=False),
+            electron_transport_model=choice("electron_transport_model", ("drifting", "lorentz")),
+            potassium_elastic_scale=value("potassium_elastic_scale"),
+            excited_state_temperature=choice("excited_state_temperature", ("electron", "gas")),
+            ion_reduced_mobility=value("ion_reduced_mobility", positive=False),
+            electron_wall_heat_transmission=value("electron_wall_heat_transmission", positive=False),
             sigma_min=value("sigma_min"),
             sigma_max=value("sigma_max"),
             two_temperature=switches["two_temperature"],
             electron_energy_transport=switches["electron_energy_transport"],
-            carrier_molar_mass=value("carrier_molar_mass"),
-            seed_molar_mass=value("seed_molar_mass"),
-            energy_loss_factor=value("energy_loss_factor"),
             electron_temperature_max=value("electron_temperature_max"),
             electron_temperature_relaxation=value("electron_temperature_relaxation"),
         )
         if result.seed_mole_fraction >= 1:
             raise ConfigError("plasma.seed_mole_fraction must be less than 1")
-        if result.seed_cross_section + result.carrier_cross_section <= 0:
-            raise ConfigError(
-                "plasma.seed_cross_section and plasma.carrier_cross_section cannot both be zero"
-            )
         if result.sigma_min >= result.sigma_max:
             raise ConfigError("plasma.sigma_min must be less than plasma.sigma_max")
         if result.electron_temperature_relaxation > 1:
@@ -454,7 +520,7 @@ class NumericsConfig:
     ``linear_solver`` for Elmer's potential equation: ``iterative`` (ILU-
     preconditioned GCR), ``mumps`` (parallel sparse direct), or ``auto``, which
     uses iterative on tetrahedral meshes (faster there) and MUMPS on structured
-    meshes, where ILU converges slowly on the thin wall cells.
+    meshes, where ILU converges very slowly from a cold start on thin wall cells.
     """
 
     linear_solver: str = "auto"

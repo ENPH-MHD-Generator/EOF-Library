@@ -92,6 +92,8 @@ int main(int argc, char *argv[])
     receiving.recvScalar(elcond_elmer);
     receiving.recvScalar(ionizationFraction);
     receiving.recvScalar(Te);
+    receiving.recvScalar(hallParameter);
+    receiving.recvScalar(pedersenConductivity);
 
     // Without this, parallel decomposition fails when writing fields with non-zero values
     Jx.correctBoundaryConditions();
@@ -102,6 +104,8 @@ int main(int argc, char *argv[])
     elcond_elmer.correctBoundaryConditions();
     ionizationFraction.correctBoundaryConditions();
     Te.correctBoundaryConditions();
+    hallParameter.correctBoundaryConditions();
+    pedersenConductivity.correctBoundaryConditions();
 
     // Compute electric field E = -grad(potential)
     electric_field = -fvc::grad(potential);
@@ -135,7 +139,7 @@ int main(int argc, char *argv[])
     }
 
     fLorentz = J_dens ^ B;
-    lorentzDamping = elcond_elmer*magSqr(B);
+    lorentzDamping = pedersenConductivity*magSqr(B);
     {
         // Mechanical power the flow loses to the field; matches Elmer's P_emf
         const scalar Pmech = -gSum
@@ -248,6 +252,8 @@ int main(int argc, char *argv[])
             receiving.recvScalar(elcond_elmer);
             receiving.recvScalar(ionizationFraction);
             receiving.recvScalar(Te);
+            receiving.recvScalar(hallParameter);
+            receiving.recvScalar(pedersenConductivity);
             Info<< "elcond min/max = " << gMin(elcond_elmer) << " " << gMax(elcond_elmer)
                 << "  ionizationFraction max = " << gMax(ionizationFraction) << nl << endl;
 
@@ -260,6 +266,8 @@ int main(int argc, char *argv[])
             elcond_elmer.correctBoundaryConditions();
             ionizationFraction.correctBoundaryConditions();
             Te.correctBoundaryConditions();
+            hallParameter.correctBoundaryConditions();
+            pedersenConductivity.correctBoundaryConditions();
 
             // Compute electric field E = -grad(potential)
             electric_field = -fvc::grad(potential);
@@ -296,7 +304,7 @@ int main(int argc, char *argv[])
             // error carried by skipping Elmer updates; keep it to a few percent.
             const vectorField fLorentzPrev(fLorentz.primitiveField());
             fLorentz = J_dens ^ B;
-            lorentzDamping = elcond_elmer*magSqr(B);
+            lorentzDamping = pedersenConductivity*magSqr(B);
             {
                 const scalarField& V = mesh.V().field();
                 const scalar forceChange = Foam::sqrt

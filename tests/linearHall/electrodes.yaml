@@ -67,17 +67,17 @@ physics:
 # ---------------------------------------------------------------------------
 plasma:
   seed_mole_fraction: 0.01        # potassium atoms per heavy particle
-  seed_ionization_energy: 4.3407  # eV
-  seed_gi_over_gn: 0.5            # g(K+) / g(K)
-  seed_cross_section: 4.0e-18     # m^2, electron-K momentum transfer
-  carrier_cross_section: 1.0e-19  # m^2, electron-Ar momentum transfer
+  # Electron collisions from plasma_collisions (Maxwellian EEDF): drifting
+  # (collision frequencies add; lower bound on sigma) or lorentz (upper bound)
+  electron_transport_model: drifting
+  potassium_elastic_scale: 1.0     # e-K momentum cross section multiplier (+-30%)
+  # electron: K(4p) follows the electrons (no net inelastic loss); gas: quenched
+  excited_state_temperature: electron
+  ion_reduced_mobility: 2.43e-4    # m^2/(V s) at 2.6868e25 m^-3 (K+ in Ar, Langevin); ion slip
   sigma_min: 1.0e-2               # S/m
   sigma_max: 1.0e6                # S/m
   two_temperature: true           # Te from Joule heating vs. collisional loss
   electron_energy_transport: true # Te from the electron energy equation (false: local balance)
-  carrier_molar_mass: 39.948      # g/mol (Ar)
-  seed_molar_mass: 39.098         # g/mol (K)
-  energy_loss_factor: 1.0         # delta; 1 = elastic losses only (monatomic)
   electron_temperature_max: 20000 # K
   electron_temperature_relaxation: 0.5
 

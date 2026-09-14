@@ -1,22 +1,41 @@
-FROM eoflibrary/eof_elmer84_of6:latest AS mhd-python-runtime
+FROM ghcr.io/astral-sh/uv:0.9.21 AS uv
 
-ARG MINIFORGE_VERSION=24.3.0-0
+FROM eoflibrary/eof_elmer84_of6:latest AS mhd-python-runtime
 
 USER root
 
+# git fetches the plasma_collisions dependency from GitHub
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
+    ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/*
 
-# Keep the legacy solver stack isolated from a supported Python runtime.
-RUN curl -fsSL \
-      "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh" \
-      -o /tmp/miniforge.sh \
- && bash /tmp/miniforge.sh -b -p /opt/mhd-python \
- && rm /tmp/miniforge.sh \
- && /opt/mhd-python/bin/mamba install -y python=3.11 pyyaml \
- && /opt/mhd-python/bin/pip install --no-cache-dir gmsh==4.11.1 \
- && /opt/mhd-python/bin/conda clean -afy
+COPY --from=uv /uv /usr/local/bin/uv
+
+# Case preparation's Python environment, isolated from the legacy solver
+# stack: a uv-managed Python 3.11 and the locked dependencies of
+# tests/linearHall/pyproject.toml, including plasma_collisions from GitHub.
+ENV UV_PYTHON_INSTALL_DIR=/opt/mhd-python-interpreter \
+    UV_PROJECT_ENVIRONMENT=/opt/mhd-python \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1
+WORKDIR /opt/mhd-caseprep
+COPY tests/linearHall/pyproject.toml tests/linearHall/uv.lock /opt/mhd-caseprep/
+# plasma_collisions is a private repository: a GitHub token arrives as a build
+# secret (see `make build`), used through a git config in a tmpfs home that is
+# never written to an image layer.
+RUN --mount=type=secret,id=github_token,required=true \
+    --mount=type=tmpfs,target=/build-home \
+    set -e \
+ && export HOME=/build-home \
+ && git config --global url."https://x-access-token:$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/" \
+ && uv python install 3.11 \
+ && uv sync --frozen --no-dev --no-cache
+
+# BOLSIG+ distribution (its Phelps argon cross sections): fetched once here so
+# case preparation needs no network. Its terms of use are its authors'.
+ENV PLASMA_COLLISIONS_BOLSIG_DIR=/opt/bolsig
+RUN /opt/mhd-python/bin/python -m plasma_collisions fetch \
+ && /opt/mhd-python/bin/python -m plasma_collisions where
 
 
 FROM eoflibrary/eof_elmer84_of6:latest AS mhd-native-base
@@ -133,9 +152,14 @@ COPY libs/ /home/openfoam/EOF-Library/libs/
 COPY solvers/ /home/openfoam/EOF-Library/solvers/
 
 # Python-only dependency changes do not invalidate the native solver build.
+COPY --from=mhd-python-runtime /opt/mhd-python-interpreter /opt/mhd-python-interpreter
 COPY --from=mhd-python-runtime /opt/mhd-python /opt/mhd-python
+COPY --from=mhd-python-runtime /opt/bolsig /opt/bolsig
 
-ENV PATH="/opt/mhd-python/bin:${PATH}"
+ENV PATH="/opt/mhd-python/bin:${PATH}" \
+    PLASMA_COLLISIONS_BOLSIG_DIR=/opt/bolsig \
+    PLASMA_COLLISIONS_NO_DOWNLOAD=1 \
+    PLASMA_COLLISIONS_CACHE_DIR=/tmp/plasma_collisions
 
 # One BLAS thread per MPI rank. The ranks already occupy the cores; OpenBLAS's
 # default of one thread per core in every rank oversubscribes the CPU and made

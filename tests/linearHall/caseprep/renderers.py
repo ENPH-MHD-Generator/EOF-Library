@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Dict, Iterable, List, Mapping, Optional
 
 from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
+from .collisions import TABLE_FILE_NAME as COLLISION_FILE_NAME
 from .config import CaseConfig
 
 
@@ -220,6 +221,8 @@ Solver 13
   Target Variable 6 = String "Electric Conductivity"
   Target Variable 7 = String "Ionization Fraction"
   Target Variable 8 = String "Electron Temperature"
+  Target Variable 9 = String "Hall Parameter"
+  Target Variable 10 = String "Pedersen Conductivity"
 End
 
 
@@ -237,11 +240,18 @@ Material 1
   Electric Conductivity = Variable "Electric Conductivity"
     Real MATC "tx"
 
+  ! Potassium in argon. Saha data and electron collision tables come from
+  ! plasma_collisions (electron_collisions.dat, written by mhd prepare).
   Seed Mole Fraction = Real {seed_mole_fraction:g}
-  Seed Ionization Energy = Real {seed_ionization_energy:g}  ! eV
-  Seed Statistical Weight Ratio = Real {seed_gi_over_gn:g}  ! g_ion / g_neutral
-  Seed Electron Neutral Cross Section = Real {seed_cross_section:g}  ! m^2
-  Carrier Electron Neutral Cross Section = Real {carrier_cross_section:g}  ! m^2
+  Seed Ionization Energy = Real {seed_ionization_energy:.6g}  ! eV
+  Seed Statistical Weight Ratio = Real {seed_weight_ratio:.6g}  ! g_ion / g_neutral
+  Electron Collision Data = String "{collision_file}"
+  ! drifting (collision frequencies add) or lorentz (added inside the velocity average)
+  Electron Transport Model = String "{electron_transport_model}"
+  ! electron: no net inelastic loss; gas: K(4p) quenched to the gas temperature
+  Excited State Temperature = String "{excited_state_temperature}"
+  ! Ion slip: ions carry current with this mobility x N / N0 (N0 = 2.6868e25 m^-3)
+  Ion Reduced Mobility = Real {ion_reduced_mobility:g}  ! m^2/(V s)
 
   Sigma Min = Real {sigma_min:g}
   Sigma Max = Real {sigma_max:g}
@@ -251,9 +261,6 @@ Material 1
   ! (Solver 11); without it the local balance (Kerrebrock) is used.
   Two Temperature = Logical {two_temperature}
   Electron Energy Transport = Logical {electron_energy_transport}
-  Carrier Molar Mass = Real {carrier_molar_mass:g}  ! g/mol
-  Seed Molar Mass = Real {seed_molar_mass:g}  ! g/mol
-  Electron Energy Loss Factor = Real {energy_loss_factor:g}
   Electron Temperature Max = Real {electron_temperature_max:g}  ! K
   Electron Temperature Relaxation = Real {electron_temperature_relaxation:g}
 End
@@ -263,26 +270,48 @@ End
 class ElmerCaseRenderer:
     """Render an Elmer SIF from a resolved case model."""
 
-    def render(self, config: CaseConfig, boundary_indices: Mapping[str, int]) -> str:
+    @staticmethod
+    def _wall_heat_transmission(config: CaseConfig) -> List[str]:
+        """Sheath energy loss of the electrons at a wall, when enabled."""
+        gamma = config.plasma.electron_wall_heat_transmission
+        if gamma <= 0:
+            return []
+        return [f"  Electron Wall Heat Transmission = Real {gamma:g}"]
+
+    def render(
+        self,
+        config: CaseConfig,
+        boundary_indices: Mapping[str, int],
+        saha: Optional[Mapping[str, float]] = None,
+    ) -> str:
+        """`saha`: seed ionization energy and weight ratio from the collision tables."""
         material = asdict(config.plasma)
+        saha = saha or {"ionization_energy": 4.341, "weight_ratio": 0.5}
+        material["seed_ionization_energy"] = saha["ionization_energy"]
+        material["seed_weight_ratio"] = saha["weight_ratio"]
+        material["collision_file"] = COLLISION_FILE_NAME
         for key in ("two_temperature", "electron_energy_transport"):
             material[key] = "True" if getattr(config.plasma, key) else "False"
         header = CASE_SIF_HEADER
         if config.mesh.type == "structured":
             # Graded hexahedra have thin, high-aspect wall cells: without row
-            # scaling ILU-GCR stalls, and 1e-3 leaves ~10% error in the load
-            # power. (Scaling hurts on tetrahedral meshes, so it stays off there.)
+            # scaling ILU-GCR stalls, 1e-3 leaves ~10% error in the load power
+            # and 1e-4 ~1.6%; 1e-5 matches MUMPS to 0.2%. (Scaling hurts on
+            # tetrahedral meshes, so it stays off there.)
             for old, new in (
                 ("  Linear System Scaling = False", "  Linear System Scaling = True"),
                 (
                     "  Linear System Convergence Tolerance = 1.0e-3",
-                    "  Linear System Convergence Tolerance = 1.0e-4",
+                    "  Linear System Convergence Tolerance = 1.0e-5",
                 ),
             ):
                 assert header.count(old) == 1, old
                 header = header.replace(old, new)
         solver = config.numerics.linear_solver
         if solver == "auto":
+            # Structured meshes: MUMPS. Warm-started ILU-GCR was 12% faster at 72k
+            # nodes, but from a cold start on 230k thin-walled cells it took
+            # ~215 s per solve against ~10 s for MUMPS.
             solver = "mumps" if config.mesh.type == "structured" else "iterative"
         if solver == "mumps":
             # The potential solve only; the electron energy system stays iterative
@@ -321,6 +350,7 @@ class ElmerCaseRenderer:
                         f"  Electrode Pair = Integer {pair_number}",
                         f'  Electrode Sign = String "{sign}"',
                         f"  Electrode Resistance = Real {pair.resistance}",
+                        *self._wall_heat_transmission(config),
                         "End",
                         "",
                     )
@@ -335,6 +365,8 @@ class ElmerCaseRenderer:
                     f"  Target Boundaries(1) = {boundary_indices[name]}",
                 )
             )
+            if name == INSULATOR:
+                lines.extend(self._wall_heat_transmission(config))
             if name == INLET:
                 # The electron energy equation is convection-dominated: without
                 # an inflow value Te drifted below Tg and flickered over the
@@ -485,11 +517,31 @@ FIELD_DEFINITIONS = (
         "wall": {"type": "zeroGradient"},
     },
     {
+        "name": "hallParameter",
+        "class": "volScalarField",
+        "dimensions": "[0 0 0 0 0 0 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Electron Hall parameter (Hall / Pedersen mobility)",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "pedersenConductivity",
+        "class": "volScalarField",
+        "dimensions": "[-1 -3 3 0 0 2 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Conductivity across B, electrons and ions [S/m]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
         "name": "elcond_elmer",
         "class": "volScalarField",
         "dimensions": "[-1 -3 3 0 0 2 0]",
         "internal_field": "uniform 0",
-        "comment": "// Electrical conductivity from the Saha model [S/m]",
+        "comment": "// Electrical conductivity along B (DC), electrons and ions [S/m]",
         "inlet": {"type": "zeroGradient"},
         "outlet": {"type": "zeroGradient"},
         "wall": {"type": "zeroGradient"},

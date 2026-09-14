@@ -6,3 +6,8 @@ runs/
 
 # Compiled Elmer modules are built inside the image; never copy host builds over them
 libs/**/*.so
+
+# Host Python environments and caches (the image builds its own)
+tests/linearHall/.venv
+**/__pycache__
+plasma_collisions/

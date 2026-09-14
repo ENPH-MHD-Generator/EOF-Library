@@ -1,0 +1,19 @@
+[project]
+name = "mhd-caseprep"
+version = "0.1.0"
+description = "Prepare and run coupled OpenFOAM/Elmer linear Hall MHD cases"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "pyyaml>=6",
+    "gmsh==4.11.1",
+    # The solver image is Ubuntu 16.04 (glibc 2.23); numpy 2.3 dropped the
+    # manylinux2014 wheels that run there.
+    "numpy>=1.26,<2.3",
+    "plasma-collisions",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+plasma-collisions = { git = "https://github.com/ENPH-MHD-Generator/plasma_collisions.git", branch = "main" }

@@ -14,6 +14,9 @@ when a sweep is needed.
 
 - Docker with support for Linux AMD64 containers
 - A checkout of this repository
+- Read access to the private
+  [`plasma_collisions`](https://github.com/ENPH-MHD-Generator/plasma_collisions)
+  repository, through `gh auth login` or a `GITHUB_TOKEN` environment variable
 
 All solver, compiler, Python, Elmer, OpenFOAM, Gmsh, and coupling dependencies
 are installed in the image. The host does not need them.
@@ -65,6 +68,9 @@ The native builds are independent Docker stages:
   side of the coupler and both dependent solver stages.
 - Changes to `libs/Elmer2OpenFOAM.F90` or `libs/OpenFOAM2Elmer.F90` rebuild
   only the Elmer-side modules.
+- Changes to `tests/linearHall/pyproject.toml` or `uv.lock` rebuild only the
+  case-preparation Python environment. To move to a newer `plasma_collisions`,
+  run `uv lock --upgrade-package plasma-collisions` in `tests/linearHall`.
 
 Elmer and its Fortran dependencies are built with gcc/gfortran 9 (Ubuntu
 toolchain PPA); OpenFOAM, the OpenFOAM coupler and Open MPI 1.10 keep the system
@@ -145,20 +151,33 @@ electrode resistance is in ohms.
   - `size_min` and `size_max` set optional global Gmsh edge-length bounds.
   - `size_factor` scales Gmsh's characteristic lengths. Values below one refine
     the mesh and values above one coarsen it. The default is `1.0`.
-- `structured`: graded hexahedra, finest at every wall to resolve the cold
-  thermal boundary layer and streamwise at the electrode edges.
-  - `cell_size` (default 0.0025 m) is the core cell size.
-  - `wall_cell_size` (default 0.00025 m) is the first cell at every wall.
-  - `electrode_edge_cell_size` (default 0.001 m) is the streamwise size at the
+- `structured`: graded hexahedra that resolve the cold thermal boundary layer
+  on the electrode walls, refined streamwise at the electrode edges.
+  - `electrode_wall_cell_size` (default 1.5e-5 m) is the first cell on the walls
+    that carry the electrodes (y = 0 and y = height).
+  - `side_wall_cell_size` (default: `wall_cell_size`) is the first cell on the
+    insulating side walls (z = 0 and z = width).
+  - `wall_cell_size` (default 5e-4 m) is the first cell on walls without a
+    specific size.
+  - `cell_size` (default 0.003 m) is the core cell size across the channel, and
+    `streamwise_cell_size` (default 0.005 m) the core size along it.
+  - `electrode_edge_cell_size` (default 5e-4 m) is the streamwise size at the
     electrode edges.
   - `growth_rate` (default 1.2) is the largest size ratio of neighbouring cells.
 
-  Keys of the other mesh type are rejected. With the local electron energy
-  balance (`electron_energy_transport: false`), structured meshes only work
-  with `two_temperature: false`: their wall cells are far smaller than the
-  ~1 mm electron energy relaxation length, and the local balance runs away at
-  the electrode edges. Elmer's cost follows the node count, which for hexahedra is about 5x that of
-  a tetrahedral mesh with the same number of cells.
+  Keys of the other mesh type are rejected. Setting `electrode_wall_cell_size`
+  or `side_wall_cell_size` to `null` uses `wall_cell_size`, and
+  `streamwise_cell_size: null` uses `cell_size`.
+
+  Structured meshes need the electron energy equation (the default) or
+  `two_temperature: false`: with the local electron energy balance, their wall
+  cells are far smaller than the ~1 mm electron energy relaxation length and
+  the balance runs away at the electrode edges. The grid is a tensor product,
+  so a fine wall layer runs the whole channel length and a fine electrode-edge
+  slice spans the whole cross-section. The defaults give about 70k nodes for an
+  80 mm channel with one electrode pair and about 230k for the 200 mm channel
+  with four; see "Resolving the cold wall layer" below for their accuracy and
+  cost.
 
 `electrodes` is required. Every electrode pair must have the same positive
 `length`; pair-specific lengths are rejected. Choose exactly one placement
@@ -220,58 +239,111 @@ convection of enthalpy and kinetic energy. With
 spuriously by ~1000 K and the run diverged within 4e-5 s even without a
 magnetic field.
 
-`plasma` is optional and describes the alkali-seeded carrier gas. The defaults
-are 1% potassium in argon:
+`plasma` is optional and describes argon seeded with potassium:
 
 ```yaml
 plasma:
-  seed_mole_fraction: 0.01        # seed atoms per heavy particle, in (0, 1)
-  seed_ionization_energy: 4.3407  # eV
-  seed_gi_over_gn: 0.5            # ion / neutral statistical weight ratio
-  seed_cross_section: 4.0e-18     # m^2, electron-seed momentum transfer
-  carrier_cross_section: 1.0e-19  # m^2, electron-carrier momentum transfer
-  sigma_min: 1.0e-2               # S/m
-  sigma_max: 1.0e6                # S/m
-  two_temperature: true           # Te from Joule heating vs. collisional loss
-  electron_energy_transport: true # electron energy equation (false: local balance)
-  carrier_molar_mass: 39.948      # g/mol
-  seed_molar_mass: 39.098         # g/mol
-  energy_loss_factor: 1.0         # delta; 1 = elastic losses only
-  electron_temperature_max: 20000 # K
+  seed_mole_fraction: 0.01          # potassium atoms per heavy particle, in (0, 1)
+  electron_transport_model: drifting  # or lorentz
+  potassium_elastic_scale: 1.0      # multiplier on the e-K momentum cross section
+  excited_state_temperature: electron  # or gas
+  ion_reduced_mobility: 2.43e-4     # m^2/(V s) at 2.6868e25 m^-3 (K+ in Ar)
+  sigma_min: 1.0e-2                 # S/m
+  sigma_max: 1.0e6                  # S/m
+  two_temperature: true             # Te from Joule heating vs. collisional loss
+  electron_energy_transport: true   # electron energy equation (false: local balance)
+  electron_temperature_max: 20000   # K
   electron_temperature_relaxation: 0.5
 ```
 
-Only the seed ionizes. At every node Elmer solves the Saha equation for the
-seed at the electron temperature `Te`, with heavy-particle densities from the
-gas temperature, then computes the conductivity from electron-neutral
-collisions with the carrier gas and the neutral seed. The Hall term uses the
-resulting electron density, `1/(n_e e)`. Conductivity is clamped to
-`[sigma_min, sigma_max]`, and the Hall parameter stays physical at clamped
-nodes.
+Only the seed ionizes: at every node Elmer solves the Saha equation for
+potassium at the electron temperature `Te`, with heavy-particle densities from
+the gas temperature and pressure.
 
-With `two_temperature: true`, `Te` rises above the gas temperature where
-Joule heating of the electrons, `J^2/sigma`, exceeds their elastic collisional
-loss to heavy particles, `3 delta n_e m_e k_B (Te - Tg) sum_s nu_s / M_s`. The
-heating uses the field the electrons see, `E' = -grad(phi) + U x B`, with the
-Hall effect included: `J^2/sigma = sigma (E'_par^2 + E'_perp^2 / (1 + beta^2))`,
-where `beta = mu_e |B|`. `energy_loss_factor` scales the losses for inelastic
-or radiative processes. With `two_temperature: false`, `Te` equals the gas
-temperature.
+Electron collision data come from the
+[`plasma_collisions`](https://github.com/ENPH-MHD-Generator/plasma_collisions)
+package, for a Maxwellian electron energy distribution at `Te`: argon's Phelps
+cross sections (including its Ramsauer minimum) and potassium cross sections
+from the literature. `mhd prepare` tabulates what depends on `Te` alone into
+`electron_collisions.dat` in the case (provenance in
+`electron_collisions.json`), and MHDSolve reads it once and combines it with
+the local state:
+
+- **Momentum transfer and Coulomb collisions.** Electron-neutral collisions
+  come from the tables; electron-ion (Coulomb) collisions use the NRL
+  collision frequency and Coulomb logarithm at the local `n_e` and `Te`. In the
+  channel core they are about half of all electron collisions, and most of them
+  near the electrodes.
+- **`electron_transport_model`.** A Maxwellian does not fix how electrons of
+  different speeds share the drift, and argon's Ramsauer minimum makes that
+  matter. `drifting` (the default) assumes strong electron-electron collisions:
+  collision frequencies add, giving one collision frequency and the familiar
+  tensor with `beta = mu_e |B|`; it is a lower bound on the conductivity.
+  `lorentz` assumes none: collision frequencies add inside the velocity
+  average, the Pedersen and Hall mobilities are tabulated against `Te`,
+  `n_e ln(Lambda)/N` and `omega_ce/N` (a 9 MB table, within 3% of the
+  library), and it is an upper bound. Where electron-electron collisions are
+  comparable to the others, as here, the truth lies between them. At the
+  benchmark conditions they differ by ~15% in the Pedersen conductivity and ~2%
+  in load power.
+- **Ion slip.** Ions carry current too, with mobility
+  `ion_reduced_mobility x N0/N` (polarization collisions; the default is the
+  Langevin value for K+ in argon). Their Hall current runs opposite to the
+  electrons', which reduces the effective Hall parameter when `beta_e beta_i`
+  approaches 1: negligible at 1 atm (~1%), significant below ~0.1 atm.
+- **Conductivity tensor.** The current uses the full tensor,
+  `J = sigma_0 (b.E') b + sigma_P E'_perp + sigma_H b x E'` with `b = B/|B|`,
+  from electrons and ions. For a single collision frequency this is exactly the
+  generalized Ohm's law `E' = J/sigma + J x B/(n_e e)`. The parallel
+  conductivity is clamped to `[sigma_min, sigma_max]`, scaling the Pedersen and
+  Hall components with it so the Hall parameter stays physical.
+- **Energy losses.** Elastic recoil to neutrals and ions, from the tables.
+  `excited_state_temperature` sets the K(4p) population that returns
+  excitation energy through superelastic collisions: `electron` (default)
+  assumes electron collisions keep it at `Te`, so excitation and de-excitation
+  balance and there is no net inelastic loss (resonance radiation is trapped in
+  the channel); `gas` assumes the excited atoms are quenched to the gas
+  temperature, which makes resonance excitation the dominant electron energy
+  loss, about 1000x the elastic loss at `Te` = 3500 K.
+- **`electron_wall_heat_transmission`** (default 0: walls adiabatic for the
+  electrons). The electron energy carried into walls and electrodes through a
+  sheath: electrons arriving at the Bohm flux `0.61 n_e sqrt(k_B Te / M_K+)`
+  each deposit this many `k_B Te`. About 6.7 for a floating wall with K+ ions
+  (`2 + ln(M/(2 pi m_e))/2`). Current-carrying electrodes are treated the same
+  way, which is an approximation.
+- **`potassium_elastic_scale`.** The e-K momentum-transfer cross section is
+  the least certain input (+-30%, from caesium data); scale it for
+  sensitivity studies.
+
+Building the image fetches `plasma_collisions` from its private GitHub
+repository (see `tests/linearHall/pyproject.toml` and `uv.lock`), using a
+GitHub token passed to Docker as a build secret: the GitHub CLI login
+(`gh auth login`) or `GITHUB_TOKEN`. The BOLSIG+ distribution, whose Phelps
+argon cross sections the tables use, is downloaded into the image during the
+build; its terms of use are its authors', and publications must cite Hagelaar
+and Pitchford, Plasma Sources Sci. Technol. 14, 722 (2005).
+
+With `two_temperature: true`, `Te` rises above the gas temperature where Joule
+heating of the electrons, `J_e.E'`, exceeds their collisional energy losses.
+With `two_temperature: false`, `Te` equals the gas temperature.
 
 With `electron_energy_transport: true` (the default), Elmer solves the steady
 electron energy equation (Solver 11 in `case.sif`):
 
 ```text
-(5/2) k_B Gamma_e . grad(Te) + ((5/2) k_B Te + chi) div(n_e U) - div(kappa_e grad(Te))
-    = J^2/sigma - 3 delta n_e m_e k_B (Te - Tg) sum_s nu_s / M_s
+(5/2) k_B Gamma_e . grad(Te) + ((5/2) k_B Te + chi) div(n_e U) - div(K_e grad(Te))
+    = J_e . E' - L_elastic - L_inelastic
 ```
 
-- `Gamma_e = n_e U - J/e` is the electron flux: electron enthalpy is carried
-  by the gas flow and by the current (from cathode to anode).
-- `kappa_e = (5/2) n_e k_B^2 Te / (m_e nu)` is the electron thermal
-  conductivity. It spreads the heating over the relaxation length (about 1 mm
-  at 1 atm, growing as 1/p), which keeps `Te` and the conductivity finite at
-  the electrode edges and lets hot electrons reach into the cold wall layer.
+- `Gamma_e = n_e U - J_e/e` is the electron flux: electron enthalpy is carried
+  by the gas flow and by the electron current (from cathode to anode). `J_e` is
+  the electron part of the current, with the electron conductivity tensor.
+- `K_e = (5/2) (k_B^2 Te / e^2) sigma_e` is the electron heat conduction
+  tensor, anisotropic like the conductivity: along `B` it spreads the heating
+  over the relaxation length (about 1 mm at 1 atm, growing as 1/p), and across
+  `B` it is weaker by about `1 + beta^2`. It keeps `Te` and the conductivity
+  finite at the electrode edges and lets hot electrons reach into the cold wall
+  layer.
 - `chi` is the seed ionization energy. With Saha equilibrium `n_e` follows
   `Te`, so ionizing the seed along the flow takes `chi` per electron from the
   electrons (recombination returns it). This makes the electron temperature
@@ -295,16 +367,20 @@ nonlinear iteration because `Te`, the conductivity and the current are tightly
 coupled. Each iteration's `Te` update is under-relaxed by
 `electron_temperature_relaxation`, and the current solver stops once both the
 potential and `Te` have converged. The Elmer log prints the electron energy
-budget, `Electron energy: Joule ... collisional loss ... ionization ...`,
-whose terms should balance.
+budget, `Electron energy: Joule ... elastic loss ... inelastic loss ...
+ionization ...`, whose terms should balance, and each update prints the largest
+electron Hall parameter and share of electron-ion collisions.
 
 With `electron_energy_transport: false`, `Te` comes from the local balance of
-heating and collisional loss at each node (Kerrebrock), which ignores all
-transport. It is cheaper but runs away at electrode edges on fine meshes.
+heating and the same losses at each node, which ignores all transport. It is
+cheaper but runs away at electrode edges on fine meshes.
 
-The run writes `ionizationFraction` (`n_e / n_heavy`), `Te`, and
-`elcond_elmer` as OpenFOAM fields, including initial values at `t = 0`. The
-channel's initial temperature is the inlet temperature.
+The run writes `ionizationFraction` (`n_e / n_heavy`), `Te`, `elcond_elmer`
+(the parallel conductivity), `pedersenConductivity` and `hallParameter` (the
+electron Hall parameter, Hall over Pedersen mobility) as OpenFOAM fields,
+including initial values at `t = 0`. The channel's initial temperature is the
+inlet temperature. The Lorentz damping in the momentum equation uses the
+Pedersen conductivity.
 
 Elmer receives the velocity as cell values (`interpolationSchemes` in
 `system/fvSchemes` uses `cell` for `Ux/Uy/Uz`, not `cellPoint`). `cellPoint`
@@ -368,9 +444,15 @@ numerics:
 `linear_solver` selects how Elmer solves the potential equation: `iterative`
 (ILU-preconditioned GCR) or `mumps` (parallel sparse direct). `auto` uses
 iterative on tetrahedral meshes, where it was about 20% faster at
-`size_factor` 0.15, and MUMPS on structured meshes, where ILU needs thousands
-of iterations on the thin wall cells (first solve 43 s vs 6.5 s on a 141k-node
-mesh). Both give the same results.
+`size_factor` 0.15, and MUMPS on structured meshes. Each iterative solve starts
+from the previous solution, so once a run is going GCR needs only ~50-150
+iterations, while MUMPS refactors the matrix every time. On the 72k-node
+structured test mesh `iterative` was therefore 12% faster overall than MUMPS
+(potential solves 57 s against 81 s), but on the 230k-node full-length
+structured mesh its first solves, from a zero potential on thin wall cells,
+took ~215 s each against ~10 s for MUMPS. Structured meshes with `iterative`
+use row scaling and a tolerance of 1e-5, which matched MUMPS to 0.2% in load
+power (1e-4 left 1.6%).
 
 Unknown keys and invalid values fail during validation instead of being
 silently ignored.
@@ -498,6 +580,58 @@ with the local balance took 37 s, compressible flow with the local balance
 compressible runs trigger fewer Elmer updates, and the electron energy
 equation needs fewer nonlinear iterations per update than the local balance
 (1.6 against 3.0); its own assembly and solve take about 1.5 s.
+
+Near-electrode convergence was checked on an 80 mm channel with one electrode
+pair at 4e-5 s (load power averaged over the last half). Tetrahedra of 4, 3 and
+2 mm gave 134, 145 and 149 W; graded hexahedra (coarse, default and half the
+default wall cell) gave 154, 153 and 152 W, with electrode currents within
+0.6%. Integral results converge; the peak `Te` and conductivity at the
+electrode edges keep rising slowly with refinement (the current concentration
+there is singular), so read local maxima as mesh-dependent. `size_factor` is
+relative to the domain size, so use `size_max` for absolute cell sizes.
+
+### Resolving the cold wall layer
+
+The gas next to the cooled walls is far colder than the core, and its low
+conductivity is a classic source of large electrode voltage losses. The layer is
+thin: its thickness grows with the transit time as `sqrt(alpha x / u)`, about
+0.1 mm at an electrode 30 mm from the inlet after one transit and 0.5 mm after a
+few. Tetrahedral meshes and 250 um wall cells cannot resolve it, and it only
+forms once the gas has passed the electrode, so run for at least about twice
+`x_electrode / u`.
+
+With the structured defaults (15 um first cells on the electrode walls), an
+80 mm channel with one electrode pair was followed to 1.5e-4 s:
+
+- The gas temperature at the electrode centre rises from ~470 K in the first
+  cell to the 2500 K core over ~0.5 mm, still slowly thickening.
+- The electrons stay hot across it (Te ~2000 K in the first cell): Joule
+  heating is intense where the conductivity is low, and with Saha ionization at
+  Te the conductivity stays at ~10 S/m, far above `sigma_min`.
+- The voltage drop across the layer (the wall potential against the core
+  profile extrapolated to the wall) is 0.65-0.7 V at the cathode and
+  0.25-0.3 V at the anode, against 12.4 V across the core. Halving the first
+  cell to 7.5 um changed it by ~0.05 V; lowering `sigma_min` to 1e-6 S/m
+  changed nothing.
+- `electron_wall_heat_transmission: 6.7` (sheath energy loss) cools the
+  electrons in the first ~30 um (Te 1720 K, conductivity 2 S/m at the wall) and
+  takes 14% of the electron heating, but moves the voltage drop by only a few
+  hundredths of a volt.
+
+These drops are small because ionization is instantaneous (Saha at Te) and
+charged particles are not lost to the walls. In the cold layer three-body
+recombination takes ~1e-4 s while ambipolar diffusion reaches ~1 mm in that
+time, so real walls should deplete the electrons across the whole layer. Finite-
+rate ionization with ambipolar diffusion (and, at the cathode, a limit on
+electron emission) is the physics that sets large boundary-layer losses; the
+structured mesh resolves the layer for it.
+
+Cost: that 80 mm case (72k nodes, 4 ranks) takes about 170 s per 5e-5 s of
+simulated time, of which Elmer is ~75%, mostly the MUMPS potential solve
+with MUMPS (~1.7 s per solve); `linear_solver: iterative` took about 150 s.
+The electron energy system stays iterative: MUMPS was 4x slower for it. The full 200 mm channel (230k nodes) is several times that: MUMPS takes ~10 s
+per potential solve there, so a resolved full-length run costs roughly 10-15 s
+per time step on 4 ranks. It fits in memory (6 GB peak).
 
 Use `--ranks 4` from about `size_factor` 0.2 down; on coarser meshes the fixed
 start-up and coupling costs dominate and extra ranks do not help. The mesh is

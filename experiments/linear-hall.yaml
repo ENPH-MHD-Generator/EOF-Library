@@ -12,12 +12,14 @@ mesh:
   size_min: null
   size_max: null
   size_factor: 0.125
-  # Graded hexahedra resolving the cold wall layer (equilibrium electrons only
-  # for now; see MHD.md):
+  # Graded hexahedra resolving the cold wall layer on the electrode walls
+  # (needs the electron energy equation or two_temperature: false; see MHD.md):
   #   type: structured
-  #   cell_size: 0.0025               # m, core
-  #   wall_cell_size: 0.00025         # m, first cell at every wall
-  #   electrode_edge_cell_size: 0.001 # m, streamwise at electrode edges
+  #   electrode_wall_cell_size: 1.5e-5  # m, first cell on the electrode walls
+  #   wall_cell_size: 0.0005            # m, first cell on the side walls
+  #   cell_size: 0.003                  # m, core, across the channel
+  #   streamwise_cell_size: 0.005       # m, core, along the channel
+  #   electrode_edge_cell_size: 0.0005  # m, streamwise at electrode edges
   #   growth_rate: 1.2
 
 electrodes:
@@ -40,17 +42,18 @@ physics:
 # Alkali-seeded argon. Only the seed ionizes (two-temperature Saha).
 plasma:
   seed_mole_fraction: 0.01        # potassium atoms per heavy particle
-  seed_ionization_energy: 4.3407  # eV
-  seed_gi_over_gn: 0.5            # g(K+) / g(K)
-  seed_cross_section: 4.0e-18     # m^2, electron-K momentum transfer
-  carrier_cross_section: 3.93994730526347e-21  # m^2, electron-Ar momentum transfer
+  # Electron collisions from plasma_collisions (Maxwellian EEDF): drifting
+  # (collision frequencies add; lower bound on sigma) or lorentz (upper bound)
+  electron_transport_model: drifting
+  potassium_elastic_scale: 1.0     # e-K momentum cross section multiplier (+-30%)
+  # electron: K(4p) follows the electrons (no net inelastic loss); gas: quenched
+  excited_state_temperature: electron
+  ion_reduced_mobility: 2.43e-4    # m^2/(V s) at 2.6868e25 m^-3 (K+ in Ar, Langevin); ion slip
+  electron_wall_heat_transmission: 0.0  # sheath energy loss at walls (6.7 floating K+); 0 = adiabatic
   sigma_min: 1.0e-2               # S/m
   sigma_max: 1.0e6                # S/m
   two_temperature: true           # Te from Joule heating vs. collisional loss
   electron_energy_transport: true # Te from the electron energy equation (false: local balance)
-  carrier_molar_mass: 39.948      # g/mol (Ar)
-  seed_molar_mass: 39.098         # g/mol (K)
-  energy_loss_factor: 1.0         # delta; 1 = elastic losses only (monatomic)
   electron_temperature_max: 20000 # K
   electron_temperature_relaxation: 0.5
 
