@@ -23,7 +23,7 @@ are installed in the image. The host does not need them.
 
 ## Build and enter the container
 
-From the repository root, build the image once:
+From the repository root, build the images once:
 
 ```sh
 ./mhd build
@@ -36,60 +36,84 @@ Open a container shell without rebuilding:
 ```
 
 `./mhd start` is a convenience command that builds and then opens the shell.
-Pass `--debug` to `build` or `start` to compile Elmer's MHD module with runtime
-checks and debug symbols:
+Pass `--debug` to `build` or `start` to compile Elmer with runtime checks and
+debug symbols:
 
 ```sh
 ./mhd start --debug
 ```
 
-The image is named `mhd-sim:latest`. Docker build caching makes unchanged
-rebuilds fast.
+Docker build caching makes unchanged rebuilds fast.
+
+### How the images are built
+
+There are two images, and the host only runs `docker build` (root `Makefile`,
+`tests/linearHall/Makefile`); every build step inside an image is a `make`
+target in a small recipe file:
+
+- **`eof-mhd-solvers:latest`**, the EOF-Library solver image
+  (`docker/Dockerfile`, recipes in `docker/mk/`). On top of
+  `eoflibrary/eof_elmer84_of6` (OpenFOAM 6 and the Elmer source) it builds two
+  independent branches and merges them:
+  - OpenFOAM: the EOF coupler library (`libs/coupleElmer`), then the OpenFOAM
+    solvers (`solvers/mdhLinearHall`) that link it (`openfoam.mk`).
+  - Elmer: ScaLAPACK, MUMPS and Hypre (`deps.mk`), Elmer itself (`elmer.mk`),
+    then the Elmer extensions, the EOF coupler modules and MHDSolve
+    (`extensions.mk`), installed to `/opt/eof/lib`.
+- **`mhd-sim:latest`**, the linear Hall application (`tests/linearHall/Dockerfile`,
+  built from that folder alone): case preparation's Python environment
+  (`tests/linearHall/docker/python-env.mk`, with `plasma_collisions` and
+  BOLSIG+), the case template, and the `mhd` command, `FROM` the solver image.
+
+`./mhd` at the repository root forwards to `tests/linearHall/mhd`, which builds
+the solver image from this checkout and then the application. The application
+folder has no other dependency on the rest of the repository: moved elsewhere,
+its `mhd` builds against an existing `eof-mhd-solvers` image (or one named by
+`SOLVER_IMAGE`), with `MHD_WORKSPACE` choosing where `experiments/` and `out/`
+live. `make solver-image` and `make image` in the repository root build the
+images without the launcher.
 
 ### Rebuild after changing solver source
 
 Solver development uses the same reproducible image build instead of copying
-individual files into a running container. After editing either the Elmer
-Fortran module or the OpenFOAM C++ solver on the host, leave the current
-container and run:
+individual files into a running container. After editing on the host, leave the
+current container and run:
 
 ```sh
 ./mhd build
 ./mhd shell
 ```
 
-The native builds are independent Docker stages:
+What rebuilds:
 
-- Changes beneath `libs/solvers/MHDSolve/` rebuild the Elmer MHD module but
-  reuse the cached OpenFOAM solver and coupler.
-- Changes beneath `solvers/mdhLinearHall/` rebuild the OpenFOAM solver but
-  reuse the cached Elmer module and coupler.
-- Changes to `libs/coupleElmer/` or `libs/commSplit/` rebuild the OpenFOAM
-  side of the coupler and both dependent solver stages.
-- Changes to `libs/Elmer2OpenFOAM.F90` or `libs/OpenFOAM2Elmer.F90` rebuild
-  only the Elmer-side modules.
-- Changes to `tests/linearHall/pyproject.toml` or `uv.lock` rebuild only the
-  case-preparation Python environment. To move to a newer `plasma_collisions`,
-  run `uv lock --upgrade-package plasma-collisions` in `tests/linearHall`.
+- `libs/solvers/MHDSolve/`, `libs/Elmer2OpenFOAM.F90`, `libs/OpenFOAM2Elmer.F90`:
+  the Elmer extensions only.
+- `solvers/mdhLinearHall/`: the OpenFOAM solver only.
+- `libs/coupleElmer/`, `libs/commSplit/`: the coupler and the OpenFOAM solver.
+- `docker/mk/*.mk`: the stage using that recipe and those after it in its
+  branch (for example `elmer.mk` rebuilds Elmer, incrementally, and the
+  extensions, but not the third-party libraries or the OpenFOAM branch).
+- Anything in `tests/linearHall/`: the application image only;
+  `pyproject.toml` or `uv.lock` also rebuild its Python environment. To move to
+  a newer `plasma_collisions`, run `uv lock --upgrade-package plasma-collisions`
+  in `tests/linearHall`.
 
 Elmer and its Fortran dependencies are built with gcc/gfortran 9 (Ubuntu
 toolchain PPA); OpenFOAM, the OpenFOAM coupler and Open MPI 1.10 keep the system
 gcc 5. Elmer only uses `mpif.h`, so Open MPI's wrappers are pointed at gfortran 9
-with `OMPI_FC`. ScaLAPACK 2.1.0, MUMPS 5.6.2 (parallel direct solver) and Hypre
-2.15.1 are built from source with the same compiler: Fortran libraries that
-share derived types with Elmer must use one compiler, since gfortran 8 changed
-the array descriptor ABI. Hypre is available for future symmetric problems;
-BoomerAMG does not converge on the non-symmetric, penalty-coupled potential
-equation. BLAS runs one thread per MPI rank (`OPENBLAS_NUM_THREADS=1`).
+with `OMPI_FC` for those builds. ScaLAPACK 2.1.0, MUMPS 5.6.2 (parallel direct
+solver) and Hypre 2.15.1 are built from checksummed source tarballs with the
+same compiler: Fortran libraries that share derived types with Elmer must use
+one compiler, since gfortran 8 changed the array descriptor ABI. Hypre is
+available for future symmetric problems; BoomerAMG does not converge on the
+non-symmetric, penalty-coupled potential equation. BLAS runs one thread per MPI
+rank (`OPENBLAS_NUM_THREADS=1`).
 
-The Elmer-side modules
-are always compiled after Elmer, against the installed version: Elmer's data
-types depend on its build options, so modules built against a different Elmer
-would corrupt memory. Changing Elmer build options (including `--debug`)
-recompiles Elmer incrementally from the build cache.
-
-The Elmer stage also keeps its configured MPI compiler tree in a BuildKit cache,
-so changed Fortran sources can reuse previously compiled dependencies.
+The Elmer extensions are always compiled after Elmer, against the installed
+version: Elmer's data types depend on its build options, so modules built
+against a different Elmer would corrupt memory. Elmer's build directory is a
+BuildKit cache, so changing its options (including `--debug`) recompiles Elmer
+incrementally.
 
 Prepared cases and results remain in host `out/`, so replacing the disposable
 container does not remove them. Once back inside, rerun a prepared case with
@@ -315,8 +339,8 @@ the local state:
   the least certain input (+-30%, from caesium data); scale it for
   sensitivity studies.
 
-Building the image fetches `plasma_collisions` from its private GitHub
-repository (see `tests/linearHall/pyproject.toml` and `uv.lock`), using a
+Building the application image fetches `plasma_collisions` from its private
+GitHub repository (see `tests/linearHall/pyproject.toml` and `uv.lock`), using a
 GitHub token passed to Docker as a build secret: the GitHub CLI login
 (`gh auth login`) or `GITHUB_TOKEN`. The BOLSIG+ distribution, whose Phelps
 argon cross sections the tables use, is downloaded into the image during the

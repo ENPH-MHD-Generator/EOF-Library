@@ -11,7 +11,8 @@ from .preparer import PreparationError
 from .runtime import MhdRuntime
 
 
-BASE_CASE_DIRECTORY = Path("/home/openfoam/EOF-Library/tests/linearHall")
+# The case template (constant/, system/, electrodes.yaml) sits next to this package
+BASE_CASE_DIRECTORY = Path(__file__).resolve().parents[1]
 EXPERIMENTS_DIRECTORY = Path("/experiments")
 RUNS_DIRECTORY = Path("/runs")
 

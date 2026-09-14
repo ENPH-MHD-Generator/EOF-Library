@@ -1,105 +1,30 @@
-export ELMER_HOME        := /usr/local
-export ELMER_SOLVER_HOME := /usr/local
-export EOF_HOME          := /home/openfoam/EOF-Library
-export EOF_SRC           := $(EOF_HOME)/libs
-export PATH              := /usr/local/bin:$(PATH)
-export LD_LIBRARY_PATH   := /usr/local/lib:$(LD_LIBRARY_PATH)
-export OPENFOAM_HOME	 := /opt/openfoam6
-export ROOT_DIR			 := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST)))) # https://stackoverflow.com/a/23324703
-export IMAGE_NAME		 ?= mhd-sim
+# Host-side build of the EOF-Library MHD images. The recipes that run inside the
+# images live in docker/mk (solver image) and tests/linearHall (application).
+#
+#   make solver-image   EOF-Library solvers: OpenFOAM + Elmer + MHD modules
+#   make image          solver image, then the linear Hall application on top
+#   make clean          remove both images and their containers
 
-# ---- Build options ----
-ELMER_DEBUG ?= 0
+SOLVER_IMAGE ?= eof-mhd-solvers
+IMAGE_NAME   ?= mhd-sim
+ELMER_DEBUG  ?= 0
+PLATFORM     := linux/amd64
 
-# This is so that the environment variables persist between commands
-SHELL := /bin/bash
-.ONESHELL:
+.PHONY: image solver-image clean
 
-# -- Docker Container
+image: solver-image
+	$(MAKE) -C tests/linearHall image IMAGE_NAME=$(IMAGE_NAME) SOLVER_IMAGE=$(SOLVER_IMAGE):latest
 
-environment:
-	. $(OPENFOAM_HOME)/etc/bashrc
-	. $(EOF_HOME)/etc/bashrc
-	cd $(EOF_HOME)
-
-eof: eof-openfoam eof-elmer
-
-# OpenFOAM side of the coupler (C++, independent of the Elmer build)
-eof-openfoam: environment
-	. $(OPENFOAM_HOME)/etc/bashrc && wclean $(EOF_SRC)/coupleElmer
-	. $(OPENFOAM_HOME)/etc/bashrc && wmake $(EOF_SRC)/coupleElmer
-
-# Elmer-side Fortran modules. They must be compiled against the installed
-# Elmer: its derived types change with build options (e.g. HAVE_MUMPS adds
-# matrix fields), so modules built against another Elmer corrupt memory.
-eof-elmer: environment
-	set -e
-	elmerf90 -o $(EOF_SRC)/Elmer2OpenFOAM.so -J $(nproc) $(EOF_SRC) $(EOF_SRC)/Elmer2OpenFOAM.F90
-	elmerf90 -o $(EOF_SRC)/OpenFOAM2Elmer.so -J $(nproc) $(EOF_SRC) $(EOF_SRC)/OpenFOAM2Elmer.F90
-	elmerf90 -o $(EOF_SRC)/MHDSolve.so       -J $(nproc) $(EOF_SRC) $(EOF_SRC)/solvers/MHDSolve/MHDUtils.F90 $(EOF_SRC)/solvers/MHDSolve/MHDSolve.F90
-
-solver: environment
-	. $(OPENFOAM_HOME)/etc/bashrc && wclean solvers/mdhLinearHall
-	. $(OPENFOAM_HOME)/etc/bashrc && wmake solvers/mdhLinearHall
-	rm -rf solvers/mdhLinearHall/processor*
-
-# Elmer with gcc/gfortran 9 and the MUMPS parallel direct solver built from source
-# in /opt/mumps (see docker/Dockerfile.build_simulation)
-ELMER_SOLVER_FLAGS := \
-  -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran-9 \
-  -DCMAKE_C_COMPILER=/usr/bin/gcc-9 \
-  -DCMAKE_CXX_COMPILER=/usr/bin/g++-9 \
-  -DWITH_MPI=TRUE \
-  -DWITH_Mumps=TRUE \
-  -DMUMPS_ROOT=/opt/mumps \
-  -DSCALAPACK_LIBRARIES=/opt/mumps/lib/libscalapack.a \
-  -DWITH_Hypre=TRUE \
-  -DHYPRE_ROOT=/opt/hypre
-ELMER_BUILD_ENV := OMPI_CC=gcc-9 OMPI_CXX=g++-9 OMPI_FC=gfortran-9
-
-# Elmer debug flag
-ifeq ($(ELMER_DEBUG),1)
-  ELMER_CMAKE_FLAGS := \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_Fortran_FLAGS_DEBUG="-O0 -g -fbacktrace -fcheck=all -ffpe-trap=invalid,zero,overflow"
-else
-  ELMER_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release
-endif
-
-elmer: environment
-	set -e
-	cd /opt/elmerfem/build && sudo env $(ELMER_BUILD_ENV) cmake .. $(ELMER_CMAKE_FLAGS) $(ELMER_SOLVER_FLAGS)
-	# install/fast only installs existing targets without building, so flag
-	# changes (MUMPS, debug) would silently not take effect
-	cd /opt/elmerfem/build && sudo env $(ELMER_BUILD_ENV) make -j$$(nproc) install
-	nm -D /usr/local/lib/elmersolver/libelmersolver.so | grep -qi " T dmumps" \
-	  || { echo "Elmer was built without MUMPS; see /opt/elmerfem/build/CMakeFiles/CMakeError.log" >&2; exit 1; }
-	nm -D /usr/local/lib/elmersolver/libelmersolver.so | grep -q " T HYPRE_BoomerAMGCreate" \
-	  || { echo "Elmer was built without Hypre; see /opt/elmerfem/build/CMakeFiles/CMakeError.log" >&2; exit 1; }
-	cd $(EOF_HOME)
-
-# -- Host System
-
-build_environment:
-	cd $(ROOT_DIR)
-
-setup: build_environment
-	mkdir -p ./experiments ./out
-
-# plasma_collisions (a private GitHub repository) is fetched during the image
-# build with this token: GITHUB_TOKEN if set, otherwise the GitHub CLI login.
-build: export GITHUB_TOKEN ?= $(shell gh auth token 2>/dev/null)
-build: setup
-	@test -n "$$GITHUB_TOKEN" || { echo "No GitHub token: run 'gh auth login' or set GITHUB_TOKEN (needs read access to ENPH-MHD-Generator/plasma_collisions)" >&2; exit 1; }
+solver-image:
 	docker build \
-	  --secret id=github_token,env=GITHUB_TOKEN \
-	  --build-arg ELMER_DEBUG=$(ELMER_DEBUG) \
+	  --platform $(PLATFORM) \
 	  --progress=plain \
-	  --network host \
-	  --platform linux/amd64 \
-	  -f docker/Dockerfile.build_simulation \
-	  -t $(IMAGE_NAME):latest .
+	  --build-arg ELMER_DEBUG=$(ELMER_DEBUG) \
+	  -f docker/Dockerfile \
+	  -t $(SOLVER_IMAGE):latest \
+	  .
 
-clean: build_environment
-	docker ps -a --filter "ancestor=$(IMAGE_NAME)" -q | xargs -r docker rm -f
-	docker images $(IMAGE_NAME) -q | xargs -r docker rmi -f
+clean:
+	$(MAKE) -C tests/linearHall clean IMAGE_NAME=$(IMAGE_NAME)
+	docker ps -a --filter "ancestor=$(SOLVER_IMAGE)" -q | xargs -r docker rm -f
+	docker images $(SOLVER_IMAGE) -q | xargs -r docker rmi -f

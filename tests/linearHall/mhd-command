@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
+# `mhd` inside the application image: case preparation and runs.
 
 # Ensure direct calls have the same solver environment as an interactive shell.
+# The solver image provides the Elmer and EOF library paths; OpenFOAM's bashrc
+# provides its own.
 arguments=("$@")
 set --
 source /opt/openfoam6/etc/bashrc
-source /home/openfoam/EOF-Library/etc/bashrc
 
-cd /home/openfoam/EOF-Library/tests/linearHall
-exec /opt/mhd-python/bin/python3 -m caseprep "${arguments[@]}"
+LINEAR_HALL_HOME="${LINEAR_HALL_HOME:-/opt/linear-hall}"
+cd "$LINEAR_HALL_HOME"
+exec "$LINEAR_HALL_HOME/env/venv/bin/python3" -m caseprep "${arguments[@]}"

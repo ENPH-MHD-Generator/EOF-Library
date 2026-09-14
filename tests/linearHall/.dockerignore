@@ -1,0 +1,13 @@
+# Host Python environments and caches (the image builds its own)
+.venv/
+venv/
+bin/
+lib/
+include/
+pyvenv.cfg
+**/__pycache__
+.DS_Store
+
+# Case output and host build artifacts
+processor*
+**/*.so

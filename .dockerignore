@@ -4,10 +4,16 @@ runs/
 .idea
 
 
-# Compiled Elmer modules are built inside the image; never copy host builds over them
-libs/**/*.so
+# Build outputs from host compiles; the image builds its own
+**/*.so
+**/lnInclude
+**/Make/darwin*
+**/Make/linux*
 
-# Host Python environments and caches (the image builds its own)
-tests/linearHall/.venv
+# Not part of the solver image: the application builds from tests/linearHall
+tests/
+experiments/
+out/
 **/__pycache__
 plasma_collisions/
+cmake-build-debug/
