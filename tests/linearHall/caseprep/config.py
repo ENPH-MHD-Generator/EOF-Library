@@ -101,10 +101,11 @@ class MeshConfig:
 
     ``tetrahedral`` (default): the unstructured Gmsh mesh controlled by the
     size_* keys. ``structured``: graded hexahedra, finest at the walls (cold
-    thermal boundary layer) and streamwise at the electrode edges. The
-    two-temperature electron model does not yet converge on structured meshes:
-    their wall cells are far smaller than the ~1 mm electron energy relaxation
-    length, where the purely local Te balance runs away at electrode edges.
+    thermal boundary layer) and streamwise at the electrode edges. With the
+    local electron energy balance (plasma.electron_energy_transport false) the
+    two-temperature model does not converge on structured meshes: their wall
+    cells are far smaller than the ~1 mm electron energy relaxation length,
+    where the purely local Te balance runs away at electrode edges.
     """
 
     type: str = "tetrahedral"
@@ -267,6 +268,8 @@ class PhysicsConfig:
     # electrode surface warms ~10 K and a ceramic one tens to a few hundred K.
     insulator_wall_temperature: Optional[float] = 300.0
     electrode_wall_temperature: Optional[float] = 300.0
+    # Absolute static pressure at the outlet [Pa]; the flow is compressible
+    outlet_pressure: float = 101325.0
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "PhysicsConfig":
@@ -279,6 +282,7 @@ class PhysicsConfig:
                 "inlet_temperature",
                 "insulator_wall_temperature",
                 "electrode_wall_temperature",
+                "outlet_pressure",
             ),
             "physics",
         )
@@ -301,6 +305,11 @@ class PhysicsConfig:
                 "physics.inlet_temperature",
                 positive=True,
             ),
+            outlet_pressure=_number(
+                data.get("outlet_pressure", cls.outlet_pressure),
+                "physics.outlet_pressure",
+                positive=True,
+            ),
         )
 
 
@@ -311,8 +320,13 @@ class PlasmaConfig:
     Only the seed ionizes (Saha equation at the electron temperature).
     Conductivity comes from electron-neutral collisions with both the carrier
     gas and neutral seed. With two_temperature, Te is raised above the gas
-    temperature by Joule heating of the electrons (Kerrebrock energy balance);
-    otherwise Te = Tgas.
+    temperature by Joule heating of the electrons; otherwise Te = Tgas.
+
+    electron_energy_transport selects how Te is found: true solves the electron
+    energy equation (Joule heating, collisional loss to the gas, conduction,
+    convection with the gas and the current, and transport of ionization
+    energy); false uses the local balance of heating and collisional loss
+    (Kerrebrock), which ignores all transport.
     """
 
     seed_mole_fraction: float = 0.01  # seed atoms per heavy particle
@@ -320,10 +334,10 @@ class PlasmaConfig:
     seed_gi_over_gn: float = 0.5  # g(K+) / g(K) = 1 / 2
     seed_cross_section: float = 4.0e-18  # m^2, electron-seed momentum transfer
     carrier_cross_section: float = 1.0e-19  # m^2, electron-carrier momentum transfer
-    reference_pressure: float = 101325.0  # Pa, absolute pressure at OpenFOAM p = 0
     sigma_min: float = 1.0e-2  # S/m, conductivity floor for matrix conditioning
     sigma_max: float = 1.0e6  # S/m
     two_temperature: bool = True
+    electron_energy_transport: bool = True  # electron energy PDE (false: local balance)
     carrier_molar_mass: float = 39.948  # g/mol (Ar)
     seed_molar_mass: float = 39.098  # g/mol (K)
     energy_loss_factor: float = 1.0  # delta; 1 for elastic losses in monatomic gas
@@ -334,6 +348,11 @@ class PlasmaConfig:
     def from_mapping(cls, raw: Any) -> "PlasmaConfig":
         data = _mapping(raw or {}, "plasma")
         defaults = cls()
+        if "reference_pressure" in data:
+            raise ConfigError(
+                "plasma.reference_pressure was removed: the flow is compressible and "
+                "OpenFOAM's pressure is absolute; set physics.outlet_pressure instead"
+            )
         _known_keys(data, asdict(defaults), "plasma")
 
         def value(key: str, *, positive: bool = True) -> float:
@@ -349,9 +368,11 @@ class PlasmaConfig:
                 return _number(raw_value, location, positive=True)
             return _nonnegative_number(raw_value, location)
 
-        two_temperature = data.get("two_temperature", defaults.two_temperature)
-        if not isinstance(two_temperature, bool):
-            raise ConfigError("plasma.two_temperature must be true or false")
+        switches = {}
+        for key in ("two_temperature", "electron_energy_transport"):
+            switches[key] = data.get(key, getattr(defaults, key))
+            if not isinstance(switches[key], bool):
+                raise ConfigError(f"plasma.{key} must be true or false")
 
         result = cls(
             seed_mole_fraction=value("seed_mole_fraction"),
@@ -359,10 +380,10 @@ class PlasmaConfig:
             seed_gi_over_gn=value("seed_gi_over_gn"),
             seed_cross_section=value("seed_cross_section", positive=False),
             carrier_cross_section=value("carrier_cross_section", positive=False),
-            reference_pressure=value("reference_pressure"),
             sigma_min=value("sigma_min"),
             sigma_max=value("sigma_max"),
-            two_temperature=two_temperature,
+            two_temperature=switches["two_temperature"],
+            electron_energy_transport=switches["electron_energy_transport"],
             carrier_molar_mass=value("carrier_molar_mass"),
             seed_molar_mass=value("seed_molar_mass"),
             energy_loss_factor=value("energy_loss_factor"),
@@ -510,6 +531,7 @@ class CaseConfig:
                 "inlet_temperature": self.physics.inlet_temperature,
                 "insulator_wall_temperature": self.physics.insulator_wall_temperature,
                 "electrode_wall_temperature": self.physics.electrode_wall_temperature,
+                "outlet_pressure": self.physics.outlet_pressure,
             },
             "plasma": asdict(self.plasma),
             "coupling": asdict(self.coupling),

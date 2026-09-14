@@ -11,6 +11,12 @@ Application
 Description
     EOF coupled OpenFOAM/Elmer solver (Hall MHD channel).
 
+    Compressible laminar gas flow (rhoPimpleFoam, static mesh) with the
+    Lorentz force J x B in the momentum equation and the electromagnetic power
+    J.E in the total energy equation. Elmer solves the electrical problem and
+    the seeded-plasma state from the velocity, gas temperature and absolute
+    pressure sent to it.
+
     Pattern intentionally mirrors the EOF reference solvers:
       - Construct Elmer sender/receiver normally (constructor does handshake).
       - Do ONE initial send/recv before the OF time loop.
@@ -18,11 +24,11 @@ Description
 \*---------------------------------------------------------------------------*/
 
 #include "fvCFD.H"
-#include "singlePhaseTransportModel.H"
-#include "turbulentTransportModel.H"
+#include "fluidThermo.H"
+#include "turbulentFluidThermoModel.H"
 #include "pimpleControl.H"
+#include "pressureControl.H"
 #include "fvOptions.H"
-#include "CorrectPhi.H"
 #include "Elmer.H"
 #include "zeroGradientFvPatchFields.H"
 
@@ -37,17 +43,11 @@ int main(int argc, char *argv[])
     #include "createTimeControls.H"
     #include "initContinuityErrs.H"
     #include "createFields.H"
-    #include "createFvOptions.H"
-    #include "correctPhi.H"
 
     turbulence->validate();
 
-    // Explicitly disable LTS in this solver (keep compilation simple for OF6 setups)
-    const bool LTS = false;
-    (void)LTS; // silence unused warning if your includes don’t reference it
-
     #include "readTimeControls.H" // reads time controls from the control dict
-    #include "CourantNo.H"
+    #include "compressibleCourantNo.H"
     #include "setInitialDeltaT.H"
 
     Info<< "\nStarting time loop\n" << endl;
@@ -154,7 +154,7 @@ int main(int argc, char *argv[])
     while (runTime.run())
     {
         #include "readTimeControls.H"
-        #include "CourantNo.H"
+        #include "compressibleCourantNo.H"
         #include "setDeltaT.H"
 
         runTime++;
@@ -198,7 +198,7 @@ int main(int argc, char *argv[])
         }
         const scalar dprel =
             gMax(mag(p.primitiveField() - p_sent.primitiveField()))
-           /max(gMax(p_sent.primitiveField()) + couplingReferencePressure, SMALL);
+           /max(gMax(p_sent.primitiveField()), SMALL);
 
         const bool doElmer =
             status != 1
@@ -316,7 +316,7 @@ int main(int argc, char *argv[])
                 // dt / tau_mag with tau_mag = rho/(sigma B^2): above ~1 the lagged
                 // force alone would be unstable and the implicit damping carries it
                 Info<< "Lorentz damping: max dt/tau_mag = "
-                    << gMax(lorentzDamping.primitiveField())*runTime.deltaTValue()/rhoConst.value()
+                    << gMax(lorentzDamping.primitiveField()/rho.primitiveField())*runTime.deltaTValue()
                     << nl << endl;
             }
         }
@@ -326,16 +326,15 @@ int main(int argc, char *argv[])
         // -----------------------------------------------------------------
         while (pimple.loop())
         {
-            laminarTransport.correct();
-
-            // Mass flux for momentum and energy convection, from the latest
-            // pressure-corrected flux (interFoam updates this in its alpha
-            // equation, which this solver does not have)
-            rhoPhi = fvc::interpolate(rho)*phi;
+            if (pimple.firstIter() && !pimple.simpleRho())
+            {
+                #include "rhoEqn.H"
+            }
 
             #include "UEqn.H"
-            #include "TEqn.H"
+            #include "EEqn.H"
 
+            // --- Pressure corrector loop
             while (pimple.correct())
             {
                 #include "pEqn.H"
@@ -347,9 +346,20 @@ int main(int argc, char *argv[])
             }
         }
 
+        rho = thermo.rho();
+
+        {
+            // Extremes of the compressible state, for monitoring
+            Info<< "rho min/max = " << gMin(rho.primitiveField()) << " " << gMax(rho.primitiveField())
+                << "  p min/max = " << gMin(p.primitiveField()) << " " << gMax(p.primitiveField())
+                << "  T min/max = " << gMin(T.primitiveField()) << " " << gMax(T.primitiveField())
+                << "  max Mach = "
+                << gMax(mag(U.primitiveField())*sqrt(psi.primitiveField()/thermo.gamma()().primitiveField()))
+                << nl << endl;
+        }
+
         runTime.write();
 
-         
 
         Info<< "ExecutionTime = " << runTime.elapsedCpuTime() << " s"
             << "  ClockTime = " << runTime.elapsedClockTime() << " s"

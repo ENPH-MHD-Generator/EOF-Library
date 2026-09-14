@@ -110,11 +110,10 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
     END DO
   END IF
 
-  ! Seeded-plasma state computed from the Saha equation each call
+  ! Seeded-plasma state computed from the Saha equation each call. The
+  ! electron temperature is the variable of the Electron Energy solver.
   CALL ListAddString( Params, &
        NextFreeKeyword('Exported Variable ', Params), 'Ionization Fraction' )
-  CALL ListAddString( Params, &
-       NextFreeKeyword('Exported Variable ', Params), 'Electron Temperature' )
   CALL ListAddString( Params, &
        NextFreeKeyword('Exported Variable ', Params), 'Electron Density' )
   CALL ListAddString( Params, &
@@ -217,6 +216,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   REAL(KIND=dp), POINTER :: ElemCurr1(:), ElemCurr2(:), ElemCurr3(:), ElemHeating(:)
   INTEGER, POINTER :: ElemPerm(:)
   INTEGER, POINTER :: PlasmaPerm(:)
+  ! Electron temperature: the variable of the Electron Energy solver, whose
+  ! linear system this solver assembles and solves (SolveElectronEnergy)
+  INTEGER, POINTER :: TePerm(:)
+  TYPE(Solver_t), POINTER :: TeSolver
+  ! Set once a potential solution (and so a current) exists
+  LOGICAL :: HaveCurrent = .FALSE.
   REAL(KIND=dp) :: TeChange, TeTol
   ! Per-node electron temperature relaxation and last step, for damping
   ! oscillating nodes (indexed like ElecTemp)
@@ -259,7 +264,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   PVar, TgasVar, SigVar, &
   PVals, TgasVals, SigVals, &
   PPerm, TgasPerm, SigPerm, &
-  IonFrac, ElecTemp, ElecDens, ElecMob, PlasmaPerm, EffField, &
+  IonFrac, ElecTemp, ElecDens, ElecMob, PlasmaPerm, EffField, TePerm, TeSolver, HaveCurrent, &
   TeNodeRelax, TeLastStep, TeNodeWeight, &
   ElemCurr1, ElemCurr2, ElemCurr3, ElemHeating, ElemPerm
 
@@ -456,8 +461,15 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     IonFrac => Var % Values ; PlasmaPerm => Var % Perm
 
     Var => VariableGet( Solver % Mesh % Variables, 'Electron Temperature' )
-    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Temperature not found')
-    ElecTemp => Var % Values
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver', &
+        'Electron Temperature not found: the SIF needs the Electron Energy solver (MHDSolve ElectronEnergySolver)')
+    ElecTemp => Var % Values ; TePerm => Var % Perm
+    NULLIFY( TeSolver )
+    DO k = 1, Model % NumberOfSolvers
+      IF ( ASSOCIATED(Model % Solvers(k) % Variable, Var) ) TeSolver => Model % Solvers(k)
+    END DO
+    IF (.NOT. ASSOCIATED(TeSolver)) CALL Fatal('StatCurrentSolver', &
+        'Electron Temperature must be the variable of the Electron Energy solver')
 
     Var => VariableGet( Solver % Mesh % Variables, 'Electron Density' )
     IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Density not found')
@@ -796,6 +808,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     IF ( Control .OR. CalculateCurrent .OR. CalculateHeating .OR. &
         CalculateNodalHeating ) THEN
       CALL GeneralCurrent( Model, Potential, PotentialPerm )
+      HaveCurrent = .TRUE.
       
       ! Check current at electrode boundaries (only on last iteration)
       IF (CalculateCurrent .AND. iter == NonlinearIter) THEN
@@ -909,25 +922,28 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !> ionizes; the carrier gas (e.g. argon) is treated as fully neutral.
 !> Heavy particles are at the gas temperature Tg, electrons at Te.
 !>
-!>   n     = (p + p_ref) / (kB Tg)                  heavy-particle density
+!>   n     = p / (kB Tg)                            heavy-particle density
 !>   n_s   = x_s n                                  seed density
 !>   ne^2 / (n_s - ne) = S(Te)                      two-temperature Saha
 !>   S     = 2 (g_i/g_n) (2 pi me kB Te / h^2)^(3/2) exp(-chi / (kB Te))
 !>   nu_c  = vth (n - n_s) Q_c,  nu_s = vth (n_s - ne) Q_s,  nu = nu_c + nu_s
 !>   mu_e  = e / (me nu),   sigma = e ne mu_e,   vth = sqrt(8 kB Te / (pi me))
 !>
-!> Two-temperature mode (Kerrebrock): Joule heating of the electrons balances
-!> their elastic collisional losses to heavy particles,
+!> p is OpenFOAM's absolute pressure (plus Reference Pressure, 0 by default).
+!>
+!> Two-temperature mode: Joule heating of the electrons against their elastic
+!> collisional losses to heavy particles. With Electron Energy Transport the
+!> electron energy equation is solved (SolveElectronEnergy). Otherwise the
+!> local balance (Kerrebrock)
 !>   J^2/sigma = 3 delta ne me kB (Te - Tg) sum_s nu_s / M_s,
 !> which with E = |J|/sigma becomes
-!>   Te - Tg = e^2 E^2 / (3 delta kB me^2 nu sum_s nu_s / M_s).
-!> E is taken from the previous current solution, the root is found by
-!> bisection, and the update is under-relaxed. Equilibrium mode sets Te = Tg.
+!>   Te - Tg = e^2 E^2 / (3 delta kB me^2 nu sum_s nu_s / M_s),
+!> is solved by bisection at every node, with E from the previous current
+!> solution. Either update is under-relaxed. Equilibrium mode sets Te = Tg.
 !>
 !> Fills Electric Conductivity (clamped to [Sigma Min, Sigma Max]), Ionization
 !> Fraction (ne/n), Electron Temperature, Electron Density and Electron
 !> Mobility. The mobility sets the Hall coefficient, see HallCoefficient.
-!> MaxRelChange returns the largest relative change of Te over all nodes.
 !------------------------------------------------------------------------------
 SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
   !> Volume-weighted RMS of the relative electron temperature change. This,
@@ -941,8 +957,8 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
 
   TYPE(ValueList_t), POINTER :: Mat
   TYPE(SeedPlasma_t) :: Pl
-  INTEGER :: i, ipT, ipP, ipS, ipX, ipJ, matId
-  INTEGER :: nOwned, nSigClamped, nTeClamped
+  INTEGER :: i, ipT, ipP, ipS, ipX, ipJ, ipE, matId
+  INTEGER :: nOwned, nSigClamped, nTeClamped, nTeFloor
   REAL(KIND=dp) :: Pref, TeRelax, TeMax, SigmaMin, SigmaMax
   REAL(KIND=dp) :: Tg, Te, TeOld, TeStep, Pabs, nHeavy, nSeed
   REAL(KIND=dp) :: WorstChange, WorstPos(3)
@@ -950,7 +966,7 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
   REAL(KIND=dp) :: ne, nu, NuOverMass, mu, sigma
   REAL(KIND=dp) :: Ep(3), Bn(3), Bmag, Epar2, Eperp2
   REAL(KIND=dp) :: IonMin, IonMax, SigMin, SigMax, TeMinSeen, TeMaxSeen, DTeMax
-  LOGICAL :: Found, TwoTemperature, Owned, AtMax
+  LOGICAL :: Found, TwoTemperature, ElectronTransport, Owned, AtMax
 
   REAL(KIND=dp), PARAMETER :: NA = 6.02214076d23
 
@@ -977,6 +993,7 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
       CALL Fatal('UpdateSeededPlasma','Electron-neutral cross sections must be non-negative and not both zero')
 
   TwoTemperature = ListGetLogical(Mat, 'Two Temperature', Found)
+  ElectronTransport = .FALSE.
   IF (TwoTemperature) THEN
     IF (.NOT. CalculateCurrent) CALL Fatal('UpdateSeededPlasma', &
         'Two Temperature requires Calculate Volume Current = True')
@@ -988,11 +1005,13 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
     IF (Pl % Mseed <= 0.0_dp .OR. Pl % Mcarrier <= 0.0_dp .OR. Pl % LossFactor <= 0.0_dp .OR. &
         TeMax <= 0.0_dp .OR. TeRelax <= 0.0_dp .OR. TeRelax > 1.0_dp) &
         CALL Fatal('UpdateSeededPlasma', 'Invalid two-temperature parameters')
+    ElectronTransport = ListGetLogical(Mat, 'Electron Energy Transport', Found)
   END IF
 
-  ! OpenFOAM pressure is gauge; this is the absolute pressure it is relative to
+  ! OpenFOAM's pressure is absolute (compressible solver); a nonzero value
+  ! here only serves gauge-pressure input
   Pref = ListGetCReal(Mat, 'Reference Pressure', Found)
-  IF (.NOT. Found) Pref = 101325.0_dp
+  IF (.NOT. Found) Pref = 0.0_dp
   SigmaMin = ListGetCReal(Mat, 'Sigma Min', Found)
   IF (.NOT. Found) SigmaMin = 1.0d-2
   SigmaMax = ListGetCReal(Mat, 'Sigma Max', Found)
@@ -1005,7 +1024,7 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
   MaxRelChange = 0.0_dp
   RmsRelChange = 0.0_dp
   SumW = 0.0_dp; SumWC2 = 0.0_dp
-  nOwned = 0; nSigClamped = 0; nTeClamped = 0
+  nOwned = 0; nSigClamped = 0; nTeClamped = 0; nTeFloor = 0
   nDamped = 0
   WorstChange = -1.0_dp; WorstPos = 0.0_dp
 
@@ -1026,6 +1045,11 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
       DEALLOCATE( TeNodeWeight )
       CALL ComputeNodeWeights()
     END IF
+
+    ! Transport: solve the electron energy equation for the whole field first;
+    ! the node loop below then only evaluates the plasma state at the new Te
+    IF (ElectronTransport) CALL SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, &
+        SumW, SumWC2, MaxRelChange, WorstChange, WorstPos, nTeClamped, nTeFloor, nDamped )
   END IF
 
   DO i = 1, Solver % Mesh % NumberOfNodes
@@ -1033,7 +1057,8 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
     ipP = PPerm(i)
     ipS = SigPerm(i)
     ipX = PlasmaPerm(i)
-    IF (ipT <= 0 .OR. ipP <= 0 .OR. ipS <= 0 .OR. ipX <= 0) CYCLE
+    ipE = TePerm(i)
+    IF (ipT <= 0 .OR. ipP <= 0 .OR. ipS <= 0 .OR. ipX <= 0 .OR. ipE <= 0) CYCLE
 
     ! Count each node once across partitions (the first neighbour owns it)
     Owned = .TRUE.
@@ -1056,7 +1081,11 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
       nSeed  = Pl % SeedFrac * nHeavy
       Te = Tg
 
-      IF (TwoTemperature) THEN
+      IF (TwoTemperature .AND. ElectronTransport) THEN
+        ! Solved and relaxed by SolveElectronEnergy (Tg until a current exists)
+        Te = ElecTemp(ipE)
+        IF (.NOT. (Te > 0.0_dp)) Te = Tg
+      ELSE IF (TwoTemperature) THEN
         ! Field seen by the electrons, E' = -grad(phi) + U x B, from the
         ! previous potential solution, split along and across B
         Ep = 0.0_dp
@@ -1078,7 +1107,7 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
         ! A node whose step reverses direction is oscillating around its fixed
         ! point (strong Te-sigma-current feedback); halve its relaxation so the
         ! oscillation decays instead of stalling the whole nonlinear solve.
-        TeOld = ElecTemp(ipX)
+        TeOld = ElecTemp(ipE)
         IF (TeOld <= 0.0_dp) TeOld = Tg
         TeStep = Te - TeOld
         ! Only reversals larger than the convergence tolerance count: converged
@@ -1125,7 +1154,7 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
 
     SigVals(ipS)  = sigma
     IonFrac(ipX)  = ne / nHeavy
-    ElecTemp(ipX) = Te
+    ElecTemp(ipE) = Te
     ElecDens(ipX) = ne
     ElecMob(ipX)  = mu
 
@@ -1149,10 +1178,13 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
     nOwned = NINT(ParallelReduction(REAL(nOwned, dp)))
     nSigClamped = NINT(ParallelReduction(REAL(nSigClamped, dp)))
     nTeClamped = NINT(ParallelReduction(REAL(nTeClamped, dp)))
+    nTeFloor = NINT(ParallelReduction(REAL(nTeFloor, dp)))
     nDamped = NINT(ParallelReduction(REAL(nDamped, dp)))
   END IF
 
   IF (SumW > 0.0_dp) RmsRelChange = SQRT(SumWC2 / SumW)
+  ! No current yet (first call): the transport solve was skipped; iterate once more
+  IF (ElectronTransport .AND. .NOT. HaveCurrent) RmsRelChange = HUGE(1.0_dp)
 
   WRITE(Message,'(A,ES10.3,A,ES10.3,A,ES10.3,A,ES10.3,A,I0,A,I0,A)') &
       'Ionization fraction [', IonMin, ', ', IonMax, &
@@ -1165,8 +1197,12 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
         ' K  max rel. change ', MaxRelChange, '  capped at Te max: ', nTeClamped, &
         ' nodes  damped: ', nDamped, ' nodes'
     CALL Info('UpdateSeededPlasma', Message, Level=4)
+    IF (ElectronTransport .AND. nTeFloor > 0) THEN
+      WRITE(Message,'(A,I0,A)') 'Te held at the floor of 0.5 Tg at ', nTeFloor, ' nodes'
+      CALL Info('UpdateSeededPlasma', Message, Level=4)
+    END IF
     WRITE(Message,'(A,ES10.3,A,ES10.3,A)') &
-        'Te convergence: volume-weighted RMS change ', RmsRelChange, &
+        'Te convergence: volume-weighted RMS change ', MIN(RmsRelChange, 1.0e30_dp), &
         ' (tolerance ', TeTol, ')'
     CALL Info('UpdateSeededPlasma', Message, Level=4)
     IF (WorstChange > 0.0_dp .AND. MaxRelChange > 0.05_dp) THEN
@@ -1177,6 +1213,338 @@ SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
   END IF
 
 END SUBROUTINE UpdateSeededPlasma
+
+!------------------------------------------------------------------------------
+!> Electron energy equation for Te, assembled into and solved with the linear
+!> system of the Electron Energy solver. Steady state: the electron energy
+!> relaxation time (~1e-7 s) is far below the flow time scales, like the
+!> quasi-static current. Per unit volume,
+!>
+!>   (5/2) kB Gamma_e . grad(Te) + ((5/2) kB Te + chi) div(ne U)
+!>     - div(kappa_e grad(Te)) = J^2/sigma - 3 delta ne me kB (Te - Tg) sum_s nu_s/M_s
+!>
+!> with electron flux Gamma_e = ne U - J/e (div J = 0), electron thermal
+!> conductivity kappa_e = (5/2) ne kB^2 Te / (me nu), and ionization energy chi.
+!> The chi term carries the energy that ionizing the seed takes from the
+!> electrons (and recombination returns) as ne changes along the flow; with
+!> Saha equilibrium ne = ne(Te, n), so ionization kinetics would replace this
+!> term. The current is evaluated from the potential, U and B at each
+!> integration point. J^2/sigma and J/e use the physical conductivity
+!> e ne mu rather than the clamped one the potential solve uses, so cold gas
+!> with a conductivity floor does not heat a vanishing electron population.
+!>
+!> Linearization (one Newton step per call, with the rest lagged):
+!>   ne(Te)  ~ ne_k + g_k (Te - Te_k),  g = d(ne)/dTe at fixed n
+!> in div(ne U) and in the collisional loss; kappa_e, nu and the heating are
+!> lagged. Galerkin with SUPG on the convective terms and lumped reaction
+!> (monotone for reaction-dominated cells). Boundary conditions come from the
+!> SIF (the inlet sets Te = Tg); elsewhere they are natural (no conductive
+!> flux through walls, electrodes or the outlet). The
+!> solution change is limited to 100% of Te per iteration, under-relaxed like
+!> the local balance (including its per-node oscillation damping), and
+!> clamped to [0.5 Tg, TeMax].
+!>
+!> Adds each owned node's relaxed relative change to the convergence sums of
+!> UpdateSeededPlasma (counts are local; the caller reduces them).
+!------------------------------------------------------------------------------
+SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelChange, &
+    WorstChange, WorstPos, nTeClamped, nTeFloor, nDamped )
+  TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+  REAL(KIND=dp), INTENT(IN) :: Pref, TeRelax, TeMax
+  REAL(KIND=dp), INTENT(INOUT) :: SumW, SumWC2, MaxRelChange, WorstChange, WorstPos(3)
+  INTEGER, INTENT(INOUT) :: nTeClamped, nTeFloor, nDamped
+
+  ! Electron density floor for the transport coefficients, relative to the
+  ! seed density. Every term scales with ne, so this only keeps the rows of
+  ! cold, un-ionized gas from vanishing.
+  REAL(KIND=dp), PARAMETER :: NeFloorFraction = 1.0e-8_dp
+  ! Largest change of Te per iteration, relative to the previous iterate: a
+  ! wild Newton step at an electrode edge otherwise reaches Te max and trips
+  ! the oscillation damping over much of the field. (Tighter limits, damping
+  ! recovery and linearizing the heating in Te all converged more slowly.)
+  REAL(KIND=dp), PARAMETER :: MaxStepFraction = 1.0_dp
+
+  TYPE(Element_t), POINTER :: Elem
+  TYPE(Nodes_t), SAVE :: EN
+  TYPE(GaussIntegrationPoints_t) :: IP
+  INTEGER :: nNodes, nMax, t, gp, a, b, j, nn, ipE, ipX
+  INTEGER, POINTER :: Ind(:)
+  LOGICAL :: stat, Owned
+  REAL(KIND=dp), ALLOCATABLE, SAVE :: NdTe0(:), NdTg(:), NdNe(:), NdG(:), NdKap(:), NdC(:), &
+      NdCp(:), NdMu(:), NdSig(:), NdChiP(:), NdU(:,:), NdB(:,:)
+  LOGICAL, ALLOCATABLE, SAVE :: NdOK(:)
+  REAL(KIND=dp), ALLOCATABLE :: Kmat(:,:), Fvec(:), Basis(:), dBasisdx(:,:), Pot(:)
+  REAL(KIND=dp) :: DetJ, sw, Tg, Te0, Pabs, nH, nS, ne, nu, NuOverMass, neEff, g
+  REAL(KIND=dp) :: Ugp(3), Bgp(3), UxB(3), Grad(3), Ep(3), Jhat(3), Minv(3,3), M(3,3)
+  REAL(KIND=dp) :: SigC, Eta, Alpha, neG, gG, kapG, CG, CpG, muG, sigG, chiPG, Te0G, TgG
+  REAL(KIND=dp) :: Dn, Dg, DgT, QJ, Adv(3), r, f, AdvMag, AdvGrad(Model % MaxElementNodes)
+  REAL(KIND=dp) :: h, tau, SumAbs, Norm, TeSol, TeNew, TeStep, RelChange, TeLo
+  REAL(KIND=dp) :: PowerJoule, PowerLoss, PowerIon, tAsm, tSol
+  CHARACTER(LEN=256) :: Msg
+
+  nNodes = Solver % Mesh % NumberOfNodes
+  nMax = Model % MaxElementNodes
+
+  IF (.NOT. ALLOCATED(NdTe0)) THEN
+    ALLOCATE( NdTe0(nNodes), NdTg(nNodes), NdNe(nNodes), NdG(nNodes), NdKap(nNodes), &
+        NdC(nNodes), NdCp(nNodes), NdMu(nNodes), NdSig(nNodes), NdChiP(nNodes), &
+        NdU(3,nNodes), NdB(3,nNodes), NdOK(nNodes) )
+    ALLOCATE( EN % x(nMax), EN % y(nMax), EN % z(nMax) )
+  ELSE IF (SIZE(NdTe0) /= nNodes) THEN
+    CALL Fatal('SolveElectronEnergy', 'Mesh size changed')
+  END IF
+
+  !------------------------------------------------------------------------------
+  ! Nodal plasma coefficients at the previous electron temperature Te_k
+  !------------------------------------------------------------------------------
+  NdOK = .FALSE.
+  DO j = 1, nNodes
+    NdU(:,j) = 0.0_dp; NdB(:,j) = 0.0_dp
+    IF (UxPerm(j) > 0) NdU(1,j) = UxVals(UxPerm(j))
+    IF (UyPerm(j) > 0) NdU(2,j) = UyVals(UyPerm(j))
+    IF (UzPerm(j) > 0) NdU(3,j) = UzVals(UzPerm(j))
+    IF (BxPerm(j) > 0) NdB(1,j) = BxVals(BxPerm(j))
+    IF (ByPerm(j) > 0) NdB(2,j) = ByVals(ByPerm(j))
+    IF (BzPerm(j) > 0) NdB(3,j) = BzVals(BzPerm(j))
+    NdTe0(j) = 0.0_dp; NdTg(j) = 0.0_dp; NdNe(j) = 0.0_dp; NdG(j) = 0.0_dp
+    NdKap(j) = 0.0_dp; NdC(j) = 0.0_dp; NdCp(j) = 0.0_dp; NdMu(j) = 0.0_dp
+    NdSig(j) = 0.0_dp; NdChiP(j) = 0.0_dp
+
+    IF (TgasPerm(j) <= 0 .OR. PPerm(j) <= 0 .OR. TePerm(j) <= 0) CYCLE
+    Tg = TgasVals(TgasPerm(j))
+    Pabs = PVals(PPerm(j)) + Pref
+    IF (.NOT. (Tg > 0.0_dp) .OR. .NOT. (Pabs > 0.0_dp)) CYCLE
+    Te0 = ElecTemp(TePerm(j))
+    IF (.NOT. (Te0 > 0.0_dp)) Te0 = Tg
+
+    nH = Pabs / (kBoltz * Tg)
+    nS = Pl % SeedFrac * nH
+    CALL SeedPlasmaState( Pl, Te0, nH, nS, ne, nu, NuOverMass )
+    IF (.NOT. (nu > 0.0_dp)) CYCLE
+    neEff = MAX(ne, NeFloorFraction * nS)
+    g = SeedDensityDerivative( Pl, Te0, nS, ne )
+
+    NdOK(j)   = .TRUE.
+    NdTe0(j)  = Te0
+    NdTg(j)   = Tg
+    NdNe(j)   = neEff
+    NdG(j)    = g
+    NdKap(j)  = 2.5_dp * neEff * kBoltz**2 * Te0 / (eMass * nu)
+    NdC(j)    = 3.0_dp * Pl % LossFactor * neEff * eMass * kBoltz * NuOverMass
+    ! d(loss coefficient)/dTe through ne only (nu is lagged)
+    IF (ne > NeFloorFraction * nS) NdCp(j) = NdC(j) * g / neEff
+    NdMu(j)   = eCharge / (eMass * nu)
+    NdSig(j)  = eCharge * neEff * NdMu(j)
+    NdChiP(j) = Pl % ChiJ + 2.5_dp * kBoltz * Te0
+  END DO
+
+  IF (.NOT. HaveCurrent) THEN
+    ! No potential solution yet: electrons start in equilibrium with the gas
+    DO j = 1, nNodes
+      IF (NdOK(j)) ElecTemp(TePerm(j)) = NdTg(j)
+    END DO
+    RETURN
+  END IF
+
+  !------------------------------------------------------------------------------
+  ! Assembly
+  !------------------------------------------------------------------------------
+  ALLOCATE( Kmat(nMax,nMax), Fvec(nMax), Basis(nMax), dBasisdx(nMax,3), Pot(nMax) )
+  PowerJoule = 0.0_dp; PowerLoss = 0.0_dp; PowerIon = 0.0_dp
+  tAsm = CPUTime()
+
+  CALL DefaultInitialize( USolver=TeSolver )
+
+  DO t = 1, TeSolver % NumberOfActiveElements
+    Elem => TeSolver % Mesh % Elements( TeSolver % ActiveElements(t) )
+    Model % CurrentElement => Elem
+    nn = Elem % TYPE % NumberOfNodes
+    Ind => Elem % NodeIndexes
+    Kmat(1:nn,1:nn) = 0.0_dp
+    Fvec(1:nn) = 0.0_dp
+
+    IF ( Elem % PartIndex == ParEnv % MyPE .AND. ALL(NdOK(Ind(1:nn))) .AND. &
+         ALL(PotentialPerm(Ind(1:nn)) > 0) .AND. ALL(SigPerm(Ind(1:nn)) > 0) ) THEN
+      EN % x(1:nn) = Solver % Mesh % Nodes % x(Ind(1:nn))
+      EN % y(1:nn) = Solver % Mesh % Nodes % y(Ind(1:nn))
+      EN % z(1:nn) = Solver % Mesh % Nodes % z(Ind(1:nn))
+      Pot(1:nn) = Potential( PotentialPerm(Ind(1:nn)) )
+
+      IP = ElementGaussPoints( Elem )
+      DO gp = 1, IP % n
+        stat = ElementInfo( Elem, EN, IP % u(gp), IP % v(gp), IP % w(gp), DetJ, &
+            Basis, dBasisdx )
+        sw = DetJ * IP % s(gp)
+
+        ! Current from the generalized Ohm's law with the conductivity and
+        ! mobility of the potential solve, as in StatCurrentCompose
+        DO j = 1, 3
+          Ugp(j) = SUM( Basis(1:nn) * NdU(j,Ind(1:nn)) )
+          Bgp(j) = SUM( Basis(1:nn) * NdB(j,Ind(1:nn)) )
+          Grad(j) = SUM( dBasisdx(1:nn,j) * Pot(1:nn) )
+        END DO
+        UxB(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
+        UxB(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
+        UxB(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
+        Ep = -Grad + UxB
+
+        SigC = SUM( Basis(1:nn) * SigVals(SigPerm(Ind(1:nn))) )
+        IF (.NOT. (SigC > 0.0_dp)) CYCLE
+        Eta = 1.0_dp / SigC
+        Alpha = HallCoefficient( Basis, Ind, nn, Eta )
+        M = 0.0_dp
+        DO j = 1, 3
+          M(j,j) = Eta
+        END DO
+        M(1,2) = M(1,2) - Alpha * (-Bgp(3))
+        M(1,3) = M(1,3) - Alpha * ( Bgp(2))
+        M(2,1) = M(2,1) - Alpha * ( Bgp(3))
+        M(2,3) = M(2,3) - Alpha * (-Bgp(1))
+        M(3,1) = M(3,1) - Alpha * (-Bgp(2))
+        M(3,2) = M(3,2) - Alpha * ( Bgp(1))
+        CALL Invert3x3( M, Minv, stat )
+        IF (.NOT. stat) CYCLE
+        ! J / sigma: the effective field, independent of the conductivity level
+        Jhat = MATMUL( Minv, Ep ) * Eta
+
+        neG   = SUM( Basis(1:nn) * NdNe(Ind(1:nn)) )
+        gG    = SUM( Basis(1:nn) * NdG(Ind(1:nn)) )
+        kapG  = SUM( Basis(1:nn) * NdKap(Ind(1:nn)) )
+        CG    = SUM( Basis(1:nn) * NdC(Ind(1:nn)) )
+        CpG   = SUM( Basis(1:nn) * NdCp(Ind(1:nn)) )
+        muG   = SUM( Basis(1:nn) * NdMu(Ind(1:nn)) )
+        sigG  = SUM( Basis(1:nn) * NdSig(Ind(1:nn)) )
+        chiPG = SUM( Basis(1:nn) * NdChiP(Ind(1:nn)) )
+        Te0G  = SUM( Basis(1:nn) * NdTe0(Ind(1:nn)) )
+        TgG   = SUM( Basis(1:nn) * NdTg(Ind(1:nn)) )
+
+        ! div(ne U), div(g U), div(g U Te_k)
+        Dn = 0.0_dp; Dg = 0.0_dp; DgT = 0.0_dp
+        DO a = 1, nn
+          j = Ind(a)
+          Dn  = Dn  + SUM( dBasisdx(a,:) * NdU(:,j) ) * NdNe(j)
+          Dg  = Dg  + SUM( dBasisdx(a,:) * NdU(:,j) ) * NdG(j)
+          DgT = DgT + SUM( dBasisdx(a,:) * NdU(:,j) ) * NdG(j) * NdTe0(j)
+        END DO
+
+        QJ = sigG * SUM( Jhat**2 )
+
+        ! Convective velocity of the linearized operator [W/(m^2 K)]: electron
+        ! enthalpy with the electron flux ne (U - mu J/sigma), and ionization
+        ! energy with the change of ne along the gas flow
+        Adv = 2.5_dp * kBoltz * neG * (Ugp - muG * Jhat) + chiPG * gG * Ugp
+        ! Reaction [W/(m^3 K)] and source [W/m^3]
+        r = 2.5_dp * kBoltz * Dn + chiPG * Dg + CG + CpG * (Te0G - TgG)
+        f = QJ - Pl % ChiJ * Dn + chiPG * DgT + CG * TgG + CpG * (Te0G - TgG) * Te0G
+        ! A negative reaction (recombining flow) is kept explicit
+        IF (r < 0.0_dp) THEN
+          f = f - r * Te0G
+          r = 0.0_dp
+        END IF
+
+        PowerJoule = PowerJoule + sw * QJ
+        PowerLoss  = PowerLoss  + sw * CG * (Te0G - TgG)
+        PowerIon   = PowerIon   + sw * chiPG * Dn
+
+        ! SUPG: streamline element size and the Shakib-type parameter with
+        ! convection, diffusion and reaction
+        DO a = 1, nn
+          AdvGrad(a) = SUM( Adv * dBasisdx(a,:) )
+        END DO
+        AdvMag = SQRT( SUM(Adv**2) )
+        tau = 0.0_dp
+        SumAbs = SUM( ABS(AdvGrad(1:nn)) )
+        IF (AdvMag > 0.0_dp .AND. SumAbs > 0.0_dp) THEN
+          h = 2.0_dp * AdvMag / SumAbs
+          tau = 1.0_dp / SQRT( (2.0_dp*AdvMag/h)**2 + 9.0_dp*(4.0_dp*kapG/h**2)**2 + r**2 )
+        END IF
+
+        DO a = 1, nn
+          DO b = 1, nn
+            Kmat(a,b) = Kmat(a,b) + sw * ( Basis(a) * AdvGrad(b) &
+                + kapG * SUM( dBasisdx(a,:) * dBasisdx(b,:) ) &
+                + tau * AdvGrad(a) * ( AdvGrad(b) + r * Basis(b) ) )
+          END DO
+          Kmat(a,a) = Kmat(a,a) + sw * r * Basis(a)
+          Fvec(a) = Fvec(a) + sw * ( Basis(a) + tau * AdvGrad(a) ) * f
+        END DO
+      END DO
+    END IF
+
+    CALL DefaultUpdateEquations( Kmat(1:nn,1:nn), Fvec(1:nn), UElement=Elem, USolver=TeSolver )
+  END DO
+
+  CALL DefaultFinishBulkAssembly( TeSolver )
+  CALL DefaultFinishAssembly( TeSolver )
+  CALL DefaultDirichletBCs( USolver=TeSolver )
+  tSol = CPUTime()
+  tAsm = tSol - tAsm
+  Norm = DefaultSolve( USolver=TeSolver )
+  tSol = CPUTime() - tSol
+  DEALLOCATE( Kmat, Fvec, Basis, dBasisdx, Pot )
+  ! Default routines without an explicit solver act on the potential solver
+  Model % Solver => Solver
+
+  IF (ParEnv % PEs > 1) THEN
+    PowerJoule = ParallelReduction(PowerJoule)
+    PowerLoss  = ParallelReduction(PowerLoss)
+    PowerIon   = ParallelReduction(PowerIon)
+  END IF
+  WRITE(Msg,'(A,ES11.3,A,ES11.3,A,ES11.3,A)') 'Electron energy: Joule ', PowerJoule, &
+      ' W  collisional loss ', PowerLoss, ' W  ionization ', PowerIon, ' W (previous Te)'
+  CALL Info('SolveElectronEnergy', Msg, Level=4)
+  WRITE(Msg,'(A,F8.3,A,F8.3,A)') 'Electron energy: assembly ', tAsm, ' s  solve ', tSol, ' s (rank 0 CPU)'
+  CALL Info('SolveElectronEnergy', Msg, Level=5)
+
+  !------------------------------------------------------------------------------
+  ! Under-relaxed, clamped update with per-node oscillation damping (as for the
+  ! local balance in UpdateSeededPlasma)
+  !------------------------------------------------------------------------------
+  DO j = 1, nNodes
+    IF (.NOT. NdOK(j)) CYCLE
+    ipE = TePerm(j)
+    ipX = PlasmaPerm(j)
+    IF (ipX <= 0) CYCLE
+    Owned = .TRUE.
+    IF (ParEnv % PEs > 1) Owned = &
+        Solver % Mesh % ParallelInfo % NeighbourList(j) % Neighbours(1) == ParEnv % MyPE
+
+    Te0 = NdTe0(j)
+    TeSol = ElecTemp(ipE)
+    IF (.NOT. (TeSol == TeSol)) TeSol = Te0
+    TeStep = MAX(-MaxStepFraction * Te0, MIN(TeSol - Te0, MaxStepFraction * Te0))
+    IF (TeStep * TeLastStep(ipX) < 0.0_dp .AND. ABS(TeStep) > TeTol * Te0) &
+        TeNodeRelax(ipX) = MAX(0.5_dp * TeNodeRelax(ipX), 0.1_dp * TeRelax)
+    TeLastStep(ipX) = TeStep
+    IF (TeNodeRelax(ipX) < TeRelax .AND. Owned) nDamped = nDamped + 1
+
+    TeNew = Te0 + TeNodeRelax(ipX) * TeStep
+    TeLo = 0.5_dp * NdTg(j)
+    IF (TeNew > TeMax) THEN
+      TeNew = TeMax
+      IF (Owned) nTeClamped = nTeClamped + 1
+    ELSE IF (TeNew < TeLo) THEN
+      TeNew = TeLo
+      IF (Owned) nTeFloor = nTeFloor + 1
+    END IF
+    ElecTemp(ipE) = TeNew
+
+    IF (Owned) THEN
+      RelChange = ABS(TeNew - Te0) / Te0
+      SumW = SumW + TeNodeWeight(ipX)
+      SumWC2 = SumWC2 + TeNodeWeight(ipX) * RelChange**2
+      IF (RelChange > MaxRelChange) THEN
+        MaxRelChange = RelChange
+        IF (MaxRelChange > WorstChange) THEN
+          WorstChange = MaxRelChange
+          WorstPos = (/ Solver % Mesh % Nodes % x(j), Solver % Mesh % Nodes % y(j), &
+                        Solver % Mesh % Nodes % z(j) /)
+        END IF
+      END IF
+    END IF
+  END DO
+
+END SUBROUTINE SolveElectronEnergy
 
 !> Lumped nodal volumes, integral of each nodal basis function over the
 !> local active elements, stored with the plasma variable permutation
@@ -2133,3 +2501,21 @@ SUBROUTINE StatCurrentSolver_post( Model, Solver, dt, Transient )
   RETURN
 END SUBROUTINE StatCurrentSolver_post
 
+
+!------------------------------------------------------------------------------
+!> Electron Energy solver: owns the Electron Temperature variable and its
+!> linear system. StatCurrentSolver assembles and solves that system inside
+!> its own nonlinear iteration, where the electron temperature is coupled to
+!> the potential (see SolveElectronEnergy); executing this solver does nothing.
+!> It must run before StatCurrentSolver so its parallel matrix is initialized.
+!------------------------------------------------------------------------------
+SUBROUTINE ElectronEnergySolver( Model, Solver, dt, TransientSimulation )
+!------------------------------------------------------------------------------
+  USE DefUtils
+  IMPLICIT NONE
+  TYPE(Model_t) :: Model
+  TYPE(Solver_t), TARGET :: Solver
+  REAL(KIND=dp) :: dt
+  LOGICAL :: TransientSimulation
+!------------------------------------------------------------------------------
+END SUBROUTINE ElectronEnergySolver

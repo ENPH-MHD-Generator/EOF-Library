@@ -15,9 +15,12 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
+// Compressible PIMPLE with one outer corrector: Euler. backward (like the
+// unbounded convection schemes below) let pressure waves from the start-up
+// transient grow until the density went negative on the tetrahedral mesh.
 ddtSchemes
 {
-    default backward;
+    default Euler;
 }
 
 gradSchemes
@@ -27,15 +30,20 @@ gradSchemes
 
 divSchemes
 {
+    default                             none;
     div(phi,U)                          Gauss linearUpwind grad(U);
-    div(rhoPhi,U)                       Gauss linearUpwind grad(U);
-    div(rhoPhi,T)                       Gauss linearUpwind grad(T);
+    // Bounded (TVD) energy convection: linearUpwind and linear here produced
+    // spurious heating of ~1000 K near corners without any heat source
+    div(phi,h)                          Gauss limitedLinear 1;
+    div(phi,e)                          Gauss limitedLinear 1;
+    div(phi,K)                          Gauss limitedLinear 1;
+    div(phiv,p)                         Gauss linear;
     div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;
 }
 
 laplacianSchemes
 {
-    default         Gauss linear corrected;
+    default         Gauss linear limited corrected 0.5;
 }
 
 interpolationSchemes
@@ -62,7 +70,7 @@ interpolationSchemes
 
 snGradSchemes
 {
-    default         corrected;
+    default         limited corrected 0.5;
 }
 
 wallDist

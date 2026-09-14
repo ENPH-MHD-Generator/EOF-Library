@@ -153,11 +153,11 @@ electrode resistance is in ohms.
     electrode edges.
   - `growth_rate` (default 1.2) is the largest size ratio of neighbouring cells.
 
-  Keys of the other mesh type are rejected. Structured meshes currently only
-  work with `two_temperature: false`. Their wall cells are far smaller than
-  the ~1 mm electron energy relaxation length, and the local electron energy
-  balance runs away at the electrode edges without electron heat conduction.
-  Elmer's cost follows the node count, which for hexahedra is about 5x that of
+  Keys of the other mesh type are rejected. With the local electron energy
+  balance (`electron_energy_transport: false`), structured meshes only work
+  with `two_temperature: false`: their wall cells are far smaller than the
+  ~1 mm electron energy relaxation length, and the local balance runs away at
+  the electrode edges. Elmer's cost follows the node count, which for hexahedra is about 5x that of
   a tetrahedral mesh with the same number of cells.
 
 `electrodes` is required. Every electrode pair must have the same positive
@@ -199,6 +199,26 @@ non-negative.
   copper electrode surface warms about 10 K and a ceramic one tens to a few
   hundred K. Elmer sees the cold wall through the temperature interpolation,
   so the conductivity drops in the cold layer next to the walls.
+- `outlet_pressure` (default 101325 Pa) is the absolute static pressure at the
+  outlet.
+
+The gas is argon, solved as a compressible, laminar, calorically perfect ideal
+gas (`rhoPimpleFoam`; `constant/thermophysicalProperties`): `Cp` = 520.3
+J/(kg K), Sutherland viscosity fitted to argon, and conductivity from the
+Eucken relation (Prandtl number 2/3). Density therefore follows the
+temperature, which matters in the cold wall layer (about 8x denser than a
+2500 K core), and the extracted electrical power leaves the gas as enthalpy.
+The initial velocity is potential flow, and the initial pressure is uniform at
+`outlet_pressure`. Starting from that state launches pressure waves while the
+boundary layers form; on the tetrahedral meshes the cell pressure then stays
+within about 10% of the mean, with the extremes in single corner cells. The
+log prints the density, pressure, temperature and Mach number range each step.
+The schemes in `system/fvSchemes` are chosen for robustness on the
+tetrahedral meshes: Euler time stepping and bounded (`limitedLinear`)
+convection of enthalpy and kinetic energy. With
+`backward` and `linearUpwind`/`linear` energy convection, corner cells heated
+spuriously by ~1000 K and the run diverged within 4e-5 s even without a
+magnetic field.
 
 `plasma` is optional and describes the alkali-seeded carrier gas. The defaults
 are 1% potassium in argon:
@@ -210,10 +230,10 @@ plasma:
   seed_gi_over_gn: 0.5            # ion / neutral statistical weight ratio
   seed_cross_section: 4.0e-18     # m^2, electron-seed momentum transfer
   carrier_cross_section: 1.0e-19  # m^2, electron-carrier momentum transfer
-  reference_pressure: 101325      # Pa, absolute pressure where OpenFOAM p = 0
   sigma_min: 1.0e-2               # S/m
   sigma_max: 1.0e6                # S/m
   two_temperature: true           # Te from Joule heating vs. collisional loss
+  electron_energy_transport: true # electron energy equation (false: local balance)
   carrier_molar_mass: 39.948      # g/mol
   seed_molar_mass: 39.098         # g/mol
   energy_loss_factor: 1.0         # delta; 1 = elastic losses only
@@ -229,19 +249,58 @@ resulting electron density, `1/(n_e e)`. Conductivity is clamped to
 `[sigma_min, sigma_max]`, and the Hall parameter stays physical at clamped
 nodes.
 
-With `two_temperature: true`, `Te` comes from the electron energy balance
-(Kerrebrock): Joule heating of the electrons, `J^2/sigma`, equals their
-elastic collisional loss to heavy particles,
-`3 delta n_e m_e k_B (Te - Tg) sum_s nu_s / M_s`. The heating uses the field
-the electrons see, `E' = -grad(phi) + U x B`, with the Hall effect included:
-`J^2/sigma = sigma (E'_par^2 + E'_perp^2 / (1 + beta^2))`, where
-`beta = mu_e |B|`. Because conductivity depends
-on `Te` and the current depends on conductivity, `Te` is updated every
-nonlinear iteration of the current solver (under-relaxed by
-`electron_temperature_relaxation`), and the solver only stops once `Te` has
-also converged. `energy_loss_factor` scales the losses for inelastic or
-radiative processes. With `two_temperature: false`, `Te` equals the gas
+With `two_temperature: true`, `Te` rises above the gas temperature where
+Joule heating of the electrons, `J^2/sigma`, exceeds their elastic collisional
+loss to heavy particles, `3 delta n_e m_e k_B (Te - Tg) sum_s nu_s / M_s`. The
+heating uses the field the electrons see, `E' = -grad(phi) + U x B`, with the
+Hall effect included: `J^2/sigma = sigma (E'_par^2 + E'_perp^2 / (1 + beta^2))`,
+where `beta = mu_e |B|`. `energy_loss_factor` scales the losses for inelastic
+or radiative processes. With `two_temperature: false`, `Te` equals the gas
 temperature.
+
+With `electron_energy_transport: true` (the default), Elmer solves the steady
+electron energy equation (Solver 11 in `case.sif`):
+
+```text
+(5/2) k_B Gamma_e . grad(Te) + ((5/2) k_B Te + chi) div(n_e U) - div(kappa_e grad(Te))
+    = J^2/sigma - 3 delta n_e m_e k_B (Te - Tg) sum_s nu_s / M_s
+```
+
+- `Gamma_e = n_e U - J/e` is the electron flux: electron enthalpy is carried
+  by the gas flow and by the current (from cathode to anode).
+- `kappa_e = (5/2) n_e k_B^2 Te / (m_e nu)` is the electron thermal
+  conductivity. It spreads the heating over the relaxation length (about 1 mm
+  at 1 atm, growing as 1/p), which keeps `Te` and the conductivity finite at
+  the electrode edges and lets hot electrons reach into the cold wall layer.
+- `chi` is the seed ionization energy. With Saha equilibrium `n_e` follows
+  `Te`, so ionizing the seed along the flow takes `chi` per electron from the
+  electrons (recombination returns it). This makes the electron temperature
+  respond to the heating over a few centimetres downstream. Finite-rate ionization
+  (for example from an inductively coupled plasma source) would replace the
+  Saha relation and this term with an electron continuity equation.
+- The steady form is valid because electron energy relaxes in ~1e-7 s, far
+  faster than the flow changes.
+- Incoming gas is in equilibrium, `Te = Tg`, at the inlet. The equation is
+  dominated by convection there, and without that inflow value `Te` drifted
+  below the gas temperature and flickered over the first few centimetres.
+  Other boundaries have no conductive electron heat flux; walls and electrodes
+  cool the electrons through the gas temperature they relax to.
+- The heating and the electron drift use the physical conductivity
+  `e n_e mu_e`, not the value clamped to `sigma_min`, so cold gas does not
+  heat its vanishing electron population.
+
+The equation is linearized in `n_e(Te)` (one Newton step per nonlinear
+iteration), stabilized with SUPG, and solved inside the current solver's
+nonlinear iteration because `Te`, the conductivity and the current are tightly
+coupled. Each iteration's `Te` update is under-relaxed by
+`electron_temperature_relaxation`, and the current solver stops once both the
+potential and `Te` have converged. The Elmer log prints the electron energy
+budget, `Electron energy: Joule ... collisional loss ... ionization ...`,
+whose terms should balance.
+
+With `electron_energy_transport: false`, `Te` comes from the local balance of
+heating and collisional loss at each node (Kerrebrock), which ignores all
+transport. It is cheaper but runs away at electrode edges on fine meshes.
 
 The run writes `ionizationFraction` (`n_e / n_heavy`), `Te`, and
 `elcond_elmer` as OpenFOAM fields, including initial values at `t = 0`. The
@@ -267,9 +326,10 @@ coupling step; a semi-implicit drag, `-sigma |B|^2 (U - U_sent)`, stabilizes
 that lag and vanishes at convergence. The Elmer log prints a power balance,
 `P_emf = int J.(U x B) dV` against Joule heating plus the power delivered to
 the electrode loads, and the OpenFOAM log prints the mechanical power the flow
-loses, `P_mech`, which should match `P_emf`. The flow is incompressible, so
-extracted power appears as a pressure drop rather than a fall in gas
-enthalpy.
+loses, `P_mech`, which should match `P_emf`. The energy equation receives the
+electromagnetic power `J.E = J^2/sigma + U.(J x B)`: Joule heating less the
+extracted mechanical power. It uses the same force as the momentum equation,
+so the gas loses exactly the power delivered to the loads as enthalpy.
 
 `coupling` is optional and sets how often OpenFOAM re-solves the electrical
 problem in Elmer:
@@ -431,7 +491,15 @@ time steps. Measured for 1e-4 s of simulated time:
 
 These timings predate the fixed wall temperatures, the one-point tetrahedral
 quadrature in Elmer and `maxCo 0.8`; the latter two cut run time by roughly
-25% and 10%. Use `--ranks 4` from about `size_factor` 0.2 down; on coarser meshes the fixed
+25% and 10%. They also predate the compressible solver and the electron energy
+equation. For 6e-5 s at `size_factor` 0.15 with 4 ranks: incompressible flow
+with the local balance took 37 s, compressible flow with the local balance
+26 s, and compressible flow with the electron energy equation 22 s. The
+compressible runs trigger fewer Elmer updates, and the electron energy
+equation needs fewer nonlinear iterations per update than the local balance
+(1.6 against 3.0); its own assembly and solve take about 1.5 s.
+
+Use `--ranks 4` from about `size_factor` 0.2 down; on coarser meshes the fixed
 start-up and coupling costs dominate and extra ranks do not help. The mesh is
 Netgen-optimized after generation because sliver tetrahedra otherwise set the
 time step for the whole mesh. Each Elmer update prints the electron

@@ -40,7 +40,7 @@ End
 
 Equation 1
   Name = "EOF_HallChannel"
-  Active Solvers(12) = 1 2 3 4 5 6 7 8 9 10 11 12
+  Active Solvers(13) = 1 2 3 4 5 6 7 8 9 10 11 12 13
 End
 
 
@@ -142,9 +142,33 @@ End
 
 
 ! --------------------------------------------------
-! 3 Custom Elmer MHD Solver
+! 3 Custom Elmer MHD Solvers
 ! --------------------------------------------------
+
+! Electron temperature. Its linear system is assembled and solved by the
+! Static Current Solver inside its nonlinear iteration (Electron Energy
+! Transport in the material); running this solver itself does nothing. It
+! must come before the Static Current Solver.
 Solver 11
+  Exec Solver = Always
+  Equation = "Electron Energy"
+  Procedure = "MHDSolve" "ElectronEnergySolver"
+  Variable = String "Electron Temperature"
+  Variable DOFs = 1
+
+  Linear System Solver = Iterative
+  Linear System Iterative Method = BiCGStabl
+  BiCGStabl Polynomial Degree = 4
+  Linear System Preconditioning = ILU1
+  Linear System Max Iterations = 2000
+  Linear System Convergence Tolerance = 1.0e-8
+  Linear System Abort Not Converged = False
+  ! Rows span the electron density (~1e6 between core and cold gas)
+  Linear System Scaling = True
+  Linear System Residual Output = 0
+End
+
+Solver 12
   Exec Solver = Always
   Equation = "Static Current Solver"
   Procedure = "MHDSolve" "StatCurrentSolver"
@@ -181,7 +205,7 @@ End
 ! --------------------------------------------------
 ! 4 Elmer -> OpenFOAM: export computed results
 ! --------------------------------------------------
-Solver 12
+Solver 13
   Exec Solver = Always
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
@@ -218,14 +242,15 @@ Material 1
   Seed Statistical Weight Ratio = Real {seed_gi_over_gn:g}  ! g_ion / g_neutral
   Seed Electron Neutral Cross Section = Real {seed_cross_section:g}  ! m^2
   Carrier Electron Neutral Cross Section = Real {carrier_cross_section:g}  ! m^2
-  Reference Pressure = Real {reference_pressure:g}  ! Pa, added to OpenFOAM gauge p
 
   Sigma Min = Real {sigma_min:g}
   Sigma Max = Real {sigma_max:g}
 
-  ! Electron temperature: Joule heating vs. elastic losses (Kerrebrock),
-  ! otherwise Te = Tgas
+  ! Electron temperature: Joule heating vs. elastic losses, otherwise Te = Tgas.
+  ! With Electron Energy Transport the electron energy equation is solved
+  ! (Solver 11); without it the local balance (Kerrebrock) is used.
   Two Temperature = Logical {two_temperature}
+  Electron Energy Transport = Logical {electron_energy_transport}
   Carrier Molar Mass = Real {carrier_molar_mass:g}  ! g/mol
   Seed Molar Mass = Real {seed_molar_mass:g}  ! g/mol
   Electron Energy Loss Factor = Real {energy_loss_factor:g}
@@ -240,7 +265,8 @@ class ElmerCaseRenderer:
 
     def render(self, config: CaseConfig, boundary_indices: Mapping[str, int]) -> str:
         material = asdict(config.plasma)
-        material["two_temperature"] = "True" if config.plasma.two_temperature else "False"
+        for key in ("two_temperature", "electron_energy_transport"):
+            material[key] = "True" if getattr(config.plasma, key) else "False"
         header = CASE_SIF_HEADER
         if config.mesh.type == "structured":
             # Graded hexahedra have thin, high-aspect wall cells: without row
@@ -259,13 +285,15 @@ class ElmerCaseRenderer:
         if solver == "auto":
             solver = "mumps" if config.mesh.type == "structured" else "iterative"
         if solver == "mumps":
-            old = "  Linear System Solver = Iterative\n"
+            # The potential solve only; the electron energy system stays iterative
+            old = "  Linear System Solver = Iterative\n  Linear System Iterative Method = GCR\n"
             assert header.count(old) == 1, old
             header = header.replace(
                 old,
                 "  ! Parallel sparse direct solve; the iterative settings below are unused\n"
                 "  Linear System Solver = Direct\n"
-                "  Linear System Direct Method = MUMPS\n",
+                "  Linear System Direct Method = MUMPS\n"
+                "  Linear System Iterative Method = GCR\n",
             )
         lines = [header, MATERIAL_TEMPLATE.format_map(material)]
         lines.extend(
@@ -305,10 +333,19 @@ class ElmerCaseRenderer:
                     f"Boundary Condition {condition_number}",
                     f"  ! {name}",
                     f"  Target Boundaries(1) = {boundary_indices[name]}",
-                    "End",
-                    "",
                 )
             )
+            if name == INLET:
+                # The electron energy equation is convection-dominated: without
+                # an inflow value Te drifted below Tg and flickered over the
+                # first centimetres. Incoming gas is in equilibrium.
+                lines.extend(
+                    (
+                        '  Electron Temperature = Variable "Gas Temperature"',
+                        '    Real MATC "tx"',
+                    )
+                )
+            lines.extend(("End", ""))
         return "\n".join(lines)
 
 
@@ -366,13 +403,13 @@ FIELD_DEFINITIONS = (
         "wall": {"type": "zeroGradient"},
     },
     {
-        "name": "p_rgh",
+        "name": "p",
         "class": "volScalarField",
         "dimensions": "[1 -1 -2 0 0 0 0]",
-        "internal_field": "uniform 0",
-        "comment": "// Dynamic pressure (p - rho*g*h)",
+        "internal_field": "uniform {outlet_pressure}",
+        "comment": "// Absolute pressure [Pa]",
         "inlet": {"type": "zeroGradient"},
-        "outlet": {"type": "fixedValue", "value": "uniform 0"},
+        "outlet": {"type": "fixedValue", "value": "uniform {outlet_pressure}"},
         "wall": {"type": "zeroGradient"},
     },
     {
@@ -508,9 +545,6 @@ temperatureTolerance    {temperature_tolerance:g};
 pressureTolerance       {pressure_tolerance:g};
 maxStepsBetweenUpdates  {max_steps_between_updates:d};
 
-// Absolute pressure at OpenFOAM p = 0 [Pa], for the relative pressure change
-referencePressure       {reference_pressure:g};
-
 // ************************************************************************* //
 """
 
@@ -518,7 +552,6 @@ referencePressure       {reference_pressure:g};
 def render_coupling_properties(config: CaseConfig) -> str:
     """Render constant/couplingProperties for the OpenFOAM solver."""
     values = asdict(config.coupling)
-    values["reference_pressure"] = config.plasma.reference_pressure
     return COUPLING_PROPERTIES_TEMPLATE.format_map(values)
 
 
@@ -530,6 +563,7 @@ class OpenFoamCaseRenderer:
             "inlet_velocity": _format_vector(config.physics.inlet_velocity),
             "inlet_temperature": f"{config.physics.inlet_temperature:g}",
             "B_field": _format_vector(config.physics.B_field),
+            "outlet_pressure": f"{config.physics.outlet_pressure:g}",
         }
         result: Dict[str, str] = {}
         for definition in FIELD_DEFINITIONS:

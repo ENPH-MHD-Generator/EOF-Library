@@ -284,7 +284,13 @@ class MhdRuntime:
     def preparation_commands(ranks: int) -> List[Sequence[str]]:
         return [
             ("gmshToFoam", "channel.msh"),
-            ("potentialFoam",),
+            # Initial velocity from potential flow. -pName points at a field that
+            # does not exist so the pressure BCs are inferred from U (the
+            # absolute-pressure field p is not a kinematic pressure)
+            ("potentialFoam", "-pName", "pPotential"),
+            # potentialFoam also writes its volumetric flux; the compressible
+            # solver would read it as the mass flux
+            ("rm", "-f", "0/phi"),
             ("decomposePar",),
             (
                 "ElmerGrid",

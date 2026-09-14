@@ -1,35 +1,28 @@
-    MRF.correctBoundaryVelocity(U);
+// Solve the momentum equation with the Lorentz force J x B from Elmer
 
-    fvVectorMatrix UEqn
-    (
-        fvm::ddt(rho, U) + fvm::div(rhoPhi, U)
-      + MRF.DDt(rho, U)
-      + turbulence->divDevRhoReff(rho, U)
-     ==
-        fvOptions(rho, U)
-      + fLorentz
-      - fvm::Sp(lorentzDamping, U)
-      + lorentzDamping*U_old
-    );
+MRF.correctBoundaryVelocity(U);
 
-    UEqn.relax();
+tmp<fvVectorMatrix> tUEqn
+(
+    fvm::ddt(rho, U) + fvm::div(phi, U)
+  + MRF.DDt(rho, U)
+  + turbulence->divDevRhoReff(U)
+ ==
+    fvOptions(rho, U)
+  + fLorentz
+  - fvm::Sp(lorentzDamping, U)
+  + lorentzDamping*U_old
+);
+fvVectorMatrix& UEqn = tUEqn.ref();
 
-    fvOptions.constrain(UEqn);
+UEqn.relax();
 
-    if (pimple.momentumPredictor())
-    {
-        solve
-        (
-            UEqn
-         ==
-            fvc::reconstruct
-            (
-                (
-                  - ghf*fvc::snGrad(rho)
-                  - fvc::snGrad(p_rgh)
-                ) * mesh.magSf()
-            )
-        );
+fvOptions.constrain(UEqn);
 
-        fvOptions.correct(U);
-    }
+if (pimple.momentumPredictor())
+{
+    solve(UEqn == -fvc::grad(p));
+
+    fvOptions.correct(U);
+    K = 0.5*magSqr(U);
+}

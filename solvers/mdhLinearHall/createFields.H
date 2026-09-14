@@ -1,19 +1,33 @@
 // -------------------------------------------------------------------------
-// Primary flow fields
+// Compressible gas (rhoPimpleFoam): thermophysical model, density, velocity
 // -------------------------------------------------------------------------
 
-Info<< "Reading field p_rgh\n" << endl;
-volScalarField p_rgh
+Info<< "Reading thermophysical properties\n" << endl;
+
+autoPtr<fluidThermo> pThermo
+(
+    fluidThermo::New(mesh)
+);
+fluidThermo& thermo = pThermo();
+thermo.validate(args.executable(), "h", "e");
+
+// Absolute pressure [Pa]
+volScalarField& p = thermo.p();
+// Gas temperature from the energy equation; sent to Elmer
+volScalarField& T = thermo.T();
+const volScalarField& psi = thermo.psi();
+
+volScalarField rho
 (
     IOobject
     (
-        "p_rgh",
+        "rho",
         runTime.timeName(),
         mesh,
-        IOobject::MUST_READ,
+        IOobject::READ_IF_PRESENT,
         IOobject::AUTO_WRITE
     ),
-    mesh
+    thermo.rho()
 );
 
 Info<< "Reading field U\n" << endl;
@@ -29,6 +43,40 @@ volVectorField U
     ),
     mesh
 );
+
+#include "compressibleCreatePhi.H"
+
+pressureControl pressureControl(p, rho, pimple.dict(), false);
+
+mesh.setFluxRequired(p.name());
+
+Info<< "Creating turbulence model\n" << endl;
+autoPtr<compressible::turbulenceModel> turbulence
+(
+    compressible::turbulenceModel::New
+    (
+        rho,
+        U,
+        phi,
+        thermo
+    )
+);
+
+Info<< "Creating field dpdt\n" << endl;
+volScalarField dpdt
+(
+    IOobject
+    (
+        "dpdt",
+        runTime.timeName(),
+        mesh
+    ),
+    mesh,
+    dimensionedScalar("dpdt", p.dimensions()/dimTime, 0)
+);
+
+Info<< "Creating field kinetic energy K\n" << endl;
+volScalarField K("K", 0.5*magSqr(U));
 
 // -------------------------------------------------------------------------
 // Coupling controls (constant/couplingProperties, written by caseprep).
@@ -57,8 +105,6 @@ const scalar couplingPressureTolerance =
     couplingProperties.lookupOrDefault<scalar>("pressureTolerance", 0);
 const label couplingMaxSteps =
     couplingProperties.lookupOrDefault<label>("maxStepsBetweenUpdates", 0);
-const scalar couplingReferencePressure =
-    couplingProperties.lookupOrDefault<scalar>("referencePressure", 101325);
 
 Info<< "Elmer coupling tolerances: U " << couplingVelocityTolerance
     << "  T " << couplingTemperatureTolerance
@@ -68,31 +114,28 @@ Info<< "Elmer coupling tolerances: U " << couplingVelocityTolerance
 label stepsSinceElmer = 0;
 label nElmerUpdates = 0;
 
-Info<< "Initializing field U_old\n" << endl;
+// Velocity, temperature and pressure at the last Elmer update
 volVectorField U_old
 (
-    IOobject
-    (
-        "U_old",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
+    IOobject("U_old", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
     U
+);
+volScalarField T_sent
+(
+    IOobject("T_sent", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
+    T
+);
+volScalarField p_sent
+(
+    IOobject("p_sent", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
+    p
 );
 
 // -------------------------------------------------------------------------
 // MHD coupling fields
 // -------------------------------------------------------------------------
-// -------------------------------------------------------------------------
-// MHD coupling fields (Elmer -> OpenFOAM)
-// Elmer exports Volume Current as components: Jx, Jy, Jz
-// We reconstruct J as a volVectorField
-// -------------------------------------------------------------------------
 
 Info<< "Reading magnetic field B\n" << endl;
-
 volVectorField B
 (
     IOobject
@@ -107,7 +150,6 @@ volVectorField B
 );
 
 Info<< "Reading electric potential\n" << endl;
-
 volScalarField potential
 (
     IOobject
@@ -122,7 +164,6 @@ volScalarField potential
 );
 
 Info<< "Initializing electric field (E = -grad(potential))\n" << endl;
-
 volVectorField electric_field
 (
     IOobject
@@ -136,75 +177,34 @@ volVectorField electric_field
     mesh
 );
 
-
-Info<< "Initializing current density components (Jx, Jy, Jz)\n" << endl;
-
 // Fields received from Elmer only have cell values; zeroGradient patches copy
 // them to the boundary (correctBoundaryConditions), which keeps the boundary
 // and the VTK point data from reading as zero.
 
+Info<< "Initializing current density components (Jx, Jy, Jz)\n" << endl;
 volScalarField Jx
 (
-    IOobject
-    (
-        "Jx",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Jx", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        dimCurrent/dimArea,   
-        0.0
-    ),
+    dimensionedScalar("zero", dimCurrent/dimArea, 0.0),
     zeroGradientFvPatchScalarField::typeName
 );
-
 volScalarField Jy
 (
-    IOobject
-    (
-        "Jy",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Jy", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        dimCurrent/dimArea,
-        0.0
-    ),
+    dimensionedScalar("zero", dimCurrent/dimArea, 0.0),
     zeroGradientFvPatchScalarField::typeName
 );
-
 volScalarField Jz
 (
-    IOobject
-    (
-        "Jz",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Jz", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        dimCurrent/dimArea,
-        0.0
-    ),
+    dimensionedScalar("zero", dimCurrent/dimArea, 0.0),
     zeroGradientFvPatchScalarField::typeName
 );
 
 Info<< "Initializing reconstructed current vector J (from components)\n" << endl;
-
 volVectorField J_dens
 (
     IOobject
@@ -216,16 +216,10 @@ volVectorField J_dens
         IOobject::AUTO_WRITE
     ),
     mesh,
-    dimensionedVector
-    (
-        "zero",
-        dimCurrent/dimArea,
-        vector::zero
-    )
+    dimensionedVector("zero", dimCurrent/dimArea, vector::zero)
 );
 
 Info<< "Initializing Lorentz force field fLorentz\n" << endl;
-
 volVectorField fLorentz
 (
     IOobject
@@ -236,25 +230,10 @@ volVectorField fLorentz
         IOobject::NO_READ,
         IOobject::AUTO_WRITE
     ),
-    J_dens ^ B // This is cross product for openFOAM
+    J_dens ^ B
 );
 
-
-
-Info<< "Initializing field T\n" << endl;
-volScalarField T
-(
-    IOobject
-    (
-        "T",
-        runTime.timeName(),
-        mesh,
-        IOobject::MUST_READ,
-        IOobject::AUTO_WRITE
-    ),
-    mesh
-);
-
+// Joule heating J^2/sigma [W/m^3]
 Info<< "Initializing field JH\n" << endl;
 volScalarField JH
 (
@@ -269,292 +248,62 @@ volScalarField JH
     mesh
 );
 
-Info<< "Initializing field JH_recv\n" << endl;
 volScalarField JH_recv
 (
-    IOobject
-    (
-        "JH_recv",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
+    IOobject("JH_recv", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
     JH
 );
 
 // -------------------------------------------------------------------------
-// Fluxes and transport
+// Scalar velocity and magnetic field components for Elmer coupling
 // -------------------------------------------------------------------------
 
-#include "createPhi.H"
-
-Info<< "Reading transportProperties\n" << endl;
-singlePhaseTransportModel laminarTransport(U, phi);
-
-// Constant fluid properties
-dimensionedScalar rhoConst("rho", dimDensity, laminarTransport);
-dimensionedScalar cp("cp", dimSpecificHeatCapacity, laminarTransport);
-dimensionedScalar kappa("kappa", dimPower/dimLength/dimTemperature, laminarTransport);
-
-// Density field
-volScalarField rho
-(
-    IOobject
-    (
-        "rho",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    mesh,
-    rhoConst
-);
-rho.oldTime();
-
-// Mass flux
-surfaceScalarField rhoPhi
-(
-    IOobject
-    (
-        "rhoPhi",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    fvc::interpolate(rho)*phi
-);
-
-// Turbulence model
-autoPtr<incompressible::turbulenceModel> turbulence
-(
-    incompressible::turbulenceModel::New(U, phi, laminarTransport)
-);
-
-// -------------------------------------------------------------------------
-// Gravity and pressure
-// -------------------------------------------------------------------------
-
-#include "readGravitationalAcceleration.H"
-#include "readhRef.H"
-#include "gh.H"
-
-volScalarField p
-(
-    IOobject
-    (
-        "p",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
-    p_rgh + rho*gh
-);
-
-// Temperature and pressure at the last Elmer update
-volScalarField T_sent
-(
-    IOobject("T_sent", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
-    T
-);
-volScalarField p_sent
-(
-    IOobject("p_sent", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
-    p
-);
-
-label pRefCell = 0;
-scalar pRefValue = 0.0;
-
-setRefCell
-(
-    p,
-    p_rgh,
-    pimple.dict(),
-    pRefCell,
-    pRefValue
-);
-
-if (p_rgh.needReference())
-{
-    p += dimensionedScalar
-    (
-        "p",
-        p.dimensions(),
-        pRefValue - getRefCellValue(p, pRefCell)
-    );
-    p_rgh = p - rho*gh;
-}
-
-mesh.setFluxRequired(p_rgh.name());
-
-// -------------------------------------------------------------------------
-// MRF (after mesh & transport are ready)
-// -------------------------------------------------------------------------
-
-#include "createMRF.H"
-
-
-// -------------------------------------------------------------------------
-// Elmer update control
-// -------------------------------------------------------------------------
-
-// -------------------------------------------------------------------------
-// Scalar velocity components for Elmer coupling
-// -------------------------------------------------------------------------
-
-Info<< "Initializing velocity components (Ux, Uy, Uz)\n" << endl;
-
+Info<< "Initializing velocity and magnetic field components\n" << endl;
 volScalarField Ux
 (
-    IOobject
-    (
-        "Ux",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Ux", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        dimVelocity,
-        0.0
-    )
+    dimensionedScalar("zero", dimVelocity, 0.0)
 );
-
 volScalarField Uy
 (
-    IOobject
-    (
-        "Uy",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Uy", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        dimVelocity,
-        0.0
-    )
+    dimensionedScalar("zero", dimVelocity, 0.0)
 );
-
 volScalarField Uz
 (
-    IOobject
-    (
-        "Uz",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Uz", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        dimVelocity,
-        0.0
-    )
+    dimensionedScalar("zero", dimVelocity, 0.0)
 );
-
-// Initialize once
-Ux = U.component(vector::X);
-Uy = U.component(vector::Y);
-Uz = U.component(vector::Z);
-
-
-// -------------------------------------------------------------------------
-// Scalar magnetic field components for Elmer coupling
-// -------------------------------------------------------------------------
-
-Info<< "Initializing magnetic field components (Bx, By, Bz)\n" << endl;
-
 volScalarField Bx
 (
-    IOobject
-    (
-        "Bx",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Bx", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        B.dimensions(),
-        0.0
-    )
+    dimensionedScalar("zero", B.dimensions(), 0.0)
 );
-
 volScalarField By
 (
-    IOobject
-    (
-        "By",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("By", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        B.dimensions(),
-        0.0
-    )
+    dimensionedScalar("zero", B.dimensions(), 0.0)
 );
-
 volScalarField Bz
 (
-    IOobject
-    (
-        "Bz",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Bz", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
-    dimensionedScalar
-    (
-        "zero",
-        B.dimensions(),
-        0.0
-    )
+    dimensionedScalar("zero", B.dimensions(), 0.0)
 );
-
-// Initialize once
-Bx = B.component(vector::X);
-By = B.component(vector::Y);
-Bz = B.component(vector::Z);
 
 // -------------------------------------------------------------------------
 // Seeded-plasma state computed by Elmer (Saha equation), written for viewing
 // -------------------------------------------------------------------------
 
 Info<< "Initializing plasma fields (elcond_elmer, ionizationFraction, Te)\n" << endl;
-
 volScalarField elcond_elmer
 (
-    IOobject
-    (
-        "elcond_elmer",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("elcond_elmer", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
     dimensionedScalar("zero", dimensionSet(-1, -3, 3, 0, 0, 2, 0), 0.0),
     zeroGradientFvPatchScalarField::typeName
@@ -563,14 +312,7 @@ volScalarField elcond_elmer
 // Electron mole fraction ne / n_heavy
 volScalarField ionizationFraction
 (
-    IOobject
-    (
-        "ionizationFraction",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("ionizationFraction", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
     dimensionedScalar("zero", dimless, 0.0),
     zeroGradientFvPatchScalarField::typeName
@@ -578,14 +320,7 @@ volScalarField ionizationFraction
 
 volScalarField Te
 (
-    IOobject
-    (
-        "Te",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::AUTO_WRITE
-    ),
+    IOobject("Te", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
     mesh,
     dimensionedScalar("zero", dimTemperature, 0.0),
     zeroGradientFvPatchScalarField::typeName
@@ -597,13 +332,9 @@ volScalarField Te
 // the Hall reduction sigma B^2/(1 + beta^2), so it over-damps (safely).
 volScalarField lorentzDamping
 (
-    IOobject
-    (
-        "lorentzDamping",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
+    IOobject("lorentzDamping", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
     elcond_elmer*magSqr(B)
 );
+
+#include "createMRF.H"
+#include "createFvOptions.H"

@@ -35,6 +35,7 @@ physics:
   # Uncooled walls starting at room temperature; null makes a surface adiabatic
   insulator_wall_temperature: 300   # K
   electrode_wall_temperature: 300   # K
+  outlet_pressure: 101325          # Pa, absolute
 
 # Alkali-seeded argon. Only the seed ionizes (two-temperature Saha).
 plasma:
@@ -43,10 +44,10 @@ plasma:
   seed_gi_over_gn: 0.5            # g(K+) / g(K)
   seed_cross_section: 4.0e-18     # m^2, electron-K momentum transfer
   carrier_cross_section: 3.93994730526347e-21  # m^2, electron-Ar momentum transfer
-  reference_pressure: 101325      # Pa, absolute pressure at OpenFOAM p = 0
   sigma_min: 1.0e-2               # S/m
   sigma_max: 1.0e6                # S/m
   two_temperature: true           # Te from Joule heating vs. collisional loss
+  electron_energy_transport: true # Te from the electron energy equation (false: local balance)
   carrier_molar_mass: 39.948      # g/mol (Ar)
   seed_molar_mass: 39.098         # g/mol (K)
   energy_loss_factor: 1.0         # delta; 1 = elastic losses only (monatomic)

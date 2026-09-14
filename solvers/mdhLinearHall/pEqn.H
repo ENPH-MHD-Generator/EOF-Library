@@ -1,65 +1,117 @@
+// Compressible pressure corrector (rhoPimpleFoam, static mesh). The Lorentz
+// force enters through UEqn, so HbyA already carries it.
+
+if (!pimple.simpleRho())
 {
-    volScalarField rAU("rAU", 1.0/UEqn.A());
-    surfaceScalarField rAUf("rAUf", fvc::interpolate(rAU));
+    rho = thermo.rho();
+}
 
-    volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p_rgh));
+// Thermodynamic density needs to be updated by psi*d(p) after the
+// pressure solution
+const volScalarField psip0(psi*p);
 
-    surfaceScalarField phiHbyA
+volScalarField rAU(1.0/UEqn.A());
+surfaceScalarField rhorAUf("rhorAUf", fvc::interpolate(rho*rAU));
+volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p));
+
+if (pimple.nCorrPISO() <= 1)
+{
+    tUEqn.clear();
+}
+
+surfaceScalarField phiHbyA
+(
+    "phiHbyA",
+    fvc::interpolate(rho)*fvc::flux(HbyA)
+  + MRF.zeroFilter(rhorAUf*fvc::ddtCorr(rho, U, phi))
+);
+
+MRF.makeRelative(fvc::interpolate(rho), phiHbyA);
+
+// Update the pressure BCs to ensure flux consistency
+constrainPressure(p, rho, U, phiHbyA, rhorAUf, MRF);
+
+if (pimple.transonic())
+{
+    surfaceScalarField phid
     (
-        "phiHbyA",
-        fvc::flux(HbyA)
-      + fvc::interpolate(rho*rAU)*fvc::ddtCorr(U, phi)
+        "phid",
+        (fvc::interpolate(psi)/fvc::interpolate(rho))*phiHbyA
     );
-    MRF.makeRelative(phiHbyA);
-    adjustPhi(phiHbyA, U, p_rgh);
 
-    surfaceScalarField phig
+    phiHbyA -= fvc::interpolate(psi*p)*phiHbyA/fvc::interpolate(rho);
+
+    fvScalarMatrix pDDtEqn
     (
-        (
-          - ghf*fvc::snGrad(rho)
-        )*rAUf*mesh.magSf()
+        fvc::ddt(rho) + psi*correction(fvm::ddt(p))
+      + fvc::div(phiHbyA) + fvm::div(phid, p)
+     ==
+        fvOptions(psi, p, rho.name())
     );
-
-    phiHbyA += phig;
-
-    // Update the pressure BCs to ensure flux consistency
-    constrainPressure(p_rgh, U, phiHbyA, rAUf, MRF);
 
     while (pimple.correctNonOrthogonal())
     {
-        fvScalarMatrix p_rghEqn
-        (
-            fvm::laplacian(rAUf, p_rgh) == fvc::div(phiHbyA)
-        );
+        fvScalarMatrix pEqn(pDDtEqn - fvm::laplacian(rhorAUf, p));
 
-        p_rghEqn.setReference(pRefCell, getRefCellValue(p_rgh, pRefCell));
+        // Relax the pressure equation to ensure diagonal-dominance
+        pEqn.relax();
 
-        p_rghEqn.solve(mesh.solver(p_rgh.select(pimple.finalInnerIter())));
+        pEqn.solve(mesh.solver(p.select(pimple.finalInnerIter())));
 
         if (pimple.finalNonOrthogonalIter())
         {
-            phi = phiHbyA - p_rghEqn.flux();
-
-            p_rgh.relax();
-
-            U = HbyA + rAU*fvc::reconstruct((phig - p_rghEqn.flux())/rAUf);
-            U.correctBoundaryConditions();
-            fvOptions.correct(U);
+            phi = phiHbyA + pEqn.flux();
         }
     }
+}
+else
+{
+    fvScalarMatrix pDDtEqn
+    (
+        fvc::ddt(rho) + psi*correction(fvm::ddt(p))
+      + fvc::div(phiHbyA)
+     ==
+        fvOptions(psi, p, rho.name())
+    );
 
-    #include "continuityErrs.H"
-
-    p == p_rgh + rho*gh;
-
-    if (p_rgh.needReference())
+    while (pimple.correctNonOrthogonal())
     {
-        p += dimensionedScalar
-        (
-            "p",
-            p.dimensions(),
-            pRefValue - getRefCellValue(p, pRefCell)
-        );
-        p_rgh = p - rho*gh;
+        fvScalarMatrix pEqn(pDDtEqn - fvm::laplacian(rhorAUf, p));
+
+        pEqn.solve(mesh.solver(p.select(pimple.finalInnerIter())));
+
+        if (pimple.finalNonOrthogonalIter())
+        {
+            phi = phiHbyA + pEqn.flux();
+        }
     }
+}
+
+// Thermodynamic density update
+thermo.correctRho(psi*p - psip0);
+
+#include "rhoEqn.H"
+#include "compressibleContinuityErrs.H"
+
+// Explicitly relax pressure for momentum corrector
+p.relax();
+
+U = HbyA - rAU*fvc::grad(p);
+U.correctBoundaryConditions();
+fvOptions.correct(U);
+K = 0.5*magSqr(U);
+
+if (pressureControl.limit(p))
+{
+    p.correctBoundaryConditions();
+    rho = thermo.rho();
+}
+else if (pimple.simpleRho())
+{
+    rho = thermo.rho();
+}
+
+if (thermo.dpdt())
+{
+    dpdt = fvc::ddt(p);
 }

@@ -87,15 +87,9 @@ CONTAINS
     TYPE(SeedPlasma_t), INTENT(IN) :: Pl
     REAL(KIND=r8), INTENT(IN)  :: T, nH, nS
     REAL(KIND=r8), INTENT(OUT) :: ne, nu, NuOverMass
-    REAL(KIND=r8) :: SahaS, Expo, vth, nuC, nuS
+    REAL(KIND=r8) :: SahaS, vth, nuC, nuS
 
-    Expo = Pl % ChiJ / (kBoltz * T)
-    IF (Expo > 700.0_r8) THEN
-      SahaS = 0.0_r8
-    ELSE
-      SahaS = 2.0_r8 * Pl % WeightRatio * &
-          ((2.0_r8*Pi*eMass*kBoltz*T) / (hPlanck*hPlanck))**1.5_r8 * EXP(-Expo)
-    END IF
+    SahaS = SahaFactor( Pl, T )
 
     ! Positive root of ne^2 + S ne - S nS = 0, in a form that avoids
     ! cancellation when S >> nS
@@ -111,6 +105,37 @@ CONTAINS
     nu  = nuC + nuS
     NuOverMass = nuC / Pl % Mcarrier + nuS / Pl % Mseed
   END SUBROUTINE SeedPlasmaState
+
+
+  !> Right-hand side S(T) of the Saha equation ne^2 / (nS - ne) = S [m^-3]
+  FUNCTION SahaFactor( Pl, T ) RESULT(SahaS)
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN) :: T
+    REAL(KIND=r8) :: SahaS, Expo
+
+    Expo = Pl % ChiJ / (kBoltz * T)
+    IF (Expo > 700.0_r8) THEN
+      SahaS = 0.0_r8
+    ELSE
+      SahaS = 2.0_r8 * Pl % WeightRatio * &
+          ((2.0_r8*Pi*eMass*kBoltz*T) / (hPlanck*hPlanck))**1.5_r8 * EXP(-Expo)
+    END IF
+  END FUNCTION SahaFactor
+
+
+  !> Derivative d(ne)/dT of the Saha electron density ne at electron
+  !> temperature T and fixed seed density nS. From ne^2 + S ne - S nS = 0,
+  !>   d(ne)/dS = (nS - ne) / (2 ne + S),  dS/dT = S (3/(2T) + chi/(kB T^2))
+  FUNCTION SeedDensityDerivative( Pl, T, nS, ne ) RESULT(dne)
+    TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+    REAL(KIND=r8), INTENT(IN) :: T, nS, ne
+    REAL(KIND=r8) :: dne, SahaS
+
+    dne = 0.0_r8
+    SahaS = SahaFactor( Pl, T )
+    IF (SahaS <= 0.0_r8 .OR. 2.0_r8*ne + SahaS <= 0.0_r8) RETURN
+    dne = SahaS * (1.5_r8/T + Pl % ChiJ/(kBoltz*T*T)) * MAX(nS - ne, 0.0_r8) / (2.0_r8*ne + SahaS)
+  END FUNCTION SeedDensityDerivative
 
 
   !> Electron heating Te - Tg sustained at electron temperature T by the field
