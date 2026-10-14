@@ -8,7 +8,7 @@ from typing import Any, Dict, Mapping, Tuple, Type, Union
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from .models import CaseConfig, CaseConfigV1
+from .models import CaseConfig, CaseConfigV1, CaseConfigV2
 
 
 class ConfigError(ValueError):
@@ -17,16 +17,40 @@ class ConfigError(ValueError):
 
 SCHEMA_MODELS: Dict[int, Type[BaseModel]] = {
     1: CaseConfigV1,
+    2: CaseConfigV2,
 }
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Reject ambiguous YAML rather than silently using the last value."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> Dict:
+        self.flatten_mapping(node)
+        keys = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                if key in keys:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping", node.start_mark,
+                        f"duplicate key: {key!r}", key_node.start_mark,
+                    )
+                keys.add(key)
+            except TypeError as exc:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    "mapping keys must be hashable", key_node.start_mark,
+                ) from exc
+        return super().construct_mapping(node, deep=deep)
 
 
 def _load_yaml_mapping(path: Path) -> Mapping[str, Any]:
     try:
         with path.open(encoding="utf-8") as stream:
-            raw = yaml.safe_load(stream)
+            raw = yaml.load(stream, Loader=UniqueKeyLoader)
     except OSError as exc:
         raise ConfigError(f"Cannot read configuration '{path}': {exc}") from exc
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, UnicodeError) as exc:
         raise ConfigError(f"Invalid YAML in '{path}': {exc}") from exc
 
     if not isinstance(raw, Mapping):
@@ -86,4 +110,3 @@ def load_case_config(path: Path) -> CaseConfig:
         return model.model_validate(raw)  # type: ignore[return-value]
     except ValidationError as exc:
         raise _format_validation_error(path, exc) from exc
-

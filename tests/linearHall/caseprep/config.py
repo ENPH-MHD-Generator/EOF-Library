@@ -8,18 +8,22 @@ from .loader import ConfigError, load_case_config
 from .models import (
     CaseConfig,
     CaseConfigV1,
+    CaseConfigV2,
     ChannelConfig,
     ElectrodeConfig,
     ElectrodePair,
     EvenlySpacedElectrodeConfig,
     ExplicitElectrodeConfig,
     MeshConfig,
+    OpenFoamConfig,
+    OpenFoamFileConfig,
     PhysicsConfig,
 )
 
 __all__ = [
     "CaseConfig",
     "CaseConfigV1",
+    "CaseConfigV2",
     "ChannelConfig",
     "ConfigError",
     "ElectrodeConfig",
@@ -27,6 +31,8 @@ __all__ = [
     "EvenlySpacedElectrodeConfig",
     "ExplicitElectrodeConfig",
     "MeshConfig",
+    "OpenFoamConfig",
+    "OpenFoamFileConfig",
     "PhysicsConfig",
     "load_case_config",
 ]

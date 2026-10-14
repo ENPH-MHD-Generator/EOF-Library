@@ -3,16 +3,28 @@
 from __future__ import annotations
 
 from math import isfinite
-from typing import Annotated, Any, Dict, Literal, Mapping, Tuple, Union
+from pathlib import PurePosixPath
+from typing import Annotated, Any, Dict, List, Literal, Mapping, Tuple, Union
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+from typing_extensions import TypeAliasType
 
 
 def _finite_number(value: Any) -> float:
     """Accept YAML integers and floats, but reject booleans and strings."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("must be a number")
-    result = float(value)
+    try:
+        result = float(value)
+    except OverflowError as exc:
+        raise ValueError("must be finite") from exc
     if not isfinite(result):
         raise ValueError("must be finite")
     return result
@@ -23,6 +35,26 @@ PositiveNumber = Annotated[FiniteNumber, Field(gt=0)]
 NonNegativeNumber = Annotated[FiniteNumber, Field(ge=0)]
 PositiveInteger = Annotated[int, Field(strict=True, gt=0)]
 Vector3 = Tuple[FiniteNumber, FiniteNumber, FiniteNumber]
+FoamNumber = Annotated[float, Field(allow_inf_nan=False)]
+OpenFoamListValue = TypeAliasType(
+    "OpenFoamListValue",
+    Union[
+        bool, int, FoamNumber, str,
+        List["OpenFoamListValue"], Dict[str, "OpenFoamValue"],
+    ],
+)
+OpenFoamValue = TypeAliasType(
+    "OpenFoamValue",
+    Union[
+        None,
+        bool,
+        int,
+        FoamNumber,
+        str,
+        List[OpenFoamListValue],
+        Dict[str, "OpenFoamValue"],
+    ],
+)
 
 
 class SchemaModel(BaseModel):
@@ -140,12 +172,67 @@ class PhysicsConfig(SchemaModel):
     )
 
 
-class CaseConfigV1(SchemaModel):
-    """Complete schema-version-1 experiment and its physical constraints."""
+class OpenFoamFileConfig(SchemaModel):
+    """One data-driven OpenFOAM dictionary-like file."""
 
-    model_config = ConfigDict(title="MHD Experiment Configuration v1")
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        validate_default=True,
+        populate_by_name=True,
+    )
 
-    schema_version: Literal[1]
+    foam_class: str = Field(
+        default="dictionary",
+        alias="class",
+        description="OpenFOAM FoamFile class.",
+    )
+    entries: Dict[str, OpenFoamValue] = Field(
+        description=(
+            "Ordered OpenFOAM entries. Strings contain OpenFOAM tokens, mappings "
+            "become sub-dictionaries, arrays become parenthesized lists, booleans "
+            "become yes/no, and null emits a directive without a value."
+        )
+    )
+
+    @field_validator("foam_class")
+    @classmethod
+    def validate_foam_class(cls, value: str) -> str:
+        if not value or any(character.isspace() for character in value):
+            raise ValueError("must be a non-empty OpenFOAM class token")
+        return value
+
+
+class OpenFoamConfig(SchemaModel):
+    """OpenFOAM files rendered from the central experiment configuration."""
+
+    files: Dict[str, OpenFoamFileConfig] = Field(min_length=1)
+
+    @field_validator("files")
+    @classmethod
+    def validate_file_paths(
+        cls, value: Dict[str, OpenFoamFileConfig]
+    ) -> Dict[str, OpenFoamFileConfig]:
+        for raw_path in value:
+            path = PurePosixPath(raw_path)
+            if (
+                path.is_absolute()
+                or path.as_posix() != raw_path
+                or len(path.parts) != 2
+                or path.parts[0] not in {"0", "constant", "system"}
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or any(character.isspace() or character in '\\";{}()' for character in raw_path)
+            ):
+                raise ValueError(
+                    f"'{raw_path}' must be a file directly beneath 0/, constant/, "
+                    "or system/"
+                )
+        return value
+
+
+class CaseConfigBase(SchemaModel):
+    """Shared experiment fields and cross-section physical constraints."""
+
     channel: ChannelConfig
     mesh: MeshConfig
     electrodes: ElectrodeConfig
@@ -167,7 +254,7 @@ class CaseConfigV1(SchemaModel):
         )
 
     @model_validator(mode="after")
-    def validate_electrode_geometry(self) -> "CaseConfigV1":
+    def validate_electrode_geometry(self) -> "CaseConfigBase":
         """Validate constraints that span channel and electrode sections."""
         length = self.electrodes.length
         pairs = self.electrode_pairs
@@ -214,6 +301,28 @@ class CaseConfigV1(SchemaModel):
         }
 
 
+class CaseConfigV1(CaseConfigBase):
+    """Legacy schema-version-1 experiment configuration."""
+
+    model_config = ConfigDict(title="MHD Experiment Configuration v1")
+
+    schema_version: Literal[1]
+
+
+class CaseConfigV2(CaseConfigBase):
+    """Experiment with data-driven OpenFOAM dictionary rendering."""
+
+    model_config = ConfigDict(title="MHD Experiment Configuration v2")
+
+    schema_version: Literal[2]
+    openfoam: OpenFoamConfig
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = super().to_dict()
+        result["openfoam"] = self.openfoam.model_dump(mode="json", by_alias=True)
+        return result
+
+
 # Runtime code consumes this stable name. Future versions get separate models;
 # caseprep.loader retains explicit schema_version dispatch.
-CaseConfig = CaseConfigV1
+CaseConfig = Union[CaseConfigV1, CaseConfigV2]

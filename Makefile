@@ -9,6 +9,7 @@ export ROOT_DIR			 := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 export IMAGE_NAME		 ?= mhd-sim
 
 # ---- Build options ----
+PYTHON ?= python3
 ELMER_DEBUG ?= 0
 
 # This is so that the environment variables persist between commands
@@ -57,12 +58,19 @@ setup: build_environment
 	mkdir -p ./experiments ./out
 
 schema:
-	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} python3 -m caseprep.schema \
-		schemas/mhd-experiment-v1.schema.json
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} $(PYTHON) -m caseprep.schema \
+		schemas/mhd-experiment-v1.schema.json --version 1
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} $(PYTHON) -m caseprep.schema \
+		schemas/mhd-experiment-v2.schema.json
 
 check-schema:
-	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} python3 -m caseprep.schema \
-		schemas/mhd-experiment-v1.schema.json --check
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} $(PYTHON) -m caseprep.schema \
+		schemas/mhd-experiment-v1.schema.json --version 1 --check
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} $(PYTHON) -m caseprep.schema \
+		schemas/mhd-experiment-v2.schema.json --check
+
+test-caseprep: check-schema
+	$(PYTHON) -m unittest discover -s tests/linearHall -p 'test_*.py' -v
 
 build: setup
 	docker build \

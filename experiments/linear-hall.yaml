@@ -1,6 +1,6 @@
-# yaml-language-server: $schema=../schemas/mhd-experiment-v1.schema.json
+# yaml-language-server: $schema=../schemas/mhd-experiment-v2.schema.json
 # Baseline linear Hall MHD experiment.
-schema_version: 1
+schema_version: 2
 
 channel:
   length: 0.200
@@ -9,7 +9,7 @@ channel:
   wall_thickness: 0.005
 
 mesh:
-  target_element_size: 0.05
+  target_element_size: 0.005
 
 electrodes:
   length: 0.010
@@ -23,3 +23,131 @@ physics:
   B_field: [0, 0, 1.5]
   inlet_velocity: [391, 0, 0]
   inlet_temperature: 1500
+
+openfoam:
+  files:
+    constant/transportProperties:
+      entries:
+        transportModel: Newtonian
+        rho: 0.325
+        nu: 2.13e-4
+        cp: 520.0
+        kappa: 0.0866
+        elcond_melt: 3.0
+        maxRelDiff: 0
+
+    system/controlDict:
+      entries:
+        application: mdhLinearHall
+        startFrom: startTime
+        startTime: 0
+        stopAt: endTime
+        endTime: 1.0e-8
+        deltaT: 0.1
+        writeControl: timeStep
+        writeInterval: 1
+        adjustTimeStep: true
+        purgeWrite: 0
+        maxCo: 0.002
+        maxDeltaT: 1
+        functions: {}
+
+    system/fvSchemes:
+      entries:
+        ddtSchemes:
+          default: backward
+        gradSchemes:
+          default: Gauss linear
+        divSchemes:
+          "div(phi,U)": Gauss linearUpwind grad(U)
+          "div(rhoPhi,U)": Gauss linearUpwind grad(U)
+          "div(rhoPhi,T)": Gauss linearUpwind grad(T)
+          "div(((rho*nuEff)*dev2(T(grad(U)))))": Gauss linear
+        laplacianSchemes:
+          default: Gauss linear corrected
+        interpolationSchemes:
+          default: linear
+          elcond: cellPoint
+          Ux: cellPoint
+          Uy: cellPoint
+          Uz: cellPoint
+          Bx: cellPoint
+          By: cellPoint
+          Bz: cellPoint
+        snGradSchemes:
+          default: corrected
+        wallDist:
+          method: meshWave
+
+    system/fvSolution:
+      entries:
+        solvers:
+          Phi:
+            solver: PCG
+            preconditioner: DIC
+            tolerance: 1.0e-8
+            relTol: 0
+          p_rgh:
+            solver: GAMG
+            tolerance: 1.0e-7
+            relTol: 0.01
+            smoother: DICGaussSeidel
+            nPreSweeps: 0
+            nPostSweeps: 2
+            nFinestSweeps: 2
+            cacheAgglomeration: true
+            nCellsInCoarsestLevel: 10
+            agglomerator: faceAreaPair
+            mergeLevels: 1
+          pcorr:
+            solver: PCG
+            preconditioner: DIC
+            tolerance: 1.0e-7
+            relTol: 0
+          pcorrFinal:
+            $pcorr: null
+            relTol: 0
+          U:
+            solver: smoothSolver
+            smoother: symGaussSeidel
+            nSweeps: 2
+            tolerance: 1.0e-6
+            relTol: 0.1
+          UFinal:
+            $U: null
+            relTol: 0
+          T:
+            solver: PBiCGStab
+            preconditioner: DILU
+            tolerance: 1.0e-8
+            relTol: 0.01
+          TFinal:
+            $T: null
+            relTol: 0
+          p_rghFinal:
+            $p_rgh: null
+            relTol: 0
+        PIMPLE:
+          momentumPredictor: true
+          nOuterCorrectors: 1
+          nCorrectors: 2
+          nNonOrthogonalCorrectors: 0
+          pRefCell: 0
+          pRefValue: 0
+          residualControl:
+            p_rgh: 1.0e-6
+            U: 1.0e-7
+            T: 1.0e-7
+        potentialFlow:
+          solver: PCG
+          preconditioner: DIC
+          tolerance: 1.0e-8
+          relTol: 0
+          PhiRefCell: 0
+          PhiRefValue: 0
+        relaxationFactors:
+          fields:
+            p_rgh: 0.3
+          equations:
+            U: 0.5
+            T: 0.5

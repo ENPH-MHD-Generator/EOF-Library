@@ -250,8 +250,11 @@ class MhdRuntime:
 
     @staticmethod
     def _validate_ranks(ranks: object) -> None:
-        if isinstance(ranks, bool) or not isinstance(ranks, int) or ranks <= 0:
-            raise PreparationError("MPI ranks must be a positive integer")
+        if isinstance(ranks, bool) or not isinstance(ranks, int) or ranks < 2:
+            raise PreparationError(
+                "MPI ranks per solver must be an integer of at least 2; "
+                "the OpenFOAM coupled solver requires parallel execution"
+            )
 
     @staticmethod
     def _set_openfoam_ranks(case_directory: Path, ranks: int) -> None:
@@ -317,11 +320,22 @@ class MhdRuntime:
             case_directory / "case.sif",
             case_directory / "ELMERSOLVER_STARTINFO",
             case_directory / "channel.msh",
-            case_directory / "meshElmer",
-            case_directory / "constant" / "polyMesh",
         ]
-        required.extend(case_directory / f"processor{index}" for index in range(ranks))
-        missing = [str(path) for path in required if not path.exists()]
+        for filename in ("mesh.header", "mesh.nodes", "mesh.elements", "mesh.boundary"):
+            required.append(case_directory / "meshElmer" / filename)
+        for mesh_directory in [case_directory / "constant" / "polyMesh"] + [
+            case_directory / f"processor{index}" / "constant" / "polyMesh"
+            for index in range(ranks)
+        ]:
+            required.extend(mesh_directory / filename for filename in (
+                "points", "faces", "owner", "neighbour", "boundary",
+            ))
+        for index in range(1, ranks + 1):
+            partition = case_directory / "meshElmer" / f"partitioning.{ranks}"
+            required.extend(partition / f"part.{index}.{suffix}" for suffix in (
+                "header", "nodes", "elements", "boundary", "shared",
+            ))
+        missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise PreparationError(
                 "Prepared case is missing required paths: " + ", ".join(missing)

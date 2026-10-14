@@ -207,13 +207,8 @@
     }
   },
   "additionalProperties": false,
-  "description": "Complete schema-version-1 experiment and its physical constraints.",
+  "description": "Legacy schema-version-1 experiment configuration.",
   "properties": {
-    "schema_version": {
-      "const": 1,
-      "title": "Schema Version",
-      "type": "integer"
-    },
     "channel": {
       "$ref": "#/$defs/ChannelConfig"
     },
@@ -233,13 +228,18 @@
     },
     "physics": {
       "$ref": "#/$defs/PhysicsConfig"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
     }
   },
   "required": [
-    "schema_version",
     "channel",
     "mesh",
-    "electrodes"
+    "electrodes",
+    "schema_version"
   ],
   "title": "MHD Experiment Configuration v1",
   "type": "object"

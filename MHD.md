@@ -81,7 +81,7 @@ container mounts that directory read-only at `/experiments`. Start by copying
 [`experiments/linear-hall.yaml`](experiments/linear-hall.yaml).
 
 ```yaml
-schema_version: 1
+schema_version: 2
 
 channel:
   length: 0.200
@@ -104,6 +104,24 @@ physics:
   B_field: [0, 0, 1.5]
   inlet_velocity: [391, 0, 0]
   inlet_temperature: 1500
+
+openfoam:
+  files:
+    constant/transportProperties:
+      entries:
+        transportModel: Newtonian
+        rho: 0.325
+        nu: 2.13e-4
+        cp: 520.0
+        kappa: 0.0866
+        elcond_melt: 3.0
+        maxRelDiff: 0
+    system/controlDict:
+      entries:
+        application: mdhLinearHall
+        endTime: 1.0e-8
+        adjustTimeStep: true
+        maxCo: 0.002
 ```
 
 All geometry values are in metres. `B_field` is in tesla,
@@ -112,7 +130,8 @@ electrode resistance is in ohms.
 
 ### Schema reference
 
-`schema_version` must be `1`.
+New configurations use `schema_version: 2`. Version 1 remains loadable for
+existing configurations, but does not support data-driven OpenFOAM files.
 
 The versioned Pydantic models in
 `tests/linearHall/caseprep/models.py` are the authoritative schema. They reject
@@ -121,7 +140,7 @@ span configuration sections. The loader selects the matching model using
 `schema_version`, which allows future versions to coexist without silently
 changing the meaning of existing files.
 
-The generated JSON Schema at `schemas/mhd-experiment-v1.schema.json` provides
+The generated JSON Schema at `schemas/mhd-experiment-v2.schema.json` provides
 portable editor validation and completion. The example YAML declares this
 schema with a `yaml-language-server` comment. After changing a Pydantic model,
 regenerate and verify the artifact from a Python environment containing
@@ -131,6 +150,19 @@ regenerate and verify the artifact from a Python environment containing
 make schema
 make check-schema
 ```
+
+Both versioned schemas are generated and checked. For local development, use
+a virtual environment and run the config and pipeline regression suite:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-caseprep.txt
+make test-caseprep PYTHON=.venv/bin/python
+```
+
+CI runs these checks on Python 3.11. They cover configuration validation,
+rendering, mesh compatibility, failure recovery, and run orchestration. Native
+mesh conversion and the coupled solve require the Docker image.
 
 `channel` defines the rectangular flow channel and is required:
 
@@ -183,8 +215,29 @@ non-negative.
 - `inlet_velocity` is a three-component inlet velocity vector.
 - `inlet_temperature` must be positive.
 
+`openfoam.files` is required in version 2 and maps a case-relative path to a
+file description. Paths must name a file directly below `0/`, `constant/`, or
+`system/`. Each file accepts an optional `class` (default: `dictionary`) and an
+ordered `entries` mapping. Entries render recursively using OpenFOAM syntax:
+
+- mappings become sub-dictionaries;
+- arrays become parenthesized lists;
+- booleans become `yes` or `no`;
+- strings are emitted as OpenFOAM token expressions;
+- `null` emits a valueless directive, such as `$p_rgh;` for dictionary reuse.
+
+This generic representation covers transport properties, run control,
+discretization schemes, solver settings, and additional OpenFOAM files without
+requiring a renderer change for every new keyword. See the complete checked-in
+experiment for the baseline `transportProperties`, `controlDict`, `fvSchemes`,
+and `fvSolution` settings.
+
 Unknown keys and invalid values fail during validation instead of being
 silently ignored.
+
+Duplicate YAML keys and non-finite numeric values are rejected. Arrays can
+contain nested arrays and dictionaries; `null` is only valid as a dictionary
+entry. Numeric dictionary values retain their full floating-point precision.
 
 ## Prepare one case
 
@@ -209,8 +262,10 @@ can redirect a case outside `/runs`.
 Preparation performs the following work:
 
 1. Validates and resolves the YAML configuration.
-2. Renders `case.sif` and all generated OpenFOAM initial fields.
-3. Copies the maintained base `constant/` and `system/` inputs.
+2. Renders `case.sif`, all generated OpenFOAM initial fields, and configured
+   OpenFOAM files.
+3. Copies the maintained base `constant/` and `system/` inputs before replacing
+   configuration-owned files with their rendered versions.
 4. Reuses or generates the Gmsh mesh.
 5. Converts the mesh for OpenFOAM and Elmer.
 6. Runs `potentialFoam`, partitions both solvers with the same MPI rank count,
@@ -229,10 +284,18 @@ Use `--mesh` after changing any mesh-affecting setting:
 mhd prepare /experiments/new-geometry.yaml --mesh
 ```
 
+The provided `linear-hall-coarse.yaml` uses a larger target element size and
+also requires `--mesh`:
+
+```sh
+mhd prepare /experiments/linear-hall-coarse.yaml --mesh
+```
+
 Useful options are:
 
 - `--name NAME` chooses the directory name beneath `/runs`.
-- `--ranks N` partitions each solver into `N` MPI ranks; the default is `2`.
+- `--ranks N` partitions each solver into `N` MPI ranks; the minimum and default
+  are `2`. OpenFOAM's coupled parallel execution rejects a single rank.
 - `--force` atomically replaces an existing case with the same name.
 - `--dry-run` validates the input and prints the planned files and commands
   without writing a case.
@@ -297,6 +360,10 @@ Elmer and OpenFOAM inputs, converted and partitioned meshes, and a hidden
 `.mhd-prepared.json` execution marker. Running the solver adds its normal time
 directories, logs/data, reconstructed fields, and `VTK/` output to the same
 named directory.
+
+The checked-in examples use `endTime: 1.0e-8` for short pipeline smoke tests.
+Choose the run duration and numerical settings needed for your experiment
+before drawing physical conclusions from its output.
 
 `out/` is ignored by Git. Copy results elsewhere if they need long-term
 archival outside the working tree.

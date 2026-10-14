@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Mapping
 
 from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
-from .models import CaseConfig
+from .foam import (
+    OPENFOAM_FILE_FOOTER,
+    render_openfoam_file,
+    render_openfoam_header,
+)
+from .models import CaseConfig, CaseConfigV2
 
 
 CASE_SIF_HEADER = """\
@@ -235,24 +240,7 @@ class ElmerCaseRenderer:
         return "\n".join(lines)
 
 
-OPENFOAM_HEADER = """\
-/*--------------------------------*- C++ -*----------------------------------*\\
-| =========                 |                                                 |
-| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\\\    /   O peration     | Version:  dev                                   |
-|   \\\\  /    A nd           | Web:      www.OpenFOAM.org                      |
-|    \\\\/     M anipulation  |                                                 |
-\\*---------------------------------------------------------------------------*/
-FoamFile
-{{
-    version     2.0;
-    format      ascii;
-    class       {field_class};
-    location    "0";
-    object      {field_name};
-}}
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
+OPENFOAM_FIELD_BODY = """\
 {comment}dimensions {dimensions};
 
 internalField   {internal_field};
@@ -261,9 +249,6 @@ internalField   {internal_field};
 boundaryField
 {{
 {patches}}}
-
-
-// ************************************************************************* //
 """
 
 
@@ -373,7 +358,7 @@ def _render_patch(name: str, condition: Mapping[str, str]) -> str:
 
 
 class OpenFoamCaseRenderer:
-    """Render all OpenFOAM initial and boundary fields."""
+    """Render initial fields and version-2 data-driven OpenFOAM files."""
 
     def render(self, config: CaseConfig) -> Dict[str, str]:
         substitutions = {
@@ -383,9 +368,14 @@ class OpenFoamCaseRenderer:
         }
         result: Dict[str, str] = {}
         for definition in FIELD_DEFINITIONS:
-            result[str(definition["name"])] = self._render_field(
-                definition, electrode_patch_names(len(config.electrode_pairs)), substitutions
+            result[f"0/{definition['name']}"] = self._render_field(
+                definition,
+                electrode_patch_names(len(config.electrode_pairs)),
+                substitutions,
             )
+        if isinstance(config, CaseConfigV2):
+            for path, file_config in config.openfoam.files.items():
+                result[path] = render_openfoam_file(path, file_config)
         return result
 
     @staticmethod
@@ -410,7 +400,11 @@ class OpenFoamCaseRenderer:
         wall = definition["wall"]
         assert isinstance(wall, Mapping)
         for name in electrodes:
-            patches.append(_render_patch(name, _resolve_boundary_condition(wall, substitutions)))
+            patches.append(
+                _render_patch(
+                    name, _resolve_boundary_condition(wall, substitutions)
+                )
+            )
         patches.append(
             _render_patch(
                 "defaultFaces", _resolve_boundary_condition(wall, substitutions)
@@ -418,11 +412,13 @@ class OpenFoamCaseRenderer:
         )
 
         comment = definition.get("comment")
-        return OPENFOAM_HEADER.format(
-            field_class=definition["class"],
-            field_name=definition["name"],
+        header = render_openfoam_header(
+            str(definition["class"]), "0", str(definition["name"])
+        )
+        body = OPENFOAM_FIELD_BODY.format(
             comment=f"{comment}\n" if comment else "",
             dimensions=definition["dimensions"],
             internal_field=str(definition["internal_field"]).format_map(substitutions),
             patches="\n\n".join(patches) + "\n",
         )
+        return header + body + OPENFOAM_FILE_FOOTER

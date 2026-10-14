@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate a fresh mesh; the compatible base mesh is reused by default.",
     )
     prepare.add_argument(
-        "--ranks", type=int, default=2, help="MPI ranks per solver (default: 2)."
+        "--ranks", type=int, default=2, help="MPI ranks per solver (minimum/default: 2)."
     )
     prepare.add_argument(
         "--force", action="store_true", help="Replace an existing case with the same name."
@@ -140,7 +140,7 @@ def main(
         action = "Validated" if args.dry_run else "Completed"
         print(f"{action} case: {destination}")
         return 0
-    except (ConfigError, PreparationError, RuntimeError) as exc:
+    except (ConfigError, PreparationError, RuntimeError, OSError) as exc:
         parser.exit(2, f"error: {exc}\n")
 
 

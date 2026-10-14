@@ -7,20 +7,20 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
-from .models import CaseConfigV1
+from .loader import SCHEMA_MODELS
 
 
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
-def experiment_schema() -> Dict[str, Any]:
+def experiment_schema(version: int = 2) -> Dict[str, Any]:
     """Return the JSON Schema for the current public experiment format."""
-    generated = CaseConfigV1.model_json_schema(mode="validation")
+    generated = SCHEMA_MODELS[version].model_json_schema(mode="validation", by_alias=True)
     return {"$schema": JSON_SCHEMA_DIALECT, **generated}
 
 
-def render_experiment_schema() -> str:
-    return json.dumps(experiment_schema(), indent=2) + "\n"
+def render_experiment_schema(version: int = 2) -> str:
+    return json.dumps(experiment_schema(version), indent=2) + "\n"
 
 
 def main(arguments: Optional[Sequence[str]] = None) -> int:
@@ -28,6 +28,7 @@ def main(arguments: Optional[Sequence[str]] = None) -> int:
         description="Generate or verify the MHD experiment JSON Schema."
     )
     parser.add_argument("output", type=Path, help="Destination JSON Schema file.")
+    parser.add_argument("--version", type=int, choices=sorted(SCHEMA_MODELS), default=2)
     parser.add_argument(
         "--check",
         action="store_true",
@@ -35,7 +36,7 @@ def main(arguments: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(arguments)
 
-    rendered = render_experiment_schema()
+    rendered = render_experiment_schema(args.version)
     if args.check:
         try:
             current = args.output.read_text(encoding="utf-8")
@@ -52,4 +53,3 @@ def main(arguments: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

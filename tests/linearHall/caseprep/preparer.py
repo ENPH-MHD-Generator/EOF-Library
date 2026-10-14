@@ -50,7 +50,7 @@ class CasePreparer:
         self._validate_options(generate_mesh, reuse_mesh)
         self._validate_base_case(config, reuse_mesh=reuse_mesh)
         files = ["case.sif", "resolved-config.yaml", "manifest.json"]
-        files.extend(f"0/{name}" for name in self.openfoam_renderer.render(config))
+        files.extend(self.openfoam_renderer.render(config))
         files.extend(("constant/", "system/"))
         if generate_mesh or reuse_mesh:
             files.append("channel.msh")
@@ -69,7 +69,7 @@ class CasePreparer:
         self._validate_options(generate_mesh, reuse_mesh)
         self._validate_base_case(config, reuse_mesh=reuse_mesh)
         destination = destination.resolve()
-        if destination == self.base_case_directory:
+        if destination == self.base_case_directory or destination in self.base_case_directory.parents:
             raise PreparationError(
                 "Refusing to replace the base case; choose a separate output directory"
             )
@@ -84,6 +84,7 @@ class CasePreparer:
         staging = Path(
             tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent)
         )
+        previous = staging / ".previous-case"
         try:
             self._materialize(
                 config,
@@ -92,11 +93,18 @@ class CasePreparer:
                 reuse_mesh=reuse_mesh,
             )
             if destination.exists():
-                if destination.is_dir() and not destination.is_symlink():
-                    shutil.rmtree(destination)
-                else:
-                    destination.unlink()
-            staging.replace(destination)
+                destination.replace(previous)
+            try:
+                staging.replace(destination)
+            except Exception:
+                if previous.exists():
+                    previous.replace(destination)
+                raise
+            previous = destination / ".previous-case"
+            if previous.is_dir():
+                shutil.rmtree(previous)
+            elif previous.exists():
+                previous.unlink()
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
             raise
@@ -115,10 +123,10 @@ class CasePreparer:
         indices = elmer_boundary_indices(len(config.electrode_pairs))
         self._write_text(destination / "case.sif", self.elmer_renderer.render(config, indices))
 
-        zero_directory = destination / "0"
-        zero_directory.mkdir(parents=True, exist_ok=True)
-        for name, content in self.openfoam_renderer.render(config).items():
-            self._write_text(zero_directory / name, content)
+        for relative_path, content in self.openfoam_renderer.render(config).items():
+            output = destination / relative_path
+            output.parent.mkdir(parents=True, exist_ok=True)
+            self._write_text(output, content)
 
         with (destination / "resolved-config.yaml").open(
             "w", encoding="utf-8", newline="\n"
