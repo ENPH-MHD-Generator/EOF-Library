@@ -28,3 +28,15 @@ clean:
 	$(MAKE) -C tests/linearHall clean IMAGE_NAME=$(IMAGE_NAME)
 	docker ps -a --filter "ancestor=$(SOLVER_IMAGE)" -q | xargs -r docker rm -f
 	docker images $(SOLVER_IMAGE) -q | xargs -r docker rmi -f
+
+# Pydantic schema and configuration regression checks run from the checkout.
+PYTHON ?= python3
+.PHONY: schema check-schema test-caseprep
+schema:
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} $(PYTHON) -m caseprep.schema schemas/mhd-experiment.schema.json
+
+check-schema:
+	PYTHONPATH=tests/linearHall:$${PYTHONPATH:-} $(PYTHON) -m caseprep.schema schemas/mhd-experiment.schema.json --check
+
+test-caseprep: check-schema
+	$(PYTHON) -m unittest discover -s tests/linearHall -p 'test_*.py' -v

@@ -127,32 +127,15 @@ Put experiment files in the host repository's `experiments/` directory. The
 container mounts that directory read-only at `/experiments`. Start by copying
 [`experiments/linear-hall.yaml`](experiments/linear-hall.yaml).
 
+The checked-in example includes the complete OpenFOAM dictionaries for the
+compressible solver. Copy that file, then edit its geometry, mesh, plasma,
+coupling, and `openfoam.files` sections. Its tetrahedral mesh uses:
+
 ```yaml
-schema_version: 1
-
-channel:
-  length: 0.200
-  height: 0.050
-  width: 0.050
-  wall_thickness: 0.005
-
+# ... retain the other sections from the example ...
 mesh:
-  size_min: null
-  size_max: null
-  size_factor: 0.2
-
-electrodes:
-  length: 0.010
-  pairs:
-    - {x_center: 0.040, resistance: 1.0}
-    - {x_center: 0.080, resistance: 1.0}
-    - {x_center: 0.120, resistance: 1.0}
-    - {x_center: 0.160, resistance: 1.0}
-
-physics:
-  B_field: [0, 0, 1.5]
-  inlet_velocity: [391, 0, 0]
-  inlet_temperature: 1500
+  type: tetrahedral
+  target_element_size: 0.005  # metres; individual edge lengths may vary
 ```
 
 All geometry values are in metres. `B_field` is in tesla,
@@ -161,7 +144,33 @@ electrode resistance is in ohms.
 
 ### Schema reference
 
-`schema_version` must be `1`.
+The Pydantic models in `tests/linearHall/caseprep/models.py` define the single
+configuration format. They reject unknown keys, validate types and ranges,
+and enforce physical constraints across configuration sections.
+
+The generated JSON Schema at `schemas/mhd-experiment.schema.json` provides
+portable editor validation and completion. The example YAML declares this
+schema with a `yaml-language-server` comment. After changing a Pydantic model,
+regenerate and verify the artifact from the application Python environment:
+
+```sh
+make schema
+make check-schema
+```
+
+For local development, use
+a virtual environment and run the config and pipeline regression suite:
+
+```sh
+cd tests/linearHall
+uv sync --frozen
+cd ../..
+make test-caseprep PYTHON=tests/linearHall/.venv/bin/python
+```
+
+These checks run on Python 3.11 and cover configuration validation,
+rendering, mesh compatibility, failure recovery, and run orchestration. Native
+mesh conversion and the coupled solve require the Docker image.
 
 `channel` defines the rectangular flow channel and is required:
 
@@ -169,12 +178,13 @@ electrode resistance is in ohms.
 - `wall_thickness` is the positive thickness used for the electrode and
   insulating shell geometry.
 
-`mesh` is optional. `type` selects the mesh:
+`mesh` is required. `type` selects the mesh:
 
-- `tetrahedral` (default): unstructured tetrahedra.
-  - `size_min` and `size_max` set optional global Gmsh edge-length bounds.
-  - `size_factor` scales Gmsh's characteristic lengths. Values below one refine
-    the mesh and values above one coarsen it. The default is `1.0`.
+- `tetrahedral`: unstructured tetrahedra, controlled solely by the required
+  positive `target_element_size` in metres. Gmsh uses a constant background
+  size field; curvature, point, and boundary-extension sizing are disabled.
+  Legacy `size_min`, `size_max`, and `size_factor` keys are rejected; there is
+  no universal conversion from a size factor to a physical target length.
 - `structured`: graded hexahedra that resolve the cold thermal boundary layer
   on the electrode walls, refined streamwise at the electrode edges.
   - `electrode_wall_cell_size` (default 1.5e-5 m) is the first cell on the walls
@@ -273,7 +283,7 @@ plasma:
   excited_state_temperature: electron  # or gas
   ion_reduced_mobility: 2.43e-4     # m^2/(V s) at 2.6868e25 m^-3 (K+ in Ar)
   sigma_min: 1.0e-2                 # S/m
-  sigma_max: 1.0e6                  # S/m
+  sigma_max: 1000000.0                  # S/m
   two_temperature: true             # Te from Joule heating vs. collisional loss
   electron_energy_transport: true   # electron energy equation (false: local balance)
   electron_temperature_max: 20000   # K
@@ -478,8 +488,29 @@ took ~215 s each against ~10 s for MUMPS. Structured meshes with `iterative`
 use row scaling and a tolerance of 1e-5, which matched MUMPS to 0.2% in load
 power (1e-4 left 1.6%).
 
+`openfoam.files` is required and maps a case-relative path to a
+file description. Paths must name a file directly below `0/`, `constant/`, or
+`system/`. Each file accepts an optional `class` (default: `dictionary`) and an
+ordered `entries` mapping. Entries render recursively using OpenFOAM syntax:
+
+- mappings become sub-dictionaries;
+- arrays become parenthesized lists;
+- booleans become `yes` or `no`;
+- strings are emitted as OpenFOAM token expressions;
+- `null` emits a valueless directive, such as `$p;` for dictionary reuse.
+
+This generic representation covers transport properties, run control,
+discretization schemes, solver settings, and additional OpenFOAM files without
+requiring a renderer change for every new keyword. See the complete checked-in
+experiment for the compressible `thermophysicalProperties`, `controlDict`, `fvSchemes`,
+and `fvSolution` settings.
+
 Unknown keys and invalid values fail during validation instead of being
 silently ignored.
+
+Duplicate YAML keys and non-finite numeric values are rejected. Arrays can
+contain nested arrays and dictionaries; `null` is only valid as a dictionary
+entry. Numeric dictionary values retain their full floating-point precision.
 
 ## Prepare one case
 
@@ -504,8 +535,10 @@ can redirect a case outside `/runs`.
 Preparation performs the following work:
 
 1. Validates and resolves the YAML configuration.
-2. Renders `case.sif` and all generated OpenFOAM initial fields.
-3. Copies the maintained base `constant/` and `system/` inputs.
+2. Renders `case.sif`, all generated OpenFOAM initial fields, and configured
+   OpenFOAM files.
+3. Copies the maintained base `constant/` and `system/` inputs before replacing
+   configuration-owned files with their rendered versions.
 4. Reuses or generates the Gmsh mesh.
 5. Converts the mesh for OpenFOAM and Elmer.
 6. Runs `potentialFoam`, partitions both solvers with the same MPI rank count,
@@ -524,10 +557,18 @@ Use `--mesh` after changing any mesh-affecting setting:
 mhd prepare /experiments/new-geometry.yaml --mesh
 ```
 
+The provided `linear-hall-coarse.yaml` uses a larger target element size and
+also requires `--mesh`:
+
+```sh
+mhd prepare /experiments/linear-hall-coarse.yaml --mesh
+```
+
 Useful options are:
 
 - `--name NAME` chooses the directory name beneath `/runs`.
-- `--ranks N` partitions each solver into `N` MPI ranks; the default is `2`.
+- `--ranks N` partitions each solver into `N` MPI ranks; the minimum and default
+  are `2`. OpenFOAM's coupled parallel execution rejects a single rank.
 - `--force` atomically replaces an existing case with the same name.
 - `--dry-run` validates the input and prints the planned files and commands
   without writing a case.
@@ -587,7 +628,10 @@ mhd run linear-hall --dry-run
 
 Cost grows roughly as the fourth power of mesh refinement: halving the cell
 size gives about 8x the cells and, through the Courant limit, about 2x the
-time steps. Measured for 1e-4 s of simulated time:
+time steps. The historical measurements below used the removed `size_factor` control
+for 1e-4 s of simulated time. They are retained as benchmark provenance; new
+cases use `target_element_size` in metres and cannot reproduce these settings
+by converting the factors directly:
 
 | `size_factor` | Elements | 2 ranks | 4 ranks |
 |---|---|---|---|
@@ -611,8 +655,8 @@ pair at 4e-5 s (load power averaged over the last half). Tetrahedra of 4, 3 and
 default wall cell) gave 154, 153 and 152 W, with electrode currents within
 0.6%. Integral results converge; the peak `Te` and conductivity at the
 electrode edges keep rising slowly with refinement (the current concentration
-there is singular), so read local maxima as mesh-dependent. `size_factor` is
-relative to the domain size, so use `size_max` for absolute cell sizes.
+there is singular), so read local maxima as mesh-dependent. Use
+`mesh.target_element_size` in metres for tetrahedral refinement.
 
 ### Resolving the cold wall layer
 
@@ -657,7 +701,7 @@ The electron energy system stays iterative: MUMPS was 4x slower for it. The full
 per potential solve there, so a resolved full-length run costs roughly 10-15 s
 per time step on 4 ranks. It fits in memory (6 GB peak).
 
-Use `--ranks 4` from about `size_factor` 0.2 down; on coarser meshes the fixed
+Use `--ranks 4` for sufficiently refined meshes; on coarser meshes the fixed
 start-up and coupling costs dominate and extra ranks do not help. The mesh is
 Netgen-optimized after generation because sliver tetrahedra otherwise set the
 time step for the whole mesh. Each Elmer update prints the electron
@@ -688,9 +732,17 @@ image rebuild is only required for source code or image dependency changes.
 
 A prepared case includes the resolved YAML, a generation manifest, rendered
 Elmer and OpenFOAM inputs, converted and partitioned meshes, and a hidden
-`.mhd-prepared.json` execution marker. Running the solver adds its normal time
+`.mhd-prepared.json` execution marker. VTK filenames use simulation time names so parallel exporters produce distinct
+files. Running the solver adds its normal time
 directories, logs/data, reconstructed fields, and `VTK/` output to the same
 named directory.
+
+The checked-in examples use the Saha run controls. For a quick pipeline smoke
+test, copy an example and shorten `openfoam.files.system/controlDict.entries.endTime`
+(e.g. to `1.0e-8`) and set `writeControl: timeStep`, `writeInterval: 1`.
+The initial timestep is capped to the run duration so even short runs enter
+the coupling loop and send Elmer a final status. `endTime` must be later than
+the starting time.
 
 `out/` is ignored by Git. Copy results elsewhere if they need long-term
 archival outside the working tree.

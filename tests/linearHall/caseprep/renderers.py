@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Dict, Iterable, List, Mapping, Optional
 
 from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
 from .collisions import TABLE_FILE_NAME as COLLISION_FILE_NAME
-from .config import CaseConfig
+from .models import CaseConfig
+from .foam import OPENFOAM_FILE_FOOTER, render_openfoam_file, render_openfoam_header
 
 
 CASE_SIF_HEADER = """\
@@ -285,7 +285,7 @@ class ElmerCaseRenderer:
         saha: Optional[Mapping[str, float]] = None,
     ) -> str:
         """`saha`: seed ionization energy and weight ratio from the collision tables."""
-        material = asdict(config.plasma)
+        material = config.plasma.model_dump()
         saha = saha or {"ionization_energy": 4.341, "weight_ratio": 0.5}
         material["seed_ionization_energy"] = saha["ionization_energy"]
         material["seed_weight_ratio"] = saha["weight_ratio"]
@@ -338,7 +338,7 @@ class ElmerCaseRenderer:
         lines.append("")
 
         condition_number = 0
-        for pair_number, pair in enumerate(config.electrodes.pairs, start=1):
+        for pair_number, pair in enumerate(config.electrode_pairs, start=1):
             for role, sign in (("Cathode", "minus"), ("Anode", "plus")):
                 condition_number += 1
                 name = f"{role}Surface_{pair_number}"
@@ -381,24 +381,7 @@ class ElmerCaseRenderer:
         return "\n".join(lines)
 
 
-OPENFOAM_HEADER = """\
-/*--------------------------------*- C++ -*----------------------------------*\\
-| =========                 |                                                 |
-| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\\\    /   O peration     | Version:  dev                                   |
-|   \\\\  /    A nd           | Web:      www.OpenFOAM.org                      |
-|    \\\\/     M anipulation  |                                                 |
-\\*---------------------------------------------------------------------------*/
-FoamFile
-{{
-    version     2.0;
-    format      ascii;
-    class       {field_class};
-    location    "0";
-    object      {field_name};
-}}
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
+OPENFOAM_FIELD_BODY = """\
 {comment}dimensions {dimensions};
 
 internalField   {internal_field};
@@ -407,9 +390,6 @@ internalField   {internal_field};
 boundaryField
 {{
 {patches}}}
-
-
-// ************************************************************************* //
 """
 
 
@@ -603,12 +583,12 @@ maxStepsBetweenUpdates  {max_steps_between_updates:d};
 
 def render_coupling_properties(config: CaseConfig) -> str:
     """Render constant/couplingProperties for the OpenFOAM solver."""
-    values = asdict(config.coupling)
+    values = config.coupling.model_dump()
     return COUPLING_PROPERTIES_TEMPLATE.format_map(values)
 
 
 class OpenFoamCaseRenderer:
-    """Render all OpenFOAM initial and boundary fields."""
+    """Render compressible Saha fields and configured OpenFOAM files."""
 
     def render(self, config: CaseConfig) -> Dict[str, str]:
         substitutions = {
@@ -621,9 +601,11 @@ class OpenFoamCaseRenderer:
         for definition in FIELD_DEFINITIONS:
             if definition["name"] == "T":
                 definition = self._with_wall_temperatures(definition, config)
-            result[str(definition["name"])] = self._render_field(
-                definition, electrode_patch_names(len(config.electrodes.pairs)), substitutions
+            result[f"0/{definition['name']}"] = self._render_field(
+                definition, electrode_patch_names(len(config.electrode_pairs)), substitutions
             )
+        for path, file_config in config.openfoam.files.items():
+            result[path] = render_openfoam_file(path, file_config)
         return result
 
     @staticmethod
@@ -676,11 +658,13 @@ class OpenFoamCaseRenderer:
         )
 
         comment = definition.get("comment")
-        return OPENFOAM_HEADER.format(
-            field_class=definition["class"],
-            field_name=definition["name"],
+        header = render_openfoam_header(
+            str(definition["class"]), "0", str(definition["name"])
+        )
+        body = OPENFOAM_FIELD_BODY.format(
             comment=f"{comment}\n" if comment else "",
             dimensions=definition["dimensions"],
             internal_field=str(definition["internal_field"]).format_map(substitutions),
             patches="\n\n".join(patches) + "\n",
         )
+        return header + body + OPENFOAM_FILE_FOOTER

@@ -14,7 +14,8 @@ import yaml
 
 from .boundaries import elmer_boundary_indices
 from .collisions import METADATA_FILE_NAME, TABLE_FILE_NAME, write_collision_tables
-from .config import CaseConfig, ConfigError, load_case_config
+from .loader import ConfigError, load_case_config
+from .models import CaseConfig
 from .mesh import ProceduralMeshGenerator
 from .renderers import ElmerCaseRenderer, OpenFoamCaseRenderer, render_coupling_properties
 
@@ -57,7 +58,7 @@ class CasePreparer:
             "resolved-config.yaml",
             "manifest.json",
         ]
-        files.extend(f"0/{name}" for name in self.openfoam_renderer.render(config))
+        files.extend(self.openfoam_renderer.render(config))
         files.extend(("constant/", "system/"))
         if generate_mesh or reuse_mesh:
             files.append("channel.msh")
@@ -76,7 +77,7 @@ class CasePreparer:
         self._validate_options(generate_mesh, reuse_mesh)
         self._validate_base_case(config, reuse_mesh=reuse_mesh)
         destination = destination.resolve()
-        if destination == self.base_case_directory:
+        if destination == self.base_case_directory or destination in self.base_case_directory.parents:
             raise PreparationError(
                 "Refusing to replace the base case; choose a separate output directory"
             )
@@ -91,6 +92,7 @@ class CasePreparer:
         staging = Path(
             tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent)
         )
+        previous = staging / ".previous-case"
         try:
             self._materialize(
                 config,
@@ -99,11 +101,18 @@ class CasePreparer:
                 reuse_mesh=reuse_mesh,
             )
             if destination.exists():
-                if destination.is_dir() and not destination.is_symlink():
-                    shutil.rmtree(destination)
-                else:
-                    destination.unlink()
-            staging.replace(destination)
+                destination.replace(previous)
+            try:
+                staging.replace(destination)
+            except Exception:
+                if previous.exists():
+                    previous.replace(destination)
+                raise
+            previous = destination / ".previous-case"
+            if previous.is_dir():
+                shutil.rmtree(previous)
+            elif previous.exists():
+                previous.unlink()
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
             raise
@@ -125,15 +134,15 @@ class CasePreparer:
         # Electron collision tables for Elmer, from plasma_collisions
         tables = write_collision_tables(config, destination)
 
-        indices = elmer_boundary_indices(len(config.electrodes.pairs))
+        indices = elmer_boundary_indices(len(config.electrode_pairs))
         self._write_text(
             destination / "case.sif", self.elmer_renderer.render(config, indices, tables.saha)
         )
 
-        zero_directory = destination / "0"
-        zero_directory.mkdir(parents=True, exist_ok=True)
-        for name, content in self.openfoam_renderer.render(config).items():
-            self._write_text(zero_directory / name, content)
+        for relative_path, content in self.openfoam_renderer.render(config).items():
+            output = destination / relative_path
+            output.parent.mkdir(parents=True, exist_ok=True)
+            self._write_text(output, content)
 
         with (destination / "resolved-config.yaml").open(
             "w", encoding="utf-8", newline="\n"
@@ -196,7 +205,7 @@ class CasePreparer:
         elif reused_mesh:
             mesh_status = "reused"
         manifest: Dict[str, object] = {
-            "schema_version": 1,
+            "version": 1,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "source_commit": self._source_commit(),
             "source_dirty": self._source_is_dirty(),
@@ -245,7 +254,7 @@ class CasePreparer:
                 case.channel,
                 case.mesh,
                 case.electrodes.length,
-                tuple(pair.x_center for pair in case.electrodes.pairs),
+                tuple(pair.x_center for pair in case.electrode_pairs),
             )
 
         if signature(config) != signature(base_config):

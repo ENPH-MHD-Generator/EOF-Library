@@ -12,7 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .config import CaseConfig, load_case_config
+from pydantic import ValidationError
+
+from .loader import load_case_config
+from .models import CaseConfig
 from .preparer import CasePreparer, PreparationError
 
 
@@ -205,8 +208,8 @@ class MhdRuntime:
     def _postprocess(self, case_directory: Path, workers: int, pinning: Sequence[str]) -> None:
         """Reconstruct fields and write VTK, splitting time directories across workers.
 
-        Each process handles its own subset of times, so the outputs are the same
-        files a single serial reconstructPar / foamToVTK run writes.
+        Each process handles its own subset of times. VTK paths use actual time
+        names so separate exporters cannot overwrite each other's index zero.
         """
         processor_times = self._time_directories(case_directory / "processor0")
         self._parallel_over_times(
@@ -254,6 +257,8 @@ class MhdRuntime:
         for index, group in enumerate(groups):
             log_path = case_directory / f"log.{tool}.{index}"
             command = list(pinning) + [tool, "-case", ".", "-time", ",".join(group)]
+            if tool == "foamToVTK":
+                command.append("-useTimeName")
             log = open(log_path, "w")
             processes.append((subprocess.Popen(command, cwd=case_directory, stdout=log, stderr=subprocess.STDOUT), log, log_path, command))
         failures = []
@@ -338,8 +343,11 @@ class MhdRuntime:
 
     @staticmethod
     def _validate_ranks(ranks: object) -> None:
-        if isinstance(ranks, bool) or not isinstance(ranks, int) or ranks <= 0:
-            raise PreparationError("MPI ranks must be a positive integer")
+        if isinstance(ranks, bool) or not isinstance(ranks, int) or ranks < 2:
+            raise PreparationError(
+                "MPI ranks per solver must be an integer of at least 2; "
+                "the OpenFOAM coupled solver requires parallel execution"
+            )
 
     @staticmethod
     def _set_openfoam_ranks(case_directory: Path, ranks: int) -> None:
@@ -397,6 +405,12 @@ class MhdRuntime:
             raise PreparationError(f"Invalid preparation marker '{marker_path}'") from exc
         if not isinstance(data, dict) or data.get("version") != 1:
             raise PreparationError(f"Unsupported preparation marker '{marker_path}'")
+        try:
+            CaseConfig.model_validate(data.get("config"))
+        except ValidationError as exc:
+            raise PreparationError(
+                f"Invalid configuration in preparation marker '{marker_path}'; prepare the case again"
+            ) from exc
         return data
 
     @staticmethod
@@ -405,11 +419,22 @@ class MhdRuntime:
             case_directory / "case.sif",
             case_directory / "ELMERSOLVER_STARTINFO",
             case_directory / "channel.msh",
-            case_directory / "meshElmer",
-            case_directory / "constant" / "polyMesh",
         ]
-        required.extend(case_directory / f"processor{index}" for index in range(ranks))
-        missing = [str(path) for path in required if not path.exists()]
+        for filename in ("mesh.header", "mesh.nodes", "mesh.elements", "mesh.boundary"):
+            required.append(case_directory / "meshElmer" / filename)
+        for mesh_directory in [case_directory / "constant" / "polyMesh"] + [
+            case_directory / f"processor{index}" / "constant" / "polyMesh"
+            for index in range(ranks)
+        ]:
+            required.extend(mesh_directory / filename for filename in (
+                "points", "faces", "owner", "neighbour", "boundary",
+            ))
+        for index in range(1, ranks + 1):
+            partition = case_directory / "meshElmer" / f"partitioning.{ranks}"
+            required.extend(partition / f"part.{index}.{suffix}" for suffix in (
+                "header", "nodes", "elements", "boundary", "shared",
+            ))
+        missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise PreparationError(
                 "Prepared case is missing required paths: " + ", ".join(missing)

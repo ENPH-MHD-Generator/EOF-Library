@@ -50,6 +50,18 @@ int main(int argc, char *argv[])
     #include "compressibleCourantNo.H"
     #include "setInitialDeltaT.H"
 
+    // Time::run() includes a half-timestep tolerance. If the initial step is
+    // larger than the whole run, the loop would be skipped after the initial
+    // exchange and Elmer would wait forever for the next coupling message.
+    const scalar remainingTime = runTime.endTime().value() - runTime.value();
+    if (remainingTime <= 0)
+    {
+        FatalErrorInFunction
+            << "endTime must be later than the starting time for a coupled run"
+            << exit(FatalError);
+    }
+    runTime.setDeltaT(min(runTime.deltaTValue(), remainingTime));
+
     Info<< "\nStarting time loop\n" << endl;
 
     // ---------------------------------------------------------------------

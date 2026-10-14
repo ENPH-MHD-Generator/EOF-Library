@@ -28,7 +28,7 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
-from .config import CaseConfig
+from .models import CaseConfig
 
 KELVIN_PER_EV = 1.602_176_634e-19 / 1.380_649e-23
 ELECTRON_CHARGE_OVER_MASS = 1.602_176_634e-19 / 9.109_383_7e-31
