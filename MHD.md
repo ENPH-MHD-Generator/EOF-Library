@@ -135,7 +135,7 @@ coupling, and `openfoam.files` sections. Its tetrahedral mesh uses:
 # ... retain the other sections from the example ...
 mesh:
   type: tetrahedral
-  target_element_size: 0.005  # metres; individual edge lengths may vary
+  target_element_size: 0.0025  # metres; individual edge lengths may vary
 ```
 
 All geometry values are in metres. `B_field` is in tesla,
