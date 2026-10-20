@@ -264,6 +264,19 @@ CONTAINS
     w = (x - Grid(lo)) / (Grid(lo+1) - Grid(lo))
   END SUBROUTINE Locate
 
+  ! Why interpolate in log-log space: these rates and mobilities span many
+  ! decades across the tables, and what matters to the conductivity and the
+  ! electron energy balance is their relative accuracy. In the cold wall
+  ! layer the values are orders of magnitude below those in the core, and
+  ! interpolating the values directly would let the larger neighbour dominate,
+  ! overestimating them there by far more than the table spacing suggests.
+  ! Between grid points the physics is close to a power law (collision rates
+  ! ~ theta^a; magnetized Pedersen and Hall mobilities ~ B^-2 and B^-1), which
+  ! log-log interpolation reproduces exactly, so the error is small and the
+  ! same at every magnitude. It also keeps every result positive. The worst
+  ! case, the Arrhenius-like K(4p) excitation rate, is ~0.7% off at 0.1 eV.
+  ! Outside a grid the end value is held.
+
   !> exp of a log-tabulated column at electron temperature Te [K] (log-log)
   FUNCTION Table1( LnValues, Te ) RESULT(V)
     REAL(KIND=r8), INTENT(IN) :: LnValues(:), Te

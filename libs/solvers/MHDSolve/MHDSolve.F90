@@ -66,8 +66,18 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
   INTEGER                 :: Dim, i
 !------------------------------------------------------------------------------
 
-  Params => GetSolverParams() 
+  Params => GetSolverParams()
   Dim    = CoordinateSystemDimension()
+
+  ! The plasma model and the coupling are 3D only (U x B, the conductivity
+  ! tensor, three current components), so reject other dimensions here,
+  ! before any variables are exported
+  IF (Dim /= 3) THEN
+    CALL Fatal( &
+      'StatCurrentSolver_Init', &
+      'This solver requires a fully 3D coordinate system. ' // &
+      'CoordinateSystemDimension() != 3. Aborting.' )
+  END IF
 
   !------------------------------------------------------------
   ! Exported variables
@@ -92,16 +102,9 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 
   Calculate = ListGetLogical( Params, 'Calculate Volume Current', Found )
   IF ( Calculate ) THEN
-    IF ( Dim == 2 ) THEN
-      CALL ListAddString( Params, &
-           NextFreeKeyword('Exported Variable ', Params), &
-           'Volume Current[Volume Current:2]' )
-    ELSE
-      CALL ListAddString( Params, &
-           NextFreeKeyword('Exported Variable ', Params), &
-           'Volume Current[Volume Current:3]' )
-
-    END IF
+    CALL ListAddString( Params, &
+         NextFreeKeyword('Exported Variable ', Params), &
+         'Volume Current[Volume Current:3]' )
 
     DO i = 1, Dim
       CALL ListAddString( Params, &
@@ -322,15 +325,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   ForceVector => StiffMatrix % RHS
 
   Norm = Solver % Variable % Norm
-  DIM = CoordinateSystemDimension()
-
-  ! We don't support 2 dimensions for MHD
-  IF (Dim /= 3) THEN
-    CALL Fatal( &
-      'StatCurrentSolver', &
-      'This solver requires a fully 3D coordinate system. ' // &
-      'CoordinateSystemDimension() != 3. Aborting.' )
-  END IF
+  DIM = CoordinateSystemDimension()  ! always 3; StatCurrentSolver_Init enforces it
 
   ControlTarget = GetCReal( Params,'Power Control',ControlPower)
   IF(ControlPower) THEN
@@ -353,10 +348,17 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   IF ( ListGetLogical( Params,'Conductivity At Ip',GotIt ) ) CALL Fatal('StatCurrentSolver', &
       'Conductivity At Ip is not supported: the conductivity tensor comes from the plasma model')
 
-  ! Linear tetrahedra have constant basis gradients and our fields vary
-  ! linearly, so the one-point centroid rule is the standard choice; Elmer's
-  ! default of 4 points quadruples the element-loop cost. Assembly and current
-  ! evaluation use the same rule, so the discrete energy balance still closes.
+  ! Quadrature for linear tetrahedra. The physical fields are not linear, but
+  ! inside an element every coefficient is its P1 interpolant: basis gradients
+  ! are constant, and the conductivities, U and B are interpolated linearly
+  ! from nodal values (ConductivityTensor). The one-point centroid rule
+  ! therefore integrates the stiffness term grad(v).C.grad(phi) exactly (C is
+  ! linear while B keeps its direction across the element), and the EMF load
+  ! grad(v).C.(U x B), a product of linear factors, to second order, the same
+  ! order as the P1 discretization error itself. Elmer's default of 4 points
+  ! quadruples the element-loop cost for no gain in convergence order.
+  ! Assembly and current evaluation use the same rule, so the discrete energy
+  ! balance still closes.
   TetraPoints = ListGetInteger( Params, 'Tetra Integration Points', GotIt )
   IF ( .NOT. GotIt ) TetraPoints = 1
   IF ( ALL(TetraPoints /= (/ 1, 4, 11 /)) ) &
@@ -543,11 +545,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       Var => VariableGet( Solver % Mesh % Variables,'Element Volume Current 2')
       IF( .NOT. ASSOCIATED(Var) ) CALL Fatal('StatCurrentSolver','Element Volume Current 2 does not exist')
       ElemCurr2 => Var % Values
-      IF( DIM == 3 ) THEN
-        Var => VariableGet( Solver % Mesh % Variables,'Element Volume Current 3')
-        IF( .NOT. ASSOCIATED(Var) ) CALL Fatal('StatCurrentSolver','Element Volume Current 3 does not exist')
-        ElemCurr3 => Var % Values
-      END IF
+      Var => VariableGet( Solver % Mesh % Variables,'Element Volume Current 3')
+      IF( .NOT. ASSOCIATED(Var) ) CALL Fatal('StatCurrentSolver','Element Volume Current 3 does not exist')
+      ElemCurr3 => Var % Values
     END IF
 
     IF ( CalculateHeating ) THEN
@@ -1950,10 +1950,8 @@ END FUNCTION RequiredMaterialReal
             ip = UyPerm(NodeIndexes(i))
             IF (ip > 0) Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
 
-            IF (DIM == 3) THEN
-              ip = UzPerm(NodeIndexes(i))
-              IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
-            END IF
+            ip = UzPerm(NodeIndexes(i))
+            IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
 
             ! Magnetic field components
             ip = BxPerm(NodeIndexes(i))
@@ -1962,10 +1960,8 @@ END FUNCTION RequiredMaterialReal
             ip = ByPerm(NodeIndexes(i))
             IF (ip > 0) Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
 
-            IF (DIM == 3) THEN
-              ip = BzPerm(NodeIndexes(i))
-              IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
-            END IF
+            ip = BzPerm(NodeIndexes(i))
+            IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
           END DO
 
           ! Cross product U x B
@@ -2018,7 +2014,7 @@ END FUNCTION RequiredMaterialReal
              IF ( CalculateCurrent ) THEN
                ElemCurr1(ip) = Current(1) / ElemVol
                ElemCurr2(ip) = Current(2) / ElemVol
-               IF ( DIM == 3 ) ElemCurr3(ip) = Current(3) / ElemVol
+               ElemCurr3(ip) = Current(3) / ElemVol
              END IF
              IF ( CalculateHeating ) ElemHeating(ip) = HeatingDensity / ElemVol
            END IF
@@ -2199,10 +2195,8 @@ END FUNCTION RequiredMaterialReal
           ip = UyPerm(NodeIndexes(i))
           IF (ip > 0) Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
 
-          IF (DIM == 3) THEN
-            ip = UzPerm(NodeIndexes(i))
-            IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
-          END IF
+          ip = UzPerm(NodeIndexes(i))
+          IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
 
           ! Magnetic field components: use each variable's own perm
           ip = BxPerm(NodeIndexes(i))
@@ -2211,10 +2205,8 @@ END FUNCTION RequiredMaterialReal
           ip = ByPerm(NodeIndexes(i))
           IF (ip > 0) Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
 
-          IF (DIM == 3) THEN
-            ip = BzPerm(NodeIndexes(i))
-            IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
-          END IF
+          ip = BzPerm(NodeIndexes(i))
+          IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
         END DO
 
         ! Conductivity tensor: stiffness grad(phi) . C . grad(v), EMF load C . (U x B)

@@ -7,7 +7,7 @@ channel:
   wall_thickness: 0.005
 mesh:
   type: tetrahedral
-  target_element_size: 0.005
+  target_element_size: 0.0025
 electrodes:
   length: 0.01
   pairs:
