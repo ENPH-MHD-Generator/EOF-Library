@@ -49,6 +49,18 @@ partitioning.*
 # Cursor AI
 .cursor
 
-
 # Saved Runs
-saved_runs/
+saved_runs/*
+
+# Files
+*.pyc
+.DS_Store
+# Local Python environments in the case template (the image builds its own)
+tests/linearHall/.venv/
+tests/linearHall/venv/
+tests/linearHall/bin/
+tests/linearHall/lib/
+tests/linearHall/include/
+tests/linearHall/pyvenv.cfg
+__pycache__/
+.DS_Store

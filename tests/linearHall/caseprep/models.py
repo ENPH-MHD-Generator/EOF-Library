@@ -1,10 +1,10 @@
-"""Versioned Pydantic models for the public MHD experiment schema."""
+"""Canonical Pydantic models for MHD experiments."""
 
 from __future__ import annotations
 
 from math import isfinite
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Dict, List, Literal, Mapping, Tuple, Union
+from typing import Annotated, Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import (
     BaseModel,
@@ -86,32 +86,6 @@ class ChannelConfig(SchemaModel):
     )
 
 
-class MeshConfig(SchemaModel):
-    target_element_size: PositiveNumber = Field(
-        description=(
-            "Uniform target characteristic length for the shared Gmsh "
-            "tetrahedral mesh."
-        ),
-        json_schema_extra={"x-unit": "m"},
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_legacy_controls(cls, value: Any) -> Any:
-        """Give old prototype configurations an actionable migration error."""
-        if isinstance(value, Mapping):
-            legacy = sorted(
-                set(value) & {"size_min", "size_max", "size_factor"}
-            )
-            if legacy:
-                names = ", ".join(f"mesh.{name}" for name in legacy)
-                raise ValueError(
-                    f"{names} no longer supported; replace the legacy mesh "
-                    "controls with mesh.target_element_size in metres"
-                )
-        return value
-
-
 class ElectrodePair(SchemaModel):
     x_center: FiniteNumber = Field(
         description="Electrode-pair center along the channel x-axis.",
@@ -170,6 +144,10 @@ class PhysicsConfig(SchemaModel):
         description="OpenFOAM inlet temperature.",
         json_schema_extra={"x-unit": "K"},
     )
+
+    insulator_wall_temperature: Optional[PositiveNumber] = 300.0
+    electrode_wall_temperature: Optional[PositiveNumber] = 300.0
+    outlet_pressure: PositiveNumber = 101325.0
 
 
 class OpenFoamFileConfig(SchemaModel):
@@ -230,13 +208,100 @@ class OpenFoamConfig(SchemaModel):
         return value
 
 
-class CaseConfigBase(SchemaModel):
-    """Shared experiment fields and cross-section physical constraints."""
+class TetrahedralMeshConfig(SchemaModel):
+    """Uniform target length in metres; the sole tetrahedral sizing policy."""
+
+    target_element_size: PositiveNumber = Field(
+        description=(
+            "Uniform target characteristic length for the shared Gmsh "
+            "tetrahedral mesh."
+        ),
+        json_schema_extra={"x-unit": "m"},
+    )
+
+    type: Literal["tetrahedral"] = "tetrahedral"
+
+
+class StructuredMeshConfig(SchemaModel):
+    """Graded hexahedra with separate wall, edge, and core resolution."""
+
+    type: Literal["structured"]
+    cell_size: PositiveNumber = 0.003
+    wall_cell_size: PositiveNumber = 0.0005
+    electrode_edge_cell_size: PositiveNumber = 0.0005
+    growth_rate: Annotated[FiniteNumber, Field(gt=1)] = 1.2
+    electrode_wall_cell_size: Optional[PositiveNumber] = 1.5e-5
+    side_wall_cell_size: Optional[PositiveNumber] = None
+    streamwise_cell_size: Optional[PositiveNumber] = 0.005
+
+    @model_validator(mode="after")
+    def validate_grading(self) -> "StructuredMeshConfig":
+        for name in ("wall_cell_size", "electrode_wall_cell_size", "side_wall_cell_size"):
+            size = getattr(self, name)
+            if size is None:
+                size = self.wall_cell_size
+            if size > self.cell_size:
+                raise ValueError(f"mesh.{name} cannot be larger than mesh.cell_size")
+        streamwise = self.streamwise_cell_size or self.cell_size
+        if self.electrode_edge_cell_size > streamwise:
+            raise ValueError("mesh.electrode_edge_cell_size cannot be larger than mesh.streamwise_cell_size")
+        return self
+
+
+MeshConfig = Annotated[
+    Union[TetrahedralMeshConfig, StructuredMeshConfig], Field(discriminator="type")
+]
+
+
+class PlasmaConfig(SchemaModel):
+    """Seeded argon plasma, with collision data supplied by plasma_collisions."""
+
+    seed_mole_fraction: Annotated[PositiveNumber, Field(lt=1)] = 0.01
+    electron_transport_model: Literal["drifting", "lorentz"] = "drifting"
+    potassium_elastic_scale: PositiveNumber = 1.0
+    excited_state_temperature: Literal["electron", "gas"] = "electron"
+    ion_reduced_mobility: NonNegativeNumber = 2.43e-4
+    electron_wall_heat_transmission: NonNegativeNumber = 0.0
+    sigma_min: PositiveNumber = 1.0e-2
+    sigma_max: PositiveNumber = 1.0e6
+    two_temperature: Annotated[bool, Field(strict=True)] = True
+    electron_energy_transport: Annotated[bool, Field(strict=True)] = True
+    electron_temperature_max: PositiveNumber = 20000.0
+    electron_temperature_relaxation: Annotated[PositiveNumber, Field(le=1)] = 0.5
+
+    @model_validator(mode="after")
+    def validate_conductivity_bounds(self) -> "PlasmaConfig":
+        if self.sigma_min >= self.sigma_max:
+            raise ValueError("plasma.sigma_min must be less than plasma.sigma_max")
+        return self
+
+
+class CouplingConfig(SchemaModel):
+    """Relative state-change thresholds; all zero updates every time step."""
+
+    velocity_tolerance: NonNegativeNumber = 0.0
+    temperature_tolerance: NonNegativeNumber = 0.0
+    pressure_tolerance: NonNegativeNumber = 0.0
+    max_steps_between_updates: Annotated[int, Field(strict=True, ge=0)] = 0
+
+
+class NumericsConfig(SchemaModel):
+    linear_solver: Literal["auto", "iterative", "mumps"] = "auto"
+
+
+class CaseConfig(SchemaModel):
+    """Canonical configuration for the compressible Saha MHD pipeline."""
+
+    model_config = ConfigDict(title="MHD Experiment Configuration")
 
     channel: ChannelConfig
     mesh: MeshConfig
     electrodes: ElectrodeConfig
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
+    plasma: PlasmaConfig = Field(default_factory=PlasmaConfig)
+    coupling: CouplingConfig = Field(default_factory=CouplingConfig)
+    numerics: NumericsConfig = Field(default_factory=NumericsConfig)
+    openfoam: OpenFoamConfig
 
     @property
     def electrode_pairs(self) -> Tuple[ElectrodePair, ...]:
@@ -254,7 +319,7 @@ class CaseConfigBase(SchemaModel):
         )
 
     @model_validator(mode="after")
-    def validate_electrode_geometry(self) -> "CaseConfigBase":
+    def validate_electrode_geometry(self) -> "CaseConfig":
         """Validate constraints that span channel and electrode sections."""
         length = self.electrodes.length
         pairs = self.electrode_pairs
@@ -285,44 +350,20 @@ class CaseConfigBase(SchemaModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def validate_solver_inputs(self) -> "CaseConfig":
+        invalid_files = set(self.openfoam.files) & {"constant/transportProperties", "constant/g", "0/p_rgh"}
+        if invalid_files:
+            raise ValueError("The compressible Saha solver does not use: " + ", ".join(sorted(invalid_files)))
+        if "constant/couplingProperties" in self.openfoam.files:
+            raise ValueError("Set coupling properties through the canonical coupling section")
+        return self
+
     def to_dict(self) -> Dict[str, Any]:
-        """Return the canonical, fully resolved public representation."""
-        return {
-            "schema_version": self.schema_version,
-            "channel": self.channel.model_dump(mode="json"),
-            "mesh": self.mesh.model_dump(mode="json"),
-            "electrodes": {
-                "length": self.electrodes.length,
-                "pairs": [
-                    pair.model_dump(mode="json") for pair in self.electrode_pairs
-                ],
-            },
-            "physics": self.physics.model_dump(mode="json"),
+        """Serialize defaults and explicit electrode pairs for a prepared case."""
+        result = self.model_dump(mode="json", by_alias=True)
+        result["electrodes"] = {
+            "length": self.electrodes.length,
+            "pairs": [pair.model_dump(mode="json") for pair in self.electrode_pairs],
         }
-
-
-class CaseConfigV1(CaseConfigBase):
-    """Legacy schema-version-1 experiment configuration."""
-
-    model_config = ConfigDict(title="MHD Experiment Configuration v1")
-
-    schema_version: Literal[1]
-
-
-class CaseConfigV2(CaseConfigBase):
-    """Experiment with data-driven OpenFOAM dictionary rendering."""
-
-    model_config = ConfigDict(title="MHD Experiment Configuration v2")
-
-    schema_version: Literal[2]
-    openfoam: OpenFoamConfig
-
-    def to_dict(self) -> Dict[str, Any]:
-        result = super().to_dict()
-        result["openfoam"] = self.openfoam.model_dump(mode="json", by_alias=True)
         return result
-
-
-# Runtime code consumes this stable name. Future versions get separate models;
-# caseprep.loader retains explicit schema_version dispatch.
-CaseConfig = Union[CaseConfigV1, CaseConfigV2]

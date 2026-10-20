@@ -15,6 +15,7 @@ FoamFile
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 solvers
 {
+    // potentialFoam (case preparation): initial velocity field
     Phi
     {
         solver          PCG;
@@ -23,7 +24,7 @@ solvers
         relTol          0;
     }
 
-    p_rgh
+    p
     {
         solver          GAMG;
         tolerance       1e-7;
@@ -39,54 +40,30 @@ solvers
         mergeLevels     1;
     }
 
-    pcorr
+    pFinal
     {
-        solver          PCG;
-        preconditioner  DIC;
-        tolerance       1e-7;
+        $p;
         relTol          0;
     }
 
-    pcorrFinal
+    "rho.*"
     {
-        $pcorr;
-        relTol          0;
+        solver          diagonal;
     }
 
-    U
+    "(U|h|e)"
     {
         solver          smoothSolver;
         smoother        symGaussSeidel;
         nSweeps         2;
-        tolerance       1e-6;
+        tolerance       1e-7;
         relTol          0.1;
     }
 
-    UFinal
+    "(U|h|e)Final"
     {
         $U;
         relTol          0;
-    }
-
-    T
-    {
-        solver          PBiCGStab;
-        preconditioner  DILU;
-        tolerance       1e-8;
-        relTol          0.01;
-    }
-
-
-    TFinal
-    {
-        $T;
-        relTol          0;
-    }
-
-    p_rghFinal
-    {
-        $p_rgh;
-        relTol 0;
     }
 }
 
@@ -94,46 +71,22 @@ solvers
 PIMPLE
 {
     momentumPredictor yes;
-    nOuterCorrectors    1;
-    nCorrectors         2;
+    // Subsonic (Mach < ~0.6): the pressure equation stays symmetric
+    transonic         no;
+    nOuterCorrectors  1;
+    nCorrectors       2;
+    // A non-orthogonal corrector (tetrahedra reach ~57 degrees) changed
+    // nothing measurable here and cost 16% of the OpenFOAM time
     nNonOrthogonalCorrectors 0;
-
-    pRefCell  0;
-    pRefValue 0;
-
-    residualControl
-    {
-        p_rgh   1e-6;
-        U       1e-7;
-        T       1e-7;
-    }
 }
 
 potentialFlow
 {
-    solver          PCG;
-    preconditioner  DIC;
-    tolerance       1e-8;
-    relTol          0;
+    nNonOrthogonalCorrectors 0;
 
     PhiRefCell      0;
     PhiRefValue     0;
 }
-
-// very aggressive for testing solver convergence
-relaxationFactors
-{
-    fields
-    {
-        p_rgh 0.3;
-    }
-    equations
-    {
-        U 0.5;
-        T 0.5;
-    }
-}
-
 
 
 // ************************************************************************* //

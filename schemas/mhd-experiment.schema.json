@@ -1,0 +1,624 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ChannelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "length": {
+          "description": "Flow-channel length.",
+          "exclusiveMinimum": 0,
+          "title": "Length",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "height": {
+          "description": "Flow-channel height.",
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "width": {
+          "description": "Flow-channel width.",
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "wall_thickness": {
+          "description": "Electrode and insulating shell thickness.",
+          "exclusiveMinimum": 0,
+          "title": "Wall Thickness",
+          "type": "number",
+          "x-unit": "m"
+        }
+      },
+      "required": [
+        "length",
+        "height",
+        "width",
+        "wall_thickness"
+      ],
+      "title": "ChannelConfig",
+      "type": "object"
+    },
+    "CouplingConfig": {
+      "additionalProperties": false,
+      "description": "Relative state-change thresholds; all zero updates every time step.",
+      "properties": {
+        "velocity_tolerance": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Velocity Tolerance",
+          "type": "number"
+        },
+        "temperature_tolerance": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Temperature Tolerance",
+          "type": "number"
+        },
+        "pressure_tolerance": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Pressure Tolerance",
+          "type": "number"
+        },
+        "max_steps_between_updates": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Max Steps Between Updates",
+          "type": "integer"
+        }
+      },
+      "title": "CouplingConfig",
+      "type": "object"
+    },
+    "ElectrodePair": {
+      "additionalProperties": false,
+      "properties": {
+        "x_center": {
+          "description": "Electrode-pair center along the channel x-axis.",
+          "title": "X Center",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "resistance": {
+          "description": "External resistance across this electrode pair.",
+          "minimum": 0,
+          "title": "Resistance",
+          "type": "number",
+          "x-unit": "ohm"
+        }
+      },
+      "required": [
+        "x_center",
+        "resistance"
+      ],
+      "title": "ElectrodePair",
+      "type": "object"
+    },
+    "EvenlySpacedElectrodeConfig": {
+      "additionalProperties": false,
+      "description": "A requested number of identical, evenly spaced electrode pairs.",
+      "properties": {
+        "length": {
+          "description": "Shared streamwise length for every electrode.",
+          "exclusiveMinimum": 0,
+          "title": "Length",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "count": {
+          "exclusiveMinimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "resistance": {
+          "default": 1.0,
+          "description": "External resistance applied to every generated pair.",
+          "minimum": 0,
+          "title": "Resistance",
+          "type": "number",
+          "x-unit": "ohm"
+        }
+      },
+      "required": [
+        "length",
+        "count"
+      ],
+      "title": "EvenlySpacedElectrodeConfig",
+      "type": "object"
+    },
+    "ExplicitElectrodeConfig": {
+      "additionalProperties": false,
+      "description": "Explicitly positioned electrode pairs with individual resistances.",
+      "properties": {
+        "length": {
+          "description": "Shared streamwise length for every electrode.",
+          "exclusiveMinimum": 0,
+          "title": "Length",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "pairs": {
+          "items": {
+            "$ref": "#/$defs/ElectrodePair"
+          },
+          "minItems": 1,
+          "title": "Pairs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "length",
+        "pairs"
+      ],
+      "title": "ExplicitElectrodeConfig",
+      "type": "object"
+    },
+    "NumericsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "linear_solver": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "iterative",
+            "mumps"
+          ],
+          "title": "Linear Solver",
+          "type": "string"
+        }
+      },
+      "title": "NumericsConfig",
+      "type": "object"
+    },
+    "OpenFoamConfig": {
+      "additionalProperties": false,
+      "description": "OpenFOAM files rendered from the central experiment configuration.",
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OpenFoamFileConfig"
+          },
+          "minProperties": 1,
+          "title": "Files",
+          "type": "object"
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "title": "OpenFoamConfig",
+      "type": "object"
+    },
+    "OpenFoamFileConfig": {
+      "additionalProperties": false,
+      "description": "One data-driven OpenFOAM dictionary-like file.",
+      "properties": {
+        "class": {
+          "default": "dictionary",
+          "description": "OpenFOAM FoamFile class.",
+          "title": "Class",
+          "type": "string"
+        },
+        "entries": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OpenFoamValue"
+          },
+          "description": "Ordered OpenFOAM entries. Strings contain OpenFOAM tokens, mappings become sub-dictionaries, arrays become parenthesized lists, booleans become yes/no, and null emits a directive without a value.",
+          "title": "Entries",
+          "type": "object"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "title": "OpenFoamFileConfig",
+      "type": "object"
+    },
+    "OpenFoamListValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/OpenFoamListValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/OpenFoamValue"
+          },
+          "type": "object"
+        }
+      ]
+    },
+    "OpenFoamValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/OpenFoamListValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/OpenFoamValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "PhysicsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "B_field": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "description": "Applied magnetic-field vector.",
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "B Field",
+          "type": "array",
+          "x-unit": "T"
+        },
+        "inlet_velocity": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "description": "OpenFOAM inlet velocity vector.",
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Inlet Velocity",
+          "type": "array",
+          "x-unit": "m/s"
+        },
+        "inlet_temperature": {
+          "default": 300.0,
+          "description": "OpenFOAM inlet temperature.",
+          "exclusiveMinimum": 0,
+          "title": "Inlet Temperature",
+          "type": "number",
+          "x-unit": "K"
+        },
+        "insulator_wall_temperature": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 300.0,
+          "title": "Insulator Wall Temperature"
+        },
+        "electrode_wall_temperature": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 300.0,
+          "title": "Electrode Wall Temperature"
+        },
+        "outlet_pressure": {
+          "default": 101325.0,
+          "gt": 0,
+          "title": "Outlet Pressure",
+          "type": "number"
+        }
+      },
+      "title": "PhysicsConfig",
+      "type": "object"
+    },
+    "PlasmaConfig": {
+      "additionalProperties": false,
+      "description": "Seeded argon plasma, with collision data supplied by plasma_collisions.",
+      "properties": {
+        "seed_mole_fraction": {
+          "default": 0.01,
+          "gt": 0,
+          "lt": 1,
+          "title": "Seed Mole Fraction",
+          "type": "number"
+        },
+        "electron_transport_model": {
+          "default": "drifting",
+          "enum": [
+            "drifting",
+            "lorentz"
+          ],
+          "title": "Electron Transport Model",
+          "type": "string"
+        },
+        "potassium_elastic_scale": {
+          "default": 1.0,
+          "gt": 0,
+          "title": "Potassium Elastic Scale",
+          "type": "number"
+        },
+        "excited_state_temperature": {
+          "default": "electron",
+          "enum": [
+            "electron",
+            "gas"
+          ],
+          "title": "Excited State Temperature",
+          "type": "string"
+        },
+        "ion_reduced_mobility": {
+          "default": 0.000243,
+          "ge": 0,
+          "title": "Ion Reduced Mobility",
+          "type": "number"
+        },
+        "electron_wall_heat_transmission": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Electron Wall Heat Transmission",
+          "type": "number"
+        },
+        "sigma_min": {
+          "default": 0.01,
+          "gt": 0,
+          "title": "Sigma Min",
+          "type": "number"
+        },
+        "sigma_max": {
+          "default": 1000000.0,
+          "gt": 0,
+          "title": "Sigma Max",
+          "type": "number"
+        },
+        "two_temperature": {
+          "default": true,
+          "title": "Two Temperature",
+          "type": "boolean"
+        },
+        "electron_energy_transport": {
+          "default": true,
+          "title": "Electron Energy Transport",
+          "type": "boolean"
+        },
+        "electron_temperature_max": {
+          "default": 20000.0,
+          "gt": 0,
+          "title": "Electron Temperature Max",
+          "type": "number"
+        },
+        "electron_temperature_relaxation": {
+          "default": 0.5,
+          "gt": 0,
+          "le": 1,
+          "title": "Electron Temperature Relaxation",
+          "type": "number"
+        }
+      },
+      "title": "PlasmaConfig",
+      "type": "object"
+    },
+    "StructuredMeshConfig": {
+      "additionalProperties": false,
+      "description": "Graded hexahedra with separate wall, edge, and core resolution.",
+      "properties": {
+        "type": {
+          "const": "structured",
+          "title": "Type",
+          "type": "string"
+        },
+        "cell_size": {
+          "default": 0.003,
+          "gt": 0,
+          "title": "Cell Size",
+          "type": "number"
+        },
+        "wall_cell_size": {
+          "default": 0.0005,
+          "gt": 0,
+          "title": "Wall Cell Size",
+          "type": "number"
+        },
+        "electrode_edge_cell_size": {
+          "default": 0.0005,
+          "gt": 0,
+          "title": "Electrode Edge Cell Size",
+          "type": "number"
+        },
+        "growth_rate": {
+          "default": 1.2,
+          "gt": 1,
+          "title": "Growth Rate",
+          "type": "number"
+        },
+        "electrode_wall_cell_size": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.5e-05,
+          "title": "Electrode Wall Cell Size"
+        },
+        "side_wall_cell_size": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Side Wall Cell Size"
+        },
+        "streamwise_cell_size": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.005,
+          "title": "Streamwise Cell Size"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "StructuredMeshConfig",
+      "type": "object"
+    },
+    "TetrahedralMeshConfig": {
+      "additionalProperties": false,
+      "description": "Uniform target length in metres; the sole tetrahedral sizing policy.",
+      "properties": {
+        "target_element_size": {
+          "description": "Uniform target characteristic length for the shared Gmsh tetrahedral mesh.",
+          "exclusiveMinimum": 0,
+          "title": "Target Element Size",
+          "type": "number",
+          "x-unit": "m"
+        },
+        "type": {
+          "const": "tetrahedral",
+          "default": "tetrahedral",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_element_size"
+      ],
+      "title": "TetrahedralMeshConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Canonical configuration for the compressible Saha MHD pipeline.",
+  "properties": {
+    "channel": {
+      "$ref": "#/$defs/ChannelConfig"
+    },
+    "mesh": {
+      "discriminator": {
+        "mapping": {
+          "structured": "#/$defs/StructuredMeshConfig",
+          "tetrahedral": "#/$defs/TetrahedralMeshConfig"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TetrahedralMeshConfig"
+        },
+        {
+          "$ref": "#/$defs/StructuredMeshConfig"
+        }
+      ],
+      "title": "Mesh"
+    },
+    "electrodes": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExplicitElectrodeConfig"
+        },
+        {
+          "$ref": "#/$defs/EvenlySpacedElectrodeConfig"
+        }
+      ],
+      "title": "Electrodes"
+    },
+    "physics": {
+      "$ref": "#/$defs/PhysicsConfig"
+    },
+    "plasma": {
+      "$ref": "#/$defs/PlasmaConfig"
+    },
+    "coupling": {
+      "$ref": "#/$defs/CouplingConfig"
+    },
+    "numerics": {
+      "$ref": "#/$defs/NumericsConfig"
+    },
+    "openfoam": {
+      "$ref": "#/$defs/OpenFoamConfig"
+    }
+  },
+  "required": [
+    "channel",
+    "mesh",
+    "electrodes",
+    "openfoam"
+  ],
+  "title": "MHD Experiment Configuration",
+  "type": "object"
+}

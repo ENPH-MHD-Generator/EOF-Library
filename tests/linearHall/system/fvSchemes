@@ -15,9 +15,12 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
+// Compressible PIMPLE with one outer corrector: Euler. backward (like the
+// unbounded convection schemes below) let pressure waves from the start-up
+// transient grow until the density went negative on the tetrahedral mesh.
 ddtSchemes
 {
-    default backward;
+    default Euler;
 }
 
 gradSchemes
@@ -27,33 +30,47 @@ gradSchemes
 
 divSchemes
 {
+    default                             none;
     div(phi,U)                          Gauss linearUpwind grad(U);
-    div(rhoPhi,U)                       Gauss linearUpwind grad(U);
-    div(rhoPhi,T)                       Gauss linearUpwind grad(T);
+    // Bounded (TVD) energy convection: linearUpwind and linear here produced
+    // spurious heating of ~1000 K near corners without any heat source
+    div(phi,h)                          Gauss limitedLinear 1;
+    div(phi,e)                          Gauss limitedLinear 1;
+    div(phi,K)                          Gauss limitedLinear 1;
+    div(phiv,p)                         Gauss linear;
     div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;
 }
 
 laplacianSchemes
 {
-    default         Gauss linear corrected;
+    default         Gauss linear limited corrected 0.5;
 }
 
 interpolationSchemes
 {
     default         linear;
     elcond          cellPoint;
-    Ux              cellPoint;
-    Uy              cellPoint;
-    Uz              cellPoint;
+    // Velocity uses the cell value, not cellPoint: cellPoint blends in vertex
+    // values, which are exactly zero on no-slip walls, so every Elmer node on a
+    // wall would see zero velocity and lose its U x B EMF over a whole cell.
+    // The boundary layer is far thinner than a cell here, so the cell average
+    // (what the momentum equation itself carries) is the better estimate.
+    // Revisit if the near-wall layer is ever resolved.
+    Ux              cell;
+    Uy              cell;
+    Uz              cell;
 
     Bx              cellPoint;
     By              cellPoint;
     Bz              cellPoint;
+
+    T               cellPoint;
+    p               cellPoint;
 }
 
 snGradSchemes
 {
-    default         corrected;
+    default         limited corrected 0.5;
 }
 
 wallDist

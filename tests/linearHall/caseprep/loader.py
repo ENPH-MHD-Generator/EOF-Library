@@ -1,24 +1,19 @@
-"""YAML loading, schema-version dispatch, and user-facing validation errors."""
+"""YAML loading and user-facing validation errors for the canonical schema."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Mapping, Tuple, Type, Union
+from typing import Any, Dict, Mapping, Tuple, Union
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from .models import CaseConfig, CaseConfigV1, CaseConfigV2
+from .models import CaseConfig
 
 
 class ConfigError(ValueError):
     """Raised when an experiment file cannot be loaded or validated."""
 
-
-SCHEMA_MODELS: Dict[int, Type[BaseModel]] = {
-    1: CaseConfigV1,
-    2: CaseConfigV2,
-}
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -88,25 +83,9 @@ def _format_validation_error(path: Path, exc: ValidationError) -> ConfigError:
 
 
 def load_case_config(path: Path) -> CaseConfig:
-    """Load and validate one YAML experiment using its declared schema version."""
+    """Load and validate an experiment against the canonical configuration."""
     raw = _load_yaml_mapping(path)
-    if "schema_version" not in raw:
-        raise ConfigError(f"Configuration '{path}' is missing schema_version")
-
-    schema_version = raw["schema_version"]
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise ConfigError(
-            f"Configuration '{path}' has a non-integer schema_version"
-        )
-
-    model = SCHEMA_MODELS.get(schema_version)
-    if model is None:
-        supported = ", ".join(str(version) for version in sorted(SCHEMA_MODELS))
-        raise ConfigError(
-            f"Unsupported schema_version {schema_version}; supported: {supported}"
-        )
-
     try:
-        return model.model_validate(raw)  # type: ignore[return-value]
+        return CaseConfig.model_validate(raw)
     except ValidationError as exc:
         raise _format_validation_error(path, exc) from exc

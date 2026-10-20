@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Mapping
+from typing import Dict, Iterable, List, Mapping, Optional
 
 from .boundaries import INLET, INSULATOR, OUTLET, electrode_patch_names
-from .foam import (
-    OPENFOAM_FILE_FOOTER,
-    render_openfoam_file,
-    render_openfoam_header,
-)
-from .models import CaseConfig, CaseConfigV2
+from .collisions import TABLE_FILE_NAME as COLLISION_FILE_NAME
+from .models import CaseConfig
+from .foam import OPENFOAM_FILE_FOOTER, render_openfoam_file, render_openfoam_header
 
 
 CASE_SIF_HEADER = """\
@@ -23,11 +20,14 @@ Simulation
   Coordinate System = String "Cartesian 3D"
   Simulation Type = Steady
 
-  Steady State Max Iterations = 1000
-  Steady State Min Iterations = 1000
+  ! One iteration per OpenFOAM coupling update; OpenFOAM ends the run by
+  ! sending a final status, so these must exceed the number of updates
+  Steady State Max Iterations = 100000000
+  Steady State Min Iterations = 100000000
 
-  Output Intervals = 1
-  Post File = case.ep
+  ! No Elmer result files: results are viewed through OpenFOAM, and an ElmerPost
+  ! file here would be rewritten every coupling update (tens of MB per run)
+  Output Intervals = 0
 End
 
 
@@ -41,7 +41,7 @@ End
 
 Equation 1
   Name = "EOF_HallChannel"
-  Active Solvers(10) = 1 2 3 4 5 6 7 8 9 10
+  Active Solvers(13) = 1 2 3 4 5 6 7 8 9 10 11 12 13
 End
 
 
@@ -105,29 +105,71 @@ Solver 7
   Variable DOFs = 1
 End
 
+! Pressure and gas temperature feed the seeded-plasma (Saha) model
+
+Solver 8
+  Exec Solver = Always
+  Equation = "DeclarePressure"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Pressure"
+  Variable DOFs = 1
+End
+
+Solver 9
+  Exec Solver = Always
+  Equation = "DeclareGasTemp"
+  Procedure = "AllocateSolver" "AllocateSolver"
+  Variable = String "Gas Temperature"
+  Variable DOFs = 1
+End
 
 ! --------------------------------------------------
 ! 2 OpenFOAM -> Elmer
 ! --------------------------------------------------
-Solver 8
+Solver 10
   Exec Solver = Always
   Equation = "OpenFOAM2Elmer"
   Procedure = "OpenFOAM2Elmer" "OpenFOAM2ElmerSolver"
 
-  Target Variable 1 = String "Electric Conductivity"
-  Target Variable 2 = String "Ux"
-  Target Variable 3 = String "Uy"
-  Target Variable 4 = String "Uz"
-  Target Variable 5 = String "Bx"
-  Target Variable 6 = String "By"
-  Target Variable 7 = String "Bz"
+  Target Variable 1 = String "Ux"
+  Target Variable 2 = String "Uy"
+  Target Variable 3 = String "Uz"
+  Target Variable 4 = String "Bx"
+  Target Variable 5 = String "By"
+  Target Variable 6 = String "Bz"
+  Target Variable 7 = String "Pressure"
+  Target Variable 8 = String "Gas Temperature"
 End
 
 
 ! --------------------------------------------------
-! 3 Custom Elmer MHD Solver
+! 3 Custom Elmer MHD Solvers
 ! --------------------------------------------------
-Solver 9
+
+! Electron temperature. Its linear system is assembled and solved by the
+! Static Current Solver inside its nonlinear iteration (Electron Energy
+! Transport in the material); running this solver itself does nothing. It
+! must come before the Static Current Solver.
+Solver 11
+  Exec Solver = Always
+  Equation = "Electron Energy"
+  Procedure = "MHDSolve" "ElectronEnergySolver"
+  Variable = String "Electron Temperature"
+  Variable DOFs = 1
+
+  Linear System Solver = Iterative
+  Linear System Iterative Method = BiCGStabl
+  BiCGStabl Polynomial Degree = 4
+  Linear System Preconditioning = ILU1
+  Linear System Max Iterations = 2000
+  Linear System Convergence Tolerance = 1.0e-8
+  Linear System Abort Not Converged = False
+  ! Rows span the electron density (~1e6 between core and cold gas)
+  Linear System Scaling = True
+  Linear System Residual Output = 0
+End
+
+Solver 12
   Exec Solver = Always
   Equation = "Static Current Solver"
   Procedure = "MHDSolve" "StatCurrentSolver"
@@ -164,24 +206,23 @@ End
 ! --------------------------------------------------
 ! 4 Elmer -> OpenFOAM: export computed results
 ! --------------------------------------------------
-Solver 10
+Solver 13
   Exec Solver = Always
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
 
-  Target Variable 1 = String "Volume Current 1"
-  Target Variable 2 = String "Volume Current 2"
-  Target Variable 3 = String "Volume Current 3"
-  Target Variable 4 = String "Joule Heating"
+  ! Element-wise: nodal averaging would smear the electrode-edge peaks of the
+  ! current and heating, inflating what OpenFOAM integrates
+  Target Variable 1 = String "Element Volume Current 1"
+  Target Variable 2 = String "Element Volume Current 2"
+  Target Variable 3 = String "Element Volume Current 3"
+  Target Variable 4 = String "Element Joule Heating"
   Target Variable 5 = String "Potential"
-End
-
-
-Material 1
-  Name = "Conducting Fluid"
-
-  Electric Conductivity = Variable "Electric Conductivity"
-    Real MATC "tx"
+  Target Variable 6 = String "Electric Conductivity"
+  Target Variable 7 = String "Ionization Fraction"
+  Target Variable 8 = String "Electron Temperature"
+  Target Variable 9 = String "Hall Parameter"
+  Target Variable 10 = String "Pedersen Conductivity"
 End
 
 
@@ -191,11 +232,99 @@ End
 """
 
 
+MATERIAL_TEMPLATE = """\
+Material 1
+  Name = "Conducting Fluid"
+
+  ! Computed by MHDSolve from the Saha equation for the seed species
+  Electric Conductivity = Variable "Electric Conductivity"
+    Real MATC "tx"
+
+  ! Potassium in argon. Saha data and electron collision tables come from
+  ! plasma_collisions (electron_collisions.dat, written by mhd prepare).
+  Seed Mole Fraction = Real {seed_mole_fraction:g}
+  Seed Ionization Energy = Real {seed_ionization_energy:.6g}  ! eV
+  Seed Statistical Weight Ratio = Real {seed_weight_ratio:.6g}  ! g_ion / g_neutral
+  Electron Collision Data = String "{collision_file}"
+  ! drifting (collision frequencies add) or lorentz (added inside the velocity average)
+  Electron Transport Model = String "{electron_transport_model}"
+  ! electron: no net inelastic loss; gas: K(4p) quenched to the gas temperature
+  Excited State Temperature = String "{excited_state_temperature}"
+  ! Ion slip: ions carry current with this mobility x N / N0 (N0 = 2.6868e25 m^-3)
+  Ion Reduced Mobility = Real {ion_reduced_mobility:g}  ! m^2/(V s)
+
+  Sigma Min = Real {sigma_min:g}
+  Sigma Max = Real {sigma_max:g}
+
+  ! Electron temperature: Joule heating vs. elastic losses, otherwise Te = Tgas.
+  ! With Electron Energy Transport the electron energy equation is solved
+  ! (Solver 11); without it the local balance (Kerrebrock) is used.
+  Two Temperature = Logical {two_temperature}
+  Electron Energy Transport = Logical {electron_energy_transport}
+  Electron Temperature Max = Real {electron_temperature_max:g}  ! K
+  Electron Temperature Relaxation = Real {electron_temperature_relaxation:g}
+End
+"""
+
+
 class ElmerCaseRenderer:
     """Render an Elmer SIF from a resolved case model."""
 
-    def render(self, config: CaseConfig, boundary_indices: Mapping[str, int]) -> str:
-        lines = [CASE_SIF_HEADER]
+    @staticmethod
+    def _wall_heat_transmission(config: CaseConfig) -> List[str]:
+        """Sheath energy loss of the electrons at a wall, when enabled."""
+        gamma = config.plasma.electron_wall_heat_transmission
+        if gamma <= 0:
+            return []
+        return [f"  Electron Wall Heat Transmission = Real {gamma:g}"]
+
+    def render(
+        self,
+        config: CaseConfig,
+        boundary_indices: Mapping[str, int],
+        saha: Optional[Mapping[str, float]] = None,
+    ) -> str:
+        """`saha`: seed ionization energy and weight ratio from the collision tables."""
+        material = config.plasma.model_dump()
+        saha = saha or {"ionization_energy": 4.341, "weight_ratio": 0.5}
+        material["seed_ionization_energy"] = saha["ionization_energy"]
+        material["seed_weight_ratio"] = saha["weight_ratio"]
+        material["collision_file"] = COLLISION_FILE_NAME
+        for key in ("two_temperature", "electron_energy_transport"):
+            material[key] = "True" if getattr(config.plasma, key) else "False"
+        header = CASE_SIF_HEADER
+        if config.mesh.type == "structured":
+            # Graded hexahedra have thin, high-aspect wall cells: without row
+            # scaling ILU-GCR stalls, 1e-3 leaves ~10% error in the load power
+            # and 1e-4 ~1.6%; 1e-5 matches MUMPS to 0.2%. (Scaling hurts on
+            # tetrahedral meshes, so it stays off there.)
+            for old, new in (
+                ("  Linear System Scaling = False", "  Linear System Scaling = True"),
+                (
+                    "  Linear System Convergence Tolerance = 1.0e-3",
+                    "  Linear System Convergence Tolerance = 1.0e-5",
+                ),
+            ):
+                assert header.count(old) == 1, old
+                header = header.replace(old, new)
+        solver = config.numerics.linear_solver
+        if solver == "auto":
+            # Structured meshes: MUMPS. Warm-started ILU-GCR was 12% faster at 72k
+            # nodes, but from a cold start on 230k thin-walled cells it took
+            # ~215 s per solve against ~10 s for MUMPS.
+            solver = "mumps" if config.mesh.type == "structured" else "iterative"
+        if solver == "mumps":
+            # The potential solve only; the electron energy system stays iterative
+            old = "  Linear System Solver = Iterative\n  Linear System Iterative Method = GCR\n"
+            assert header.count(old) == 1, old
+            header = header.replace(
+                old,
+                "  ! Parallel sparse direct solve; the iterative settings below are unused\n"
+                "  Linear System Solver = Direct\n"
+                "  Linear System Direct Method = MUMPS\n"
+                "  Linear System Iterative Method = GCR\n",
+            )
+        lines = [header, MATERIAL_TEMPLATE.format_map(material)]
         lines.extend(
             (
                 "! -------------------------",
@@ -221,6 +350,7 @@ class ElmerCaseRenderer:
                         f"  Electrode Pair = Integer {pair_number}",
                         f'  Electrode Sign = String "{sign}"',
                         f"  Electrode Resistance = Real {pair.resistance}",
+                        *self._wall_heat_transmission(config),
                         "End",
                         "",
                     )
@@ -233,10 +363,21 @@ class ElmerCaseRenderer:
                     f"Boundary Condition {condition_number}",
                     f"  ! {name}",
                     f"  Target Boundaries(1) = {boundary_indices[name]}",
-                    "End",
-                    "",
                 )
             )
+            if name == INSULATOR:
+                lines.extend(self._wall_heat_transmission(config))
+            if name == INLET:
+                # The electron energy equation is convection-dominated: without
+                # an inflow value Te drifted below Tg and flickered over the
+                # first centimetres. Incoming gas is in equilibrium.
+                lines.extend(
+                    (
+                        '  Electron Temperature = Variable "Gas Temperature"',
+                        '    Real MATC "tx"',
+                    )
+                )
+            lines.extend(("End", ""))
         return "\n".join(lines)
 
 
@@ -267,20 +408,20 @@ FIELD_DEFINITIONS = (
         "name": "T",
         "class": "volScalarField",
         "dimensions": "[0 0 0 1 0 0 0]",
-        "internal_field": "uniform 100",
+        "internal_field": "uniform {inlet_temperature}",
         "comment": "// Temperature [K]",
         "inlet": {"type": "fixedValue", "value": "uniform {inlet_temperature}"},
         "outlet": {"type": "zeroGradient"},
         "wall": {"type": "zeroGradient"},
     },
     {
-        "name": "p_rgh",
+        "name": "p",
         "class": "volScalarField",
         "dimensions": "[1 -1 -2 0 0 0 0]",
-        "internal_field": "uniform 0",
-        "comment": "// Dynamic pressure (p - rho*g*h)",
+        "internal_field": "uniform {outlet_pressure}",
+        "comment": "// Absolute pressure [Pa]",
         "inlet": {"type": "zeroGradient"},
-        "outlet": {"type": "fixedValue", "value": "uniform 0"},
+        "outlet": {"type": "fixedValue", "value": "uniform {outlet_pressure}"},
         "wall": {"type": "zeroGradient"},
     },
     {
@@ -333,6 +474,58 @@ FIELD_DEFINITIONS = (
         "outlet": {"type": "zeroGradient"},
         "wall": {"type": "zeroGradient"},
     },
+    # Plasma state computed by Elmer. The solver does not read these; they
+    # exist so the fields are present in the t = 0 output for viewing.
+    {
+        "name": "Te",
+        "class": "volScalarField",
+        "dimensions": "[0 0 0 1 0 0 0]",
+        "internal_field": "uniform {inlet_temperature}",
+        "comment": "// Electron temperature [K]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "ionizationFraction",
+        "class": "volScalarField",
+        "dimensions": "[0 0 0 0 0 0 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Electron mole fraction n_e / n_heavy",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "hallParameter",
+        "class": "volScalarField",
+        "dimensions": "[0 0 0 0 0 0 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Electron Hall parameter (Hall / Pedersen mobility)",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "pedersenConductivity",
+        "class": "volScalarField",
+        "dimensions": "[-1 -3 3 0 0 2 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Conductivity across B, electrons and ions [S/m]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
+    {
+        "name": "elcond_elmer",
+        "class": "volScalarField",
+        "dimensions": "[-1 -3 3 0 0 2 0]",
+        "internal_field": "uniform 0",
+        "comment": "// Electrical conductivity along B (DC), electrons and ions [S/m]",
+        "inlet": {"type": "zeroGradient"},
+        "outlet": {"type": "zeroGradient"},
+        "wall": {"type": "zeroGradient"},
+    },
 )
 
 
@@ -357,25 +550,78 @@ def _render_patch(name: str, condition: Mapping[str, str]) -> str:
     return "\n".join(lines)
 
 
+COUPLING_PROPERTIES_TEMPLATE = """\
+/*--------------------------------*- C++ -*----------------------------------*\\
+| =========                 |                                                 |
+| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\\\    /   O peration     | Version:  dev                                   |
+|   \\\\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\\\/     M anipulation  |                                                 |
+\\*---------------------------------------------------------------------------*/
+FoamFile
+{{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      couplingProperties;
+}}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Elmer is re-solved when U, T or p has changed by more than these relative
+// tolerances since the last update, or after maxStepsBetweenUpdates steps
+// (0 = no limit). Zero tolerances update every time step. U and p use the
+// largest cell change; T uses the RMS change weighted by Joule heating power.
+velocityTolerance       {velocity_tolerance:g};
+temperatureTolerance    {temperature_tolerance:g};
+pressureTolerance       {pressure_tolerance:g};
+maxStepsBetweenUpdates  {max_steps_between_updates:d};
+
+// ************************************************************************* //
+"""
+
+
+def render_coupling_properties(config: CaseConfig) -> str:
+    """Render constant/couplingProperties for the OpenFOAM solver."""
+    values = config.coupling.model_dump()
+    return COUPLING_PROPERTIES_TEMPLATE.format_map(values)
+
+
 class OpenFoamCaseRenderer:
-    """Render initial fields and version-2 data-driven OpenFOAM files."""
+    """Render compressible Saha fields and configured OpenFOAM files."""
 
     def render(self, config: CaseConfig) -> Dict[str, str]:
         substitutions = {
             "inlet_velocity": _format_vector(config.physics.inlet_velocity),
             "inlet_temperature": f"{config.physics.inlet_temperature:g}",
             "B_field": _format_vector(config.physics.B_field),
+            "outlet_pressure": f"{config.physics.outlet_pressure:g}",
         }
         result: Dict[str, str] = {}
         for definition in FIELD_DEFINITIONS:
+            if definition["name"] == "T":
+                definition = self._with_wall_temperatures(definition, config)
             result[f"0/{definition['name']}"] = self._render_field(
-                definition,
-                electrode_patch_names(len(config.electrode_pairs)),
-                substitutions,
+                definition, electrode_patch_names(len(config.electrode_pairs)), substitutions
             )
-        if isinstance(config, CaseConfigV2):
-            for path, file_config in config.openfoam.files.items():
-                result[path] = render_openfoam_file(path, file_config)
+        for path, file_config in config.openfoam.files.items():
+            result[path] = render_openfoam_file(path, file_config)
+        return result
+
+    @staticmethod
+    def _with_wall_temperatures(
+        definition: Mapping[str, object], config: CaseConfig
+    ) -> Dict[str, object]:
+        """Fixed-temperature (heat-losing) or adiabatic insulator and electrode walls."""
+
+        def condition(temperature: Optional[float]) -> Dict[str, str]:
+            if temperature is None:
+                return {"type": "zeroGradient"}
+            return {"type": "fixedValue", "value": f"uniform {temperature:g}"}
+
+        result = dict(definition)
+        result["wall"] = condition(config.physics.insulator_wall_temperature)
+        result["electrode"] = condition(config.physics.electrode_wall_temperature)
         return result
 
     @staticmethod
@@ -399,11 +645,11 @@ class OpenFoamCaseRenderer:
             )
         wall = definition["wall"]
         assert isinstance(wall, Mapping)
+        electrode = definition.get("electrode", wall)
+        assert isinstance(electrode, Mapping)
         for name in electrodes:
             patches.append(
-                _render_patch(
-                    name, _resolve_boundary_condition(wall, substitutions)
-                )
+                _render_patch(name, _resolve_boundary_condition(electrode, substitutions))
             )
         patches.append(
             _render_patch(

@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import os
 import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
+
+from pydantic import ValidationError
 
 from .loader import load_case_config
 from .models import CaseConfig
@@ -148,6 +151,7 @@ class MhdRuntime:
         name: str,
         *,
         postprocess: bool = True,
+        cores: Optional[int] = None,
         dry_run: bool = False,
     ) -> Path:
         """Run a previously prepared coupled OpenFOAM/Elmer case."""
@@ -157,37 +161,120 @@ class MhdRuntime:
         self._validate_ranks(ranks)
         self._validate_prepared_case(case_directory, ranks)
 
-        commands: List[Sequence[str]] = [
-            (
-                "mpirun",
-                "-n",
-                str(ranks),
-                "mdhLinearHall",
-                "-parallel",
-                ":",
-                "-n",
-                str(ranks),
-                "ElmerSolver_mpi",
-                "case.sif",
-            )
+        if cores is not None:
+            available = os.cpu_count() or 1
+            if isinstance(cores, bool) or not isinstance(cores, int) or not 1 <= cores <= available:
+                raise PreparationError(f"--cores must be between 1 and {available}")
+        # OpenFOAM and Elmer take turns: while one computes, the other waits in
+        # the coupler's sleeping poll. Both solvers can therefore share the same
+        # cores (N + N processes on N cores). Oversubscription must be allowed,
+        # binding off, and MPI told to yield when idle so waiting ranks inside
+        # MPI calls give up the CPU instead of busy-polling.
+        pinning: List[str] = (
+            ["taskset", "-c", f"0-{cores - 1}"] if cores is not None else []
+        )
+        solver_command = pinning + [
+            "mpirun",
+            "--oversubscribe",
+            "--bind-to",
+            "none",
+            "--mca",
+            "mpi_yield_when_idle",
+            "1",
+            "-n",
+            str(ranks),
+            "mdhLinearHall",
+            "-parallel",
+            ":",
+            "-n",
+            str(ranks),
+            "ElmerSolver_mpi",
+            "case.sif",
         ]
-        if postprocess:
-            commands.extend(
-                (
-                    ("reconstructPar", "-case", "."),
-                    ("foamToVTK", "-case", "."),
-                )
-            )
+        workers = cores if cores is not None else ranks
 
         if dry_run:
             print(f"Would run {case_directory}")
-            for command in commands:
-                print(f"  run: {' '.join(command)}")
+            print(f"  run: {' '.join(solver_command)}")
+            if postprocess:
+                print(f"  run: reconstructPar and foamToVTK over the time directories, {workers} at a time")
             return case_directory
 
-        for command in commands:
-            self._run(command, case_directory)
+        self._run(solver_command, case_directory)
+        if postprocess:
+            self._postprocess(case_directory, workers, pinning)
         return case_directory
+
+    def _postprocess(self, case_directory: Path, workers: int, pinning: Sequence[str]) -> None:
+        """Reconstruct fields and write VTK, splitting time directories across workers.
+
+        Each process handles its own subset of times. VTK paths use actual time
+        names so separate exporters cannot overwrite each other's index zero.
+        """
+        processor_times = self._time_directories(case_directory / "processor0")
+        self._parallel_over_times(
+            "reconstructPar",
+            [t for t in processor_times if float(t) != 0.0],
+            workers,
+            case_directory,
+            pinning,
+        )
+        self._parallel_over_times(
+            "foamToVTK", self._time_directories(case_directory), workers, case_directory, pinning
+        )
+
+    @staticmethod
+    def _time_directories(directory: Path) -> List[str]:
+        times = []
+        for entry in directory.iterdir() if directory.is_dir() else []:
+            if not entry.is_dir():
+                continue
+            try:
+                value = float(entry.name)
+            except ValueError:
+                continue
+            times.append((value, entry.name))
+        return [name for _, name in sorted(times)]
+
+    def _parallel_over_times(
+        self,
+        tool: str,
+        times: Sequence[str],
+        workers: int,
+        case_directory: Path,
+        pinning: Sequence[str],
+    ) -> None:
+        if not times:
+            return
+        if shutil.which(tool) is None:
+            raise RuntimeCommandError(f"Required command '{tool}' is not available in the container")
+        count = max(1, min(workers, len(times)))
+        # Round-robin keeps the groups similar in size
+        groups = [list(times[i::count]) for i in range(count)]
+        name = case_directory.name
+        print(f"[{name}] $ {tool} over {len(times)} time(s) in {count} parallel process(es)", flush=True)
+        processes = []
+        for index, group in enumerate(groups):
+            log_path = case_directory / f"log.{tool}.{index}"
+            command = list(pinning) + [tool, "-case", ".", "-time", ",".join(group)]
+            if tool == "foamToVTK":
+                command.append("-useTimeName")
+            log = open(log_path, "w")
+            processes.append((subprocess.Popen(command, cwd=case_directory, stdout=log, stderr=subprocess.STDOUT), log, log_path, command))
+        failures = []
+        for process, log, log_path, command in processes:
+            process.wait()
+            log.close()
+            if process.returncode != 0:
+                failures.append((log_path, command, process.returncode))
+        if failures:
+            log_path, command, code = failures[0]
+            tail = log_path.read_text(errors="replace").splitlines()[-15:]
+            raise RuntimeCommandError(
+                f"Command failed with exit code {code}: {' '.join(command)}\n"
+                + "\n".join(tail)
+                + f"\n(full log: {log_path})"
+            )
 
     def case_directory(self, name: str) -> Path:
         """Resolve a safe case name beneath the immutable runs root."""
@@ -202,7 +289,13 @@ class MhdRuntime:
     def preparation_commands(ranks: int) -> List[Sequence[str]]:
         return [
             ("gmshToFoam", "channel.msh"),
-            ("potentialFoam",),
+            # Initial velocity from potential flow. -pName points at a field that
+            # does not exist so the pressure BCs are inferred from U (the
+            # absolute-pressure field p is not a kinematic pressure)
+            ("potentialFoam", "-pName", "pPotential"),
+            # potentialFoam also writes its volumetric flux; the compressible
+            # solver would read it as the mass flux
+            ("rm", "-f", "0/phi"),
             ("decomposePar",),
             (
                 "ElmerGrid",
@@ -312,6 +405,12 @@ class MhdRuntime:
             raise PreparationError(f"Invalid preparation marker '{marker_path}'") from exc
         if not isinstance(data, dict) or data.get("version") != 1:
             raise PreparationError(f"Unsupported preparation marker '{marker_path}'")
+        try:
+            CaseConfig.model_validate(data.get("config"))
+        except ValidationError as exc:
+            raise PreparationError(
+                f"Invalid configuration in preparation marker '{marker_path}'; prepare the case again"
+            ) from exc
         return data
 
     @staticmethod

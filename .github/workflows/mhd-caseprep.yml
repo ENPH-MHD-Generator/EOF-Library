@@ -1,0 +1,17 @@
+name: MHD canonical configuration
+
+on: [push, pull_request]
+
+jobs:
+  caseprep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-caseprep.txt
+      - run: sudo apt-get update && sudo apt-get install -y libglu1-mesa
+      - run: python -m pip install -r requirements-caseprep.txt
+      - run: make test-caseprep

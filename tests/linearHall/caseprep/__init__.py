@@ -1,13 +1,11 @@
 """Configuration-driven preparation and execution of MHD cases."""
 
 from .loader import ConfigError, load_case_config
-from .models import CaseConfig, CaseConfigV1, CaseConfigV2
+from .models import CaseConfig
 from .preparer import CasePreparer, PreparationError
 
 __all__ = [
     "CaseConfig",
-    "CaseConfigV1",
-    "CaseConfigV2",
     "CasePreparer",
     "ConfigError",
     "PreparationError",

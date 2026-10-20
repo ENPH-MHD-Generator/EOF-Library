@@ -6,7 +6,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 from pydantic import ValidationError
@@ -14,10 +14,18 @@ from pydantic import ValidationError
 from caseprep.cli import main
 from caseprep.foam import render_openfoam_file
 from caseprep.loader import ConfigError, load_case_config
-from caseprep.models import CaseConfigV2, OpenFoamConfig, OpenFoamFileConfig
+from caseprep.models import CaseConfig, OpenFoamConfig, OpenFoamFileConfig
 from caseprep.preparer import CasePreparer, PreparationError
 from caseprep.runtime import MhdRuntime, RuntimeCommandError
 from caseprep.schema import render_experiment_schema
+from caseprep.collisions import TABLE_FILE_NAME, METADATA_FILE_NAME
+from types import SimpleNamespace
+
+
+def fake_collision_tables(config, destination):
+    (destination / TABLE_FILE_NAME).write_text("test collision data\n")
+    (destination / METADATA_FILE_NAME).write_text("{}\n")
+    return SimpleNamespace(saha={"ionization_energy": 4.341, "weight_ratio": 0.5})
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -29,18 +37,17 @@ class CanonicalConfigTest(TestCase):
     def setUp(self) -> None:
         self.raw = yaml.safe_load(EXPERIMENT.read_text())
 
-    def test_schema_artifacts_match_both_models(self) -> None:
-        for version in (1, 2):
-            with self.subTest(version=version):
-                path = REPOSITORY / f"schemas/mhd-experiment-v{version}.schema.json"
-                self.assertEqual(path.read_text(), render_experiment_schema(version))
+    def test_the_only_schema_artifact_matches_the_model(self) -> None:
+        schemas = list((REPOSITORY / "schemas").glob("*.schema.json"))
+        self.assertEqual([path.name for path in schemas], ["mhd-experiment.schema.json"])
+        self.assertEqual(schemas[0].read_text(), render_experiment_schema())
 
     def test_invalid_geometry_and_numbers_are_rejected(self) -> None:
         for value in (True, "0.2", 0, -1, float("inf"), float("nan")):
             with self.subTest(length=value):
                 self.raw["channel"]["length"] = value
                 with self.assertRaises(ValidationError):
-                    CaseConfigV2.model_validate(self.raw)
+                    CaseConfig.model_validate(self.raw)
         self.raw["channel"]["length"] = 0.2
         for centers in ((0, 0.1), (0.05, 0.051), (0.1, 0.2)):
             with self.subTest(centers=centers):
@@ -48,30 +55,28 @@ class CanonicalConfigTest(TestCase):
                     {"x_center": center, "resistance": 1} for center in centers
                 ]
                 with self.assertRaises(ValidationError):
-                    CaseConfigV2.model_validate(self.raw)
+                    CaseConfig.model_validate(self.raw)
 
     def test_automatic_placement_roundtrips_to_explicit_canonical_config(self) -> None:
         self.raw["electrodes"] = {"length": 0.01, "count": 4, "resistance": 2}
-        config = CaseConfigV2.model_validate(self.raw)
+        config = CaseConfig.model_validate(self.raw)
         self.assertEqual(len(config.electrode_pairs), 4)
-        self.assertEqual(CaseConfigV2.model_validate(config.to_dict()).to_dict(), config.to_dict())
+        self.assertEqual(CaseConfig.model_validate(config.to_dict()).to_dict(), config.to_dict())
         self.assertTrue(all(pair.resistance == 2 for pair in config.electrode_pairs))
 
-    def test_legacy_mesh_controls_have_migration_error(self) -> None:
-        self.raw["mesh"] = {"size_min": 0.005}
-        with self.assertRaisesRegex(ValidationError, "mesh.target_element_size"):
-            CaseConfigV2.model_validate(self.raw)
+    def test_mesh_rejects_unknown_sizing_controls(self) -> None:
+        self.raw["mesh"] = {"type": "tetrahedral", "size_min": 0.005}
+        with self.assertRaisesRegex(ValidationError, "target_element_size"):
+            CaseConfig.model_validate(self.raw)
 
-    def test_version_dispatch_and_duplicate_yaml_keys_fail_clearly(self) -> None:
+    def test_invalid_yaml_and_duplicate_keys_fail_clearly(self) -> None:
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "config.yaml"
             for document, message in (
-                ("schema_version: 3", "Unsupported schema_version"),
-                ("schema_version: true", "non-integer schema_version"),
-                ("{}", "missing schema_version"),
+                ("{}", "Field required"),
                 ("[]", "YAML mapping"),
-                ("schema_version: 1\nschema_version: 2", "duplicate key"),
-                ("schema_version: 2\nchannel: {length: 1, length: 2}", "duplicate key"),
+                ("mesh: {}\nmesh: {}", "duplicate key"),
+                ("channel: {length: 1, length: 2}", "duplicate key"),
             ):
                 with self.subTest(document=document):
                     path.write_text(document)
@@ -105,6 +110,9 @@ class PipelineTest(TestCase):
         self.root = Path(self.temporary.name)
         self.runtime = MhdRuntime(BASE, self.root / "runs", experiments_directory=REPOSITORY / "experiments")
         self.config = load_case_config(EXPERIMENT)
+        self.collision_writer = self.enterContext(patch(
+            "caseprep.preparer.write_collision_tables", side_effect=fake_collision_tables
+        ))
 
     @staticmethod
     def converted_mesh(command, case_directory, **kwargs) -> None:
@@ -164,11 +172,11 @@ class PipelineTest(TestCase):
 
     def test_run_uses_recorded_ranks_and_optional_postprocessing(self) -> None:
         self.prepare()
-        with patch.object(self.runtime, "_run") as run:
+        with patch.object(self.runtime, "_run") as run, patch.object(self.runtime, "_postprocess") as postprocess:
             self.runtime.run("case")
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0], ("mpirun", "-n", "2", "mdhLinearHall", "-parallel", ":", "-n", "2", "ElmerSolver_mpi", "case.sif"))
-        self.assertEqual([command[0] for command in commands[1:]], ["reconstructPar", "foamToVTK"])
+        self.assertEqual(commands[0][-9:], ["-n", "2", "mdhLinearHall", "-parallel", ":", "-n", "2", "ElmerSolver_mpi", "case.sif"])
+        postprocess.assert_called_once()
         with patch.object(self.runtime, "_run") as run:
             self.runtime.run("case", postprocess=False)
             self.assertEqual(run.call_count, 1)
@@ -229,3 +237,24 @@ class PipelineTest(TestCase):
                 CasePreparer(BASE).prepare(self.config, destination, force=True)
         self.assertEqual((destination / "keep").read_text(), "previous")
         self.assertEqual(list(self.root.iterdir()), [destination])
+
+    def test_parallel_vtk_export_uses_time_names_to_avoid_overwriting_results(self) -> None:
+        self.root.mkdir(exist_ok=True)
+        process = Mock(returncode=0)
+        with patch("caseprep.runtime.subprocess.Popen", return_value=process) as popen, patch("caseprep.runtime.shutil.which", return_value="/usr/bin/foamToVTK"):
+            self.runtime._parallel_over_times("foamToVTK", ["0", "1e-8", "2e-8"], 2, self.root, [])
+        self.assertEqual(popen.call_count, 2)
+        for call in popen.call_args_list:
+            self.assertIn("-useTimeName", call.args[0])
+
+    def test_invalid_prepared_config_is_rejected_before_launch(self) -> None:
+        destination = self.prepare()
+        marker_path = destination / self.runtime.MARKER_NAME
+        marker = json.loads(marker_path.read_text())
+        marker["config"]["mesh"] = {"type": "unknown"}
+        marker_path.write_text(json.dumps(marker))
+        self.assertEqual(self.runtime.available_cases(), [])
+        with patch.object(self.runtime, "_run") as run:
+            with self.assertRaisesRegex(PreparationError, "Invalid configuration"):
+                self.runtime.run("case")
+            run.assert_not_called()

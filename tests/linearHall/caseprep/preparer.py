@@ -13,10 +13,11 @@ from typing import Dict, List, Optional
 import yaml
 
 from .boundaries import elmer_boundary_indices
+from .collisions import METADATA_FILE_NAME, TABLE_FILE_NAME, write_collision_tables
 from .loader import ConfigError, load_case_config
-from .mesh import ProceduralMeshGenerator
 from .models import CaseConfig
-from .renderers import ElmerCaseRenderer, OpenFoamCaseRenderer
+from .mesh import ProceduralMeshGenerator
+from .renderers import ElmerCaseRenderer, OpenFoamCaseRenderer, render_coupling_properties
 
 
 class PreparationError(RuntimeError):
@@ -49,7 +50,14 @@ class CasePreparer:
     ) -> List[str]:
         self._validate_options(generate_mesh, reuse_mesh)
         self._validate_base_case(config, reuse_mesh=reuse_mesh)
-        files = ["case.sif", "resolved-config.yaml", "manifest.json"]
+        files = [
+            "case.sif",
+            TABLE_FILE_NAME,
+            METADATA_FILE_NAME,
+            "constant/couplingProperties",
+            "resolved-config.yaml",
+            "manifest.json",
+        ]
         files.extend(self.openfoam_renderer.render(config))
         files.extend(("constant/", "system/"))
         if generate_mesh or reuse_mesh:
@@ -119,9 +127,17 @@ class CasePreparer:
         reuse_mesh: bool,
     ) -> None:
         self._copy_static_case_files(destination)
+        self._write_text(
+            destination / "constant" / "couplingProperties", render_coupling_properties(config)
+        )
+
+        # Electron collision tables for Elmer, from plasma_collisions
+        tables = write_collision_tables(config, destination)
 
         indices = elmer_boundary_indices(len(config.electrode_pairs))
-        self._write_text(destination / "case.sif", self.elmer_renderer.render(config, indices))
+        self._write_text(
+            destination / "case.sif", self.elmer_renderer.render(config, indices, tables.saha)
+        )
 
         for relative_path, content in self.openfoam_renderer.render(config).items():
             output = destination / relative_path
@@ -189,7 +205,7 @@ class CasePreparer:
         elif reused_mesh:
             mesh_status = "reused"
         manifest: Dict[str, object] = {
-            "schema_version": 1,
+            "version": 1,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "source_commit": self._source_commit(),
             "source_dirty": self._source_is_dirty(),

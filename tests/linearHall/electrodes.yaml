@@ -1,54 +1,171 @@
-# yaml-language-server: $schema=../../schemas/mhd-experiment-v1.schema.json
-# ============================================================================
-# Linear Hall experiment configuration (schema version 1)
-#
-# This base-case copy is also used to verify whether the checked-in mesh can be
-# reused. The public example lives in experiments/linear-hall.yaml. In the
-# container, prepare it with:
-#
-#     mhd prepare /experiments/linear-hall.yaml
-#
-# ============================================================================
-
-schema_version: 1
-
+# yaml-language-server: $schema=../../schemas/mhd-experiment.schema.json
+# Compressible Saha MHD experiment. Mesh lengths are in metres.
+# Geometry and sizing descriptor for reuse of channel.msh.
 channel:
-  length: 0.200            # m  (200 mm)
-  height: 0.050            # m  ( 50 mm)
-  width:  0.050            # m  ( 50 mm)
-  wall_thickness: 0.005    # m  (  5 mm insulator / electrode shell)
-
+  length: 0.2
+  height: 0.05
+  width: 0.05
+  wall_thickness: 0.005
 mesh:
-  target_element_size: 0.005  # m; uniform target characteristic length
-
-# ---------------------------------------------------------------------------
-# Electrode pairs — two supported formats:
-#
-#   Format A – explicit pair placement and resistance:
-#     electrodes:
-#       length: 0.010
-#       pairs:
-#         - { x_center: 0.040, resistance: 1.0 }
-#         - { x_center: 0.120, resistance: 1.0 }
-#
-#   Format B – auto-spaced (evenly distributed along the channel):
-#     electrodes:
-#       count: 4
-#       length: 0.010
-#       resistance: 1.0
-#
-# Exactly one of "pairs" and "count" must be supplied. All pairs use the one
-# shared electrode length. Pair-specific resistances are supported.
-# ---------------------------------------------------------------------------
+  type: tetrahedral
+  target_element_size: 0.0025
 electrodes:
-  length: 0.010
+  length: 0.01
   pairs:
-    - { x_center: 0.040, resistance: 1.0 }
-    - { x_center: 0.080, resistance: 1.0 }
-    - { x_center: 0.120, resistance: 1.0 }
-    - { x_center: 0.160, resistance: 1.0 }
-
+  - x_center: 0.04
+    resistance: 1.0
+  - x_center: 0.08
+    resistance: 1.0
+  - x_center: 0.12
+    resistance: 1.0
+  - x_center: 0.16
+    resistance: 1.0
 physics:
-  B_field: [0, 0, 1.5]
-  inlet_velocity: [391, 0, 0]
-  inlet_temperature: 1500
+  B_field:
+  - 0
+  - 0
+  - 1.5
+  inlet_velocity:
+  - 391
+  - 0
+  - 0
+  inlet_temperature: 2500
+  insulator_wall_temperature: 300
+  electrode_wall_temperature: 300
+  outlet_pressure: 101325
+plasma:
+  seed_mole_fraction: 0.01
+  electron_transport_model: drifting
+  potassium_elastic_scale: 1.0
+  excited_state_temperature: electron
+  ion_reduced_mobility: 0.000243
+  electron_wall_heat_transmission: 0.0
+  sigma_min: 0.01
+  sigma_max: 1000000.0
+  two_temperature: true
+  electron_energy_transport: true
+  electron_temperature_max: 20000
+  electron_temperature_relaxation: 0.5
+coupling:
+  velocity_tolerance: 0.05
+  temperature_tolerance: 0.005
+  pressure_tolerance: 0.05
+  max_steps_between_updates: 250
+openfoam:
+  files:
+    constant/thermophysicalProperties:
+      entries:
+        thermoType:
+          type: hePsiThermo
+          mixture: pureMixture
+          transport: sutherland
+          thermo: hConst
+          equationOfState: perfectGas
+          specie: specie
+          energy: sensibleEnthalpy
+        mixture:
+          specie:
+            molWeight: '39.948'
+          thermodynamics:
+            Cp: '520.3'
+            Hf: '0'
+          transport:
+            As: '1.915e-06'
+            Ts: '138.3'
+    constant/turbulenceProperties:
+      entries:
+        simulationType: laminar
+    system/controlDict:
+      entries:
+        application: mdhLinearHall
+        startFrom: startTime
+        startTime: '0'
+        stopAt: endTime
+        endTime: 1e-4
+        deltaT: '0.1'
+        writeControl: adjustableRunTime
+        writeInterval: 1e-5
+        adjustTimeStep: 'yes'
+        purgeWrite: '0'
+        maxCo: '0.8'
+        maxDeltaT: '1'
+        functions: {}
+    system/fvSchemes:
+      entries:
+        ddtSchemes:
+          default: Euler
+        gradSchemes:
+          default: Gauss linear
+        divSchemes:
+          default: none
+          div(phi,U): Gauss linearUpwind grad(U)
+          div(phi,h): Gauss limitedLinear 1
+          div(phi,e): Gauss limitedLinear 1
+          div(phi,K): Gauss limitedLinear 1
+          div(phiv,p): Gauss linear
+          div(((rho*nuEff)*dev2(T(grad(U))))): Gauss linear
+        laplacianSchemes:
+          default: Gauss linear limited corrected 0.5
+        interpolationSchemes:
+          default: linear
+          elcond: cellPoint
+          Ux: cell
+          Uy: cell
+          Uz: cell
+          Bx: cellPoint
+          By: cellPoint
+          Bz: cellPoint
+          T: cellPoint
+          p: cellPoint
+        snGradSchemes:
+          default: limited corrected 0.5
+        wallDist:
+          method: meshWave
+    system/fvSolution:
+      entries:
+        solvers:
+          Phi:
+            solver: PCG
+            preconditioner: DIC
+            tolerance: 1e-8
+            relTol: '0'
+          p:
+            solver: GAMG
+            tolerance: 1e-7
+            relTol: '0.01'
+            smoother: DICGaussSeidel
+            nPreSweeps: '0'
+            nPostSweeps: '2'
+            nFinestSweeps: '2'
+            cacheAgglomeration: 'true'
+            nCellsInCoarsestLevel: '10'
+            agglomerator: faceAreaPair
+            mergeLevels: '1'
+          pFinal:
+            $p: null
+            relTol: '0'
+          '"rho.*"':
+            solver: diagonal
+          '"(U|h|e)"':
+            solver: smoothSolver
+            smoother: symGaussSeidel
+            nSweeps: '2'
+            tolerance: 1e-7
+            relTol: '0.1'
+          '"(U|h|e)Final"':
+            $U: null
+            relTol: '0'
+        PIMPLE:
+          momentumPredictor: 'yes'
+          transonic: 'no'
+          nOuterCorrectors: '1'
+          nCorrectors: '2'
+          nNonOrthogonalCorrectors: '0'
+        potentialFlow:
+          nNonOrthogonalCorrectors: '0'
+          PhiRefCell: '0'
+          PhiRefValue: '0'
+    system/decomposeParDict:
+      entries:
+        numberOfSubdomains: '2'
+        method: scotch

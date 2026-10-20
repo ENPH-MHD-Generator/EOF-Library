@@ -3,3 +3,17 @@ processor*
 runs/
 .idea
 
+
+# Build outputs from host compiles; the image builds its own
+**/*.so
+**/lnInclude
+**/Make/darwin*
+**/Make/linux*
+
+# Not part of the solver image: the application builds from tests/linearHall
+tests/
+experiments/
+out/
+**/__pycache__
+plasma_collisions/
+cmake-build-debug/

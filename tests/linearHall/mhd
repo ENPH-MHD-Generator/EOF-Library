@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Host launcher for the linear Hall application image.
+#
+#   MHD_WORKSPACE      directory holding experiments/ and out/ (default: this directory)
+#   MHD_SOLVER_SOURCE  EOF-Library checkout to build the solver image from first;
+#                      unset, `build` uses an existing $SOLVER_IMAGE
+#   SOLVER_IMAGE       solver image tag (default eof-mhd-solvers:latest)
+
+set -Eeuo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="${MHD_WORKSPACE:-$APP_DIR}"
+SOLVER_SOURCE="${MHD_SOLVER_SOURCE:-}"
+SOLVER_IMAGE="${SOLVER_IMAGE:-eof-mhd-solvers:latest}"
+IMAGE_NAME="mhd-sim"
+IMAGE_REFERENCE="${IMAGE_NAME}:latest"
+
+usage() {
+  cat <<'USAGE'
+Usage: ./mhd <command> [options]
+
+Commands:
+  build [--debug]  Build the solver image (if configured) and the application image.
+  shell            Start the existing image with experiments/ and out/ mounted.
+  start [--debug]  Build the images, then start a shell.
+  help             Show this help.
+
+Case commands are available inside the container:
+  mhd prepare --list
+  mhd prepare /experiments/linear-hall.yaml [--name NAME] [--mesh]
+  mhd run --list
+  mhd run NAME
+USAGE
+}
+
+build_image() {
+  local debug=0
+  if [[ "${1:-}" == "--debug" ]]; then
+    debug=1
+    shift
+  fi
+  if [[ $# -ne 0 ]]; then
+    echo "Unexpected build argument: $1" >&2
+    usage >&2
+    exit 2
+  fi
+  if [[ -n "$SOLVER_SOURCE" ]]; then
+    make -C "$SOLVER_SOURCE" solver-image ELMER_DEBUG="$debug" SOLVER_IMAGE="${SOLVER_IMAGE%:*}"
+  elif [[ "$debug" == 1 ]]; then
+    echo "--debug rebuilds Elmer in the solver image; set MHD_SOLVER_SOURCE to an EOF-Library checkout." >&2
+    exit 2
+  fi
+  make -C "$APP_DIR" image IMAGE_NAME="$IMAGE_NAME" SOLVER_IMAGE="$SOLVER_IMAGE"
+}
+
+start_shell() {
+  mkdir -p "$WORKSPACE/experiments" "$WORKSPACE/out"
+  if ! docker image inspect "$IMAGE_REFERENCE" >/dev/null 2>&1; then
+    echo "Image '$IMAGE_REFERENCE' does not exist. Run './mhd build' first." >&2
+    exit 2
+  fi
+  docker run --rm -it \
+    --platform linux/amd64 \
+    -e HOST_USER_ID="$(id -u)" \
+    -e HOST_USER_GID="$(id -g)" \
+    -v "$WORKSPACE/experiments:/experiments:ro" \
+    -v "$WORKSPACE/out:/runs" \
+    "$IMAGE_REFERENCE"
+}
+
+command_name="${1:-help}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$command_name" in
+  build)
+    build_image "$@"
+    ;;
+  shell)
+    if [[ $# -ne 0 ]]; then
+      echo "The shell command does not accept arguments." >&2
+      exit 2
+    fi
+    start_shell
+    ;;
+  start)
+    build_image "$@"
+    start_shell
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $command_name" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

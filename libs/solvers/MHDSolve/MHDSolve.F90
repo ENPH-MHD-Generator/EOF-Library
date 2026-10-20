@@ -63,11 +63,21 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 !------------------------------------------------------------------------------
   LOGICAL                 :: Found, Calculate
   TYPE(ValueList_t), POINTER :: Params
-  INTEGER                 :: Dim
+  INTEGER                 :: Dim, i
 !------------------------------------------------------------------------------
 
-  Params => GetSolverParams() 
+  Params => GetSolverParams()
   Dim    = CoordinateSystemDimension()
+
+  ! The plasma model and the coupling are 3D only (U x B, the conductivity
+  ! tensor, three current components), so reject other dimensions here,
+  ! before any variables are exported
+  IF (Dim /= 3) THEN
+    CALL Fatal( &
+      'StatCurrentSolver_Init', &
+      'This solver requires a fully 3D coordinate system. ' // &
+      'CoordinateSystemDimension() != 3. Aborting.' )
+  END IF
 
   !------------------------------------------------------------
   ! Exported variables
@@ -76,6 +86,12 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
     CALL ListAddString( Params, &
          NextFreeKeyword('Exported Variable ', Params), &
          'Joule Heating' )
+    ! Element-wise copy: nodal averaging smears the current and heating peaks at
+    ! the electrode edges, and interpolating those onto larger OpenFOAM cells
+    ! inflates their integrals. OpenFOAM gets these per element instead.
+    CALL ListAddString( Params, &
+         NextFreeKeyword('Exported Variable ', Params), &
+         '-elem Element Joule Heating' )
   END IF
 
   IF ( ListGetLogical( Params, 'Calculate Nodal Heating', Found ) ) THEN
@@ -86,18 +102,41 @@ SUBROUTINE StatCurrentSolver_Init( Model, Solver, dt, TransientSimulation )
 
   Calculate = ListGetLogical( Params, 'Calculate Volume Current', Found )
   IF ( Calculate ) THEN
-    IF ( Dim == 2 ) THEN
-      CALL ListAddString( Params, &
-           NextFreeKeyword('Exported Variable ', Params), &
-           'Volume Current[Volume Current:2]' )
-    ELSE
-      CALL ListAddString( Params, &
-           NextFreeKeyword('Exported Variable ', Params), &
-           'Volume Current[Volume Current:3]' )
+    CALL ListAddString( Params, &
+         NextFreeKeyword('Exported Variable ', Params), &
+         'Volume Current[Volume Current:3]' )
 
-    END IF
+    DO i = 1, Dim
+      CALL ListAddString( Params, &
+           NextFreeKeyword('Exported Variable ', Params), &
+           '-elem Element Volume Current '//TRIM(I2S(i)) )
+    END DO
   END IF
-  
+
+  ! Seeded-plasma state computed from the Saha equation each call. The
+  ! electron temperature is the variable of the Electron Energy solver.
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Ionization Fraction' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Electron Density' )
+  ! Electron mobilities along B (DC) and across it (Pedersen, Hall), and the
+  ! total conductivity tensor (electrons and ions, clamped) the current uses
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Electron Mobility' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Electron Pedersen Mobility' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Electron Hall Mobility' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Pedersen Conductivity' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Hall Conductivity' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), 'Hall Parameter' )
+  CALL ListAddString( Params, &
+       NextFreeKeyword('Exported Variable ', Params), &
+       'Effective Electric Field[Effective Electric Field:3]' )
+
   ! Enable export of Lagrange multipliers (constraint DOF values)
   IF (.NOT. ListCheckPresent(Solver % Values, 'Export Lagrange Multiplier')) THEN
     CALL ListAddLogical(Solver % Values, 'Export Lagrange Multiplier', .TRUE.)
@@ -120,7 +159,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   USE MHDUtils
   USE MHDLog
   USE MHDDiagnostics
-  USE MHDParams, ONLY: HallCoeffAlphaDefault
+  USE MHDPlasma
 
   IMPLICIT NONE
 !------------------------------------------------------------------------------ 
@@ -143,6 +182,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     LocalStiffMatrix(:,:), Load(:), LocalForce(:)
 
   REAL (KIND=DP) :: Norm, HeatingTot, VolTot, CurrentTot, ControlTarget, ControlScaling = 1.0
+  REAL (KIND=DP) :: PowerEmf, PowerLoad, UxAvg, CurrYAvg
   REAL (KIND=DP) :: Resistance, PotDiff
   REAL (KIND=DP) :: at, st, at0
 #ifndef USE_ISO_C_BINDINGS
@@ -165,9 +205,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CHARACTER(LEN=MAX_NAME_LEN) :: EquationName
   CHARACTER(LEN=256) :: LogMsg
 
-  LOGICAL :: GetCondAtIp
-  TYPE(ValueHandle_t) :: CondAtIp_h
-  REAL(KIND=dp) :: CondAtIp
+  ! Gauss points for linear tetrahedra in assembly and current evaluation
+  INTEGER :: TetraPoints
 
   ! Velocity and Magnetic field values
   REAL(KIND=dp), POINTER :: UxVals(:), UyVals(:), UzVals(:)
@@ -175,6 +214,34 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   INTEGER, POINTER :: UxPerm(:), UyPerm(:), UzPerm(:)
   INTEGER, POINTER :: BxPerm(:), ByPerm(:), BzPerm(:)
   TYPE(Variable_t), POINTER :: UxVar, UyVar, UzVar, BxVar, ByVar, BzVar
+
+  ! Pressure, gas temperature and conductivity (Saha ionization)
+  REAL(KIND=dp), POINTER :: PVals(:), TgasVals(:), SigVals(:)
+  INTEGER, POINTER :: PPerm(:), TgasPerm(:), SigPerm(:)
+  TYPE(Variable_t), POINTER :: PVar, TgasVar, SigVar
+
+  ! Seeded-plasma outputs (exported variables of this solver, one shared perm)
+  REAL(KIND=dp), POINTER :: IonFrac(:), ElecTemp(:), ElecDens(:), ElecMob(:)
+  REAL(KIND=dp), POINTER :: ElecMobP(:), ElecMobH(:), SigPed(:), SigHall(:), HallPar(:)
+  REAL(KIND=dp), POINTER :: EffField(:)   ! E' = -grad(phi) + U x B, like VolCurrent
+
+  ! Element-wise current and heating sent to OpenFOAM (shared Perm over elements)
+  REAL(KIND=dp), POINTER :: ElemCurr1(:), ElemCurr2(:), ElemCurr3(:), ElemHeating(:)
+  INTEGER, POINTER :: ElemPerm(:)
+  INTEGER, POINTER :: PlasmaPerm(:)
+  ! Electron temperature: the variable of the Electron Energy solver, whose
+  ! linear system this solver assembles and solves (SolveElectronEnergy)
+  INTEGER, POINTER :: TePerm(:)
+  TYPE(Solver_t), POINTER :: TeSolver
+  ! Set once a potential solution (and so a current) exists
+  LOGICAL :: HaveCurrent = .FALSE.
+  REAL(KIND=dp) :: TeChange, TeTol
+  ! Per-node electron temperature relaxation and last step, for damping
+  ! oscillating nodes (indexed like ElecTemp)
+  REAL(KIND=dp), ALLOCATABLE :: TeNodeRelax(:), TeLastStep(:)
+  ! Lumped nodal volumes (integral of each basis function), for the
+  ! volume-weighted electron temperature convergence measure
+  REAL(KIND=dp), ALLOCATABLE :: TeNodeWeight(:)
 
   ! Electrode Unknowns
   INTEGER, ALLOCATABLE :: ElectrodePairOfBC(:)
@@ -206,7 +273,14 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   UxVals, UyVals, UzVals, &
   BxVals, ByVals, BzVals, &
   UxPerm, UyPerm, UzPerm, &
-  BxPerm, ByPerm, BzPerm, OldPotential
+  BxPerm, ByPerm, BzPerm, OldPotential, &
+  PVar, TgasVar, SigVar, &
+  PVals, TgasVals, SigVals, &
+  PPerm, TgasPerm, SigPerm, &
+  IonFrac, ElecTemp, ElecDens, ElecMob, PlasmaPerm, EffField, TePerm, TeSolver, HaveCurrent, &
+  ElecMobP, ElecMobH, SigPed, SigHall, HallPar, &
+  TeNodeRelax, TeLastStep, TeNodeWeight, &
+  ElemCurr1, ElemCurr2, ElemCurr3, ElemHeating, ElemPerm
 
 !------------------------------------------------------------------------------
 !    Get variables needed for solution
@@ -251,15 +325,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   ForceVector => StiffMatrix % RHS
 
   Norm = Solver % Variable % Norm
-  DIM = CoordinateSystemDimension()
-
-  ! We don't support 2 dimensions for MHD
-  IF (Dim /= 3) THEN
-    CALL Fatal( &
-      'StatCurrentSolver', &
-      'This solver requires a fully 3D coordinate system. ' // &
-      'CoordinateSystemDimension() != 3. Aborting.' )
-  END IF
+  DIM = CoordinateSystemDimension()  ! always 3; StatCurrentSolver_Init enforces it
 
   ControlTarget = GetCReal( Params,'Power Control',ControlPower)
   IF(ControlPower) THEN
@@ -279,7 +345,24 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       'Nonlinear System Max Iterations', GotIt )
   IF ( .NOT. GotIt ) NonlinearIter = 1
 
-  GetCondAtIp = ListGetLogical( Params,'Conductivity At Ip',GotIt )
+  IF ( ListGetLogical( Params,'Conductivity At Ip',GotIt ) ) CALL Fatal('StatCurrentSolver', &
+      'Conductivity At Ip is not supported: the conductivity tensor comes from the plasma model')
+
+  ! Quadrature for linear tetrahedra. The physical fields are not linear, but
+  ! inside an element every coefficient is its P1 interpolant: basis gradients
+  ! are constant, and the conductivities, U and B are interpolated linearly
+  ! from nodal values (ConductivityTensor). The one-point centroid rule
+  ! therefore integrates the stiffness term grad(v).C.grad(phi) exactly (C is
+  ! linear while B keeps its direction across the element), and the EMF load
+  ! grad(v).C.(U x B), a product of linear factors, to second order, the same
+  ! order as the P1 discretization error itself. Elmer's default of 4 points
+  ! quadruples the element-loop cost for no gain in convergence order.
+  ! Assembly and current evaluation use the same rule, so the discrete energy
+  ! balance still closes.
+  TetraPoints = ListGetInteger( Params, 'Tetra Integration Points', GotIt )
+  IF ( .NOT. GotIt ) TetraPoints = 1
+  IF ( ALL(TetraPoints /= (/ 1, 4, 11 /)) ) &
+      CALL Fatal('StatCurrentSolver', 'Tetra Integration Points must be 1, 4 or 11')
 
   !------------------------------------------------------------
   ! Electrode allocation and assignment
@@ -375,6 +458,59 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     ByVals => ByVar % Values ; ByPerm => ByVar % Perm
     BzVals => BzVar % Values ; BzPerm => BzVar % Perm
 
+    PVar     => VariableGet( Solver % Mesh % Variables, 'Pressure' )
+    TgasVar  => VariableGet( Solver % Mesh % Variables, 'Gas Temperature' )
+    SigVar   => VariableGet( Solver % Mesh % Variables, 'Electric Conductivity' )
+
+    IF (.NOT.ASSOCIATED(PVar))     CALL Fatal('StatCurrentSolver','Pressure not found')
+    IF (.NOT.ASSOCIATED(TgasVar))  CALL Fatal('StatCurrentSolver','Gas Temperature not found')
+    IF (.NOT.ASSOCIATED(SigVar))   CALL Fatal('StatCurrentSolver','Electric Conductivity not found')
+
+    PVals     => PVar    % Values ; PPerm     => PVar    % Perm
+    TgasVals  => TgasVar % Values ; TgasPerm  => TgasVar % Perm
+    SigVals   => SigVar  % Values ; SigPerm   => SigVar  % Perm
+
+    Var => VariableGet( Solver % Mesh % Variables, 'Ionization Fraction' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Ionization Fraction not found')
+    IonFrac => Var % Values ; PlasmaPerm => Var % Perm
+
+    Var => VariableGet( Solver % Mesh % Variables, 'Electron Temperature' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver', &
+        'Electron Temperature not found: the SIF needs the Electron Energy solver (MHDSolve ElectronEnergySolver)')
+    ElecTemp => Var % Values ; TePerm => Var % Perm
+    NULLIFY( TeSolver )
+    DO k = 1, Model % NumberOfSolvers
+      IF ( ASSOCIATED(Model % Solvers(k) % Variable, Var) ) TeSolver => Model % Solvers(k)
+    END DO
+    IF (.NOT. ASSOCIATED(TeSolver)) CALL Fatal('StatCurrentSolver', &
+        'Electron Temperature must be the variable of the Electron Energy solver')
+
+    Var => VariableGet( Solver % Mesh % Variables, 'Electron Density' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Density not found')
+    ElecDens => Var % Values
+
+    Var => VariableGet( Solver % Mesh % Variables, 'Electron Mobility' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Mobility not found')
+    ElecMob => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Electron Pedersen Mobility' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Pedersen Mobility not found')
+    ElecMobP => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Electron Hall Mobility' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Electron Hall Mobility not found')
+    ElecMobH => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Pedersen Conductivity' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Pedersen Conductivity not found')
+    SigPed => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Hall Conductivity' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Hall Conductivity not found')
+    SigHall => Var % Values
+    Var => VariableGet( Solver % Mesh % Variables, 'Hall Parameter' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Hall Parameter not found')
+    HallPar => Var % Values
+
+    Var => VariableGet( Solver % Mesh % Variables, 'Effective Electric Field' )
+    IF (.NOT.ASSOCIATED(Var)) CALL Fatal('StatCurrentSolver','Effective Electric Field not found')
+    EffField => Var % Values
 
     CalculateCurrent = ListGetLogical( Params, &
         'Calculate Volume Current', GotIt )
@@ -386,7 +522,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         CALL Fatal('StatCurrentSolver','Volume Current does not exist')
       END IF
     END IF
-      
+
     CalculateHeating = ListGetLogicalAnyEquation( &
         Model,'Calculate Joule heating')
     IF ( .NOT. CalculateHeating )  &
@@ -399,6 +535,26 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       ELSE
         CALL Fatal('StatCurrentSolver','Joule Heating does not exist')
       END IF
+    END IF
+
+    NULLIFY( ElemCurr1, ElemCurr2, ElemCurr3, ElemHeating, ElemPerm )
+    IF ( CalculateCurrent ) THEN
+      Var => VariableGet( Solver % Mesh % Variables,'Element Volume Current 1')
+      IF( .NOT. ASSOCIATED(Var) ) CALL Fatal('StatCurrentSolver','Element Volume Current 1 does not exist')
+      ElemCurr1 => Var % Values ; ElemPerm => Var % Perm
+      Var => VariableGet( Solver % Mesh % Variables,'Element Volume Current 2')
+      IF( .NOT. ASSOCIATED(Var) ) CALL Fatal('StatCurrentSolver','Element Volume Current 2 does not exist')
+      ElemCurr2 => Var % Values
+      Var => VariableGet( Solver % Mesh % Variables,'Element Volume Current 3')
+      IF( .NOT. ASSOCIATED(Var) ) CALL Fatal('StatCurrentSolver','Element Volume Current 3 does not exist')
+      ElemCurr3 => Var % Values
+    END IF
+
+    IF ( CalculateHeating ) THEN
+      Var => VariableGet( Solver % Mesh % Variables,'Element Joule Heating')
+      IF( .NOT. ASSOCIATED(Var) ) CALL Fatal('StatCurrentSolver','Element Joule Heating does not exist')
+      ElemHeating => Var % Values
+      IF( .NOT. ASSOCIATED(ElemPerm) ) ElemPerm => Var % Perm
     END IF
 
     CalculateNodalHeating = ListGetLogical( Params, &
@@ -428,7 +584,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       CALL VariableAddVector( Solver % Mesh % Variables, Solver % Mesh, &
             Solver, 'Electric Field', dim, ElField, PotentialPerm)
     END IF
-      
+
     AllocationsDone = .TRUE.
   END IF
   
@@ -444,10 +600,18 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CALL Info( 'StatCurrentSolve', '-------------------------------------',Level=4 )
 
   CALL DefaultStart()
-  
+
+  ! The electron temperature depends on the current, so the plasma state is
+  ! re-evaluated every nonlinear iteration from the previous iteration's
+  ! current (or the previous coupling step's, on the first iteration).
+  TeTol = ListGetCReal( Params, 'Nonlinear System Convergence Tolerance', GotIt )
+  IF ( .NOT. GotIt ) TeTol = 1.0e-6_dp
+
   DO iter = 1, NonlinearIter
     at  = CPUTime()
     at0 = RealTime()
+
+    CALL UpdateSeededPlasma( TeChange, iter == 1 )
 
     IF ( NonlinearIter > 1 ) THEN
       WRITE( Message, '(a,I0)' ) 'Static current iteration: ', iter
@@ -461,10 +625,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     !    Do the assembly
     !------------------------------------------------------------
 
-    IF( GetCondAtIp ) THEN
-      CALL ListInitElementKeyword( CondAtIp_h,'Material','Electric Conductivity')
-    END IF
-      
     DO t = 1, Solver % NumberOfActiveElements
 
       IF ( RealTime() - at0 > 1.0 ) THEN
@@ -499,36 +659,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             'Current Source',n,NodeIndexes, Gotit )
       END IF
 
-      IF( .NOT. GetCondAtIp ) THEN
-
-        k = ListGetInteger( Model % Bodies(CurrentElement % BodyId) % &
-            Values, 'Material', minv=1, maxv=Model % NumberOfMaterials )
-
-        !------------------------------------------------------------------------------
-        !      Read conductivity values (might be a tensor)
-        !------------------------------------------------------------------------------
-        
-        CALL ListGetRealArray( Model % Materials(k) % Values, &
-            'Electric Conductivity', Cwrk, n, NodeIndexes )
-
-        Conductivity = 0.0d0
-        IF ( SIZE(Cwrk,1) == 1 ) THEN
-          DO i=1,3
-            Conductivity( i,i,1:n ) = Cwrk( 1,1,1:n )
-          END DO
-        ELSE IF ( SIZE(Cwrk,2) == 1 ) THEN
-          DO i=1,MIN(3,SIZE(Cwrk,1))
-            Conductivity(i,i,1:n) = Cwrk(i,1,1:n)
-          END DO
-        ELSE
-          DO i=1,MIN(3,SIZE(Cwrk,1))
-            DO j=1,MIN(3,SIZE(Cwrk,2))
-              Conductivity( i,j,1:n ) = Cwrk(i,j,1:n)
-            END DO
-          END DO
-        END IF
-      END IF
-          
       !------------------------------------------------------------------------------
       !      Get element local matrix, and rhs vector
       !------------------------------------------------------------------------------
@@ -571,7 +701,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           END IF
 
           FluxBC = ListGetLogical(Model % BCs(i) % Values, &
-              'Current Density BC',gotIt) 
+              'Current Density BC',gotIt)
           IF(GotIt .AND. .NOT. FluxBC) CYCLE
 
           ! BC: cond dPhi/dn = g
@@ -694,8 +824,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !    Compute the Joule heating from the Hall/EMF current model
 !------------------------------------------------------------------------------
     IF ( Control .OR. CalculateCurrent .OR. CalculateHeating .OR. &
-        CalculateNodalHeating ) THEN 
+        CalculateNodalHeating ) THEN
       CALL GeneralCurrent( Model, Potential, PotentialPerm )
+      HaveCurrent = .TRUE.
       
       ! Check current at electrode boundaries (only on last iteration)
       IF (CalculateCurrent .AND. iter == NonlinearIter) THEN
@@ -705,11 +836,35 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
       WRITE( Message, * ) 'Total Heating Power   :', Heatingtot
       CALL Info( 'StatCurrentSolve', Message, Level=4 )
+
+      ! Power balance: int J.(U x B) dV = Joule heating + power into the loads.
+      ! Load power is sum (Vp - Vm) I = sum R I^2 from the circuit unknowns,
+      ! which are owned by rank 0.
+      PowerLoad = 0.0_dp
+      Var => VariableGet( Solver % Mesh % Variables, 'Electrode Circuit Values' )
+      IF ( ASSOCIATED(Var) ) THEN
+        IF ( SIZE(Var % Values) >= 3*NumElectrodePairs ) THEN
+          DO k = 1, NumElectrodePairs
+            PowerLoad = PowerLoad + ( Var % Values(3*(k-1)+1) - Var % Values(3*(k-1)+2) ) &
+                * Var % Values(3*(k-1)+3)
+          END DO
+        END IF
+      END IF
+      WRITE( Message, '(A,ES11.3,A,ES11.3,A,ES11.3,A,ES11.3,A)' ) &
+          'Power balance: P_emf ', PowerEmf, '  P_joule ', HeatingTot, &
+          '  P_load ', PowerLoad, '  residual ', PowerEmf - HeatingTot - PowerLoad, ' W'
+      CALL Info( 'StatCurrentSolve', Message, Level=4 )
+      IF( VolTot > 0.0_dp ) THEN
+        WRITE( Message, '(A,ES11.3,A,ES11.3,A,ES11.3)' ) &
+            'Volume ', VolTot, ' m^3  mean Ux ', UxAvg / VolTot, &
+            ' m/s  mean Jy ', CurrYAvg / VolTot
+        CALL Info( 'StatCurrentSolve', Message, Level=4 )
+      END IF
       CALL ListAddConstReal( Model % Simulation, &
           'RES: Total Joule Heating', Heatingtot )
-      
+
       PotDiff = DirichletDofsRange( Solver )
-      
+
       IF( PotDiff > 0 ) THEN
         Resistance = PotDiff**2 / HeatingTot
         WRITE( Message, * ) 'Effective Resistance  :', Resistance
@@ -752,16 +907,16 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     END IF
 
 
-    ! Standard convergence check
-    IF( Solver % Variable % NonlinConverged > 0 ) EXIT
+    ! Converged when both the potential and the electron temperature settle
+    IF( Solver % Variable % NonlinConverged > 0 .AND. TeChange < TeTol ) EXIT
   END DO
 
   CALL InvalidateVariable( Model % Meshes, Solver % Mesh, 'Potential')
-  
+
   IF ( CalculateCurrent ) THEN
     CALL InvalidateVariable( Model % Meshes, Solver % Mesh, 'Volume Current')
   END IF
-  
+
   IF ( CalculateHeating ) THEN
     CALL InvalidateVariable( Model % Meshes, Solver % Mesh, 'Joule Heating')
   END IF
@@ -781,6 +936,869 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CONTAINS
 
 !------------------------------------------------------------------------------
+!> Evaluate the seeded-plasma state at every node: potassium in argon, only the
+!> seed ionizes, heavy particles at the gas temperature Tg, electrons at Te.
+!>
+!>   N     = p / (kB Tg)                            heavy-particle density
+!>   n_s   = x_s N                                  seed density
+!>   ne^2 / (n_s - ne) = S(Te)                      two-temperature Saha
+!>
+!> Transport (PlasmaTransport in MHDUtils.F90): electron mobilities along B and
+!> across it from the plasma_collisions tables (electron-neutral, NRL
+!> electron-ion), and ion mobilities (ion slip). The node's conductivity tensor
+!> is e ne (mu_e + mu_i): parallel, Pedersen and Hall components, scaled
+!> together into [Sigma Min, Sigma Max] on the parallel value.
+!>
+!> Two-temperature mode: Joule heating of the electrons against elastic and
+!> inelastic losses. With Electron Energy Transport the electron energy
+!> equation is solved (SolveElectronEnergy); otherwise the local balance is
+!> solved by bisection at every node, with E' from the previous current
+!> solution. Either update is under-relaxed. Equilibrium mode sets Te = Tg.
+!------------------------------------------------------------------------------
+SUBROUTINE UpdateSeededPlasma( RmsRelChange, FirstIteration )
+  !> Volume-weighted RMS of the relative electron temperature change. This,
+  !> not the largest nodal change, decides convergence: the singular current
+  !> concentration at electrode edges keeps a handful of cells changing, and
+  !> letting them decide stalls every update at the iteration limit on fine
+  !> meshes while the solution elsewhere has long converged.
+  REAL(KIND=dp), INTENT(OUT) :: RmsRelChange
+  LOGICAL, INTENT(IN) :: FirstIteration
+  REAL(KIND=dp) :: MaxRelChange, RelChange, SumW, SumWC2
+
+  TYPE(ValueList_t), POINTER :: Mat
+  TYPE(SeedPlasma_t) :: Pl
+  TYPE(PlasmaTransport_t) :: Tr
+  INTEGER :: i, ipT, ipP, ipS, ipX, ipJ, ipE, matId
+  INTEGER :: nOwned, nSigClamped, nTeClamped, nTeFloor
+  REAL(KIND=dp) :: Pref, TeRelax, TeMax, SigmaMin, SigmaMax
+  REAL(KIND=dp) :: Tg, Te, TeOld, TeStep, Pabs, nHeavy, nSeed
+  REAL(KIND=dp) :: WorstChange, WorstPos(3)
+  INTEGER :: nDamped
+  REAL(KIND=dp) :: ne, S0, SP, SH, Scale
+  REAL(KIND=dp) :: Ep(3), Bn(3), Bmag, Epar2, Eperp2
+  REAL(KIND=dp) :: IonMin, IonMax, SigMin, SigMax, TeMinSeen, TeMaxSeen, DTeMax
+  REAL(KIND=dp) :: BetaMax, NuEiShare, NuEiShareMax
+  LOGICAL :: Found, TwoTemperature, ElectronTransport, Owned, AtMax
+  CHARACTER(LEN=512) :: TableFile, TableError
+  CHARACTER(LEN=128) :: ModelName
+
+  ! Single conducting body: use the material of Body 1
+  matId = ListGetInteger(Model % Bodies(1) % Values, 'Material', Found, &
+      minv=1, maxv=Model % NumberOfMaterials)
+  IF (.NOT. Found) CALL Fatal('UpdateSeededPlasma','Could not get Material id from Body 1')
+  Mat => Model % Materials(matId) % Values
+
+  Pl % SeedFrac    = RequiredMaterialReal(Mat, 'Seed Mole Fraction')
+  Pl % ChiJ        = RequiredMaterialReal(Mat, 'Seed Ionization Energy') * eCharge   ! eV -> J
+  Pl % WeightRatio = RequiredMaterialReal(Mat, 'Seed Statistical Weight Ratio')
+  Pl % IonReducedMobility = ListGetCReal(Mat, 'Ion Reduced Mobility', Found)
+  IF (.NOT. Found) Pl % IonReducedMobility = 0.0_dp
+
+  ModelName = ListGetString(Mat, 'Electron Transport Model', Found)
+  IF (.NOT. Found) CALL Fatal('UpdateSeededPlasma', 'Missing Material keyword: Electron Transport Model')
+  SELECT CASE (TRIM(ModelName))
+  CASE ('drifting')
+    Pl % Lorentz = .FALSE.
+  CASE ('lorentz')
+    Pl % Lorentz = .TRUE.
+  CASE DEFAULT
+    CALL Fatal('UpdateSeededPlasma', 'Electron Transport Model must be "drifting" or "lorentz"')
+  END SELECT
+  ModelName = ListGetString(Mat, 'Excited State Temperature', Found)
+  Pl % ExcitedAtGas = Found .AND. TRIM(ModelName) == 'gas'
+
+  TableFile = ListGetString(Mat, 'Electron Collision Data', Found)
+  IF (.NOT. Found) CALL Fatal('UpdateSeededPlasma', 'Missing Material keyword: Electron Collision Data')
+  CALL ReadCollisionData( TableFile, Pl % Lorentz, TableError )
+  IF (LEN_TRIM(TableError) > 0) CALL Fatal('UpdateSeededPlasma', TRIM(TableError))
+
+  IF (Pl % SeedFrac <= 0.0_dp .OR. Pl % SeedFrac >= 1.0_dp) &
+      CALL Fatal('UpdateSeededPlasma','Seed Mole Fraction must be in (0, 1)')
+  IF (Pl % WeightRatio <= 0.0_dp) &
+      CALL Fatal('UpdateSeededPlasma','Seed Statistical Weight Ratio must be positive')
+
+  TwoTemperature = ListGetLogical(Mat, 'Two Temperature', Found)
+  ElectronTransport = .FALSE.
+  IF (TwoTemperature) THEN
+    IF (.NOT. CalculateCurrent) CALL Fatal('UpdateSeededPlasma', &
+        'Two Temperature requires Calculate Volume Current = True')
+    TeMax   = RequiredMaterialReal(Mat, 'Electron Temperature Max')
+    TeRelax = RequiredMaterialReal(Mat, 'Electron Temperature Relaxation')
+    IF (TeMax <= 0.0_dp .OR. TeRelax <= 0.0_dp .OR. TeRelax > 1.0_dp) &
+        CALL Fatal('UpdateSeededPlasma', 'Invalid two-temperature parameters')
+    ElectronTransport = ListGetLogical(Mat, 'Electron Energy Transport', Found)
+  END IF
+
+  ! OpenFOAM's pressure is absolute (compressible solver); a nonzero value
+  ! here only serves gauge-pressure input
+  Pref = ListGetCReal(Mat, 'Reference Pressure', Found)
+  IF (.NOT. Found) Pref = 0.0_dp
+  SigmaMin = ListGetCReal(Mat, 'Sigma Min', Found)
+  IF (.NOT. Found) SigmaMin = 1.0d-2
+  SigmaMax = ListGetCReal(Mat, 'Sigma Max', Found)
+  IF (.NOT. Found) SigmaMax = 1.0d6
+
+  IonMin = HUGE(1.0_dp); IonMax = 0.0_dp
+  SigMin = HUGE(1.0_dp); SigMax = 0.0_dp
+  TeMinSeen = HUGE(1.0_dp); TeMaxSeen = 0.0_dp
+  DTeMax = 0.0_dp
+  BetaMax = 0.0_dp; NuEiShareMax = 0.0_dp
+  MaxRelChange = 0.0_dp
+  RmsRelChange = 0.0_dp
+  SumW = 0.0_dp; SumWC2 = 0.0_dp
+  nOwned = 0; nSigClamped = 0; nTeClamped = 0; nTeFloor = 0
+  nDamped = 0
+  WorstChange = -1.0_dp; WorstPos = 0.0_dp
+
+  IF (TwoTemperature) THEN
+    IF (.NOT. ALLOCATED(TeNodeRelax)) THEN
+      ALLOCATE( TeNodeRelax(SIZE(ElecTemp)), TeLastStep(SIZE(ElecTemp)) )
+    ELSE IF (SIZE(TeNodeRelax) /= SIZE(ElecTemp)) THEN
+      DEALLOCATE( TeNodeRelax, TeLastStep )
+      ALLOCATE( TeNodeRelax(SIZE(ElecTemp)), TeLastStep(SIZE(ElecTemp)) )
+    END IF
+    IF (FirstIteration) THEN
+      TeNodeRelax = TeRelax
+      TeLastStep = 0.0_dp
+    END IF
+    IF (.NOT. ALLOCATED(TeNodeWeight)) THEN
+      CALL ComputeNodeWeights()
+    ELSE IF (SIZE(TeNodeWeight) /= SIZE(ElecTemp)) THEN
+      DEALLOCATE( TeNodeWeight )
+      CALL ComputeNodeWeights()
+    END IF
+
+    ! Transport: solve the electron energy equation for the whole field first;
+    ! the node loop below then only evaluates the plasma state at the new Te
+    IF (ElectronTransport) CALL SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, &
+        SumW, SumWC2, MaxRelChange, WorstChange, WorstPos, nTeClamped, nTeFloor, nDamped )
+  END IF
+
+  DO i = 1, Solver % Mesh % NumberOfNodes
+    ipT = TgasPerm(i)
+    ipP = PPerm(i)
+    ipS = SigPerm(i)
+    ipX = PlasmaPerm(i)
+    ipE = TePerm(i)
+    IF (ipT <= 0 .OR. ipP <= 0 .OR. ipS <= 0 .OR. ipX <= 0 .OR. ipE <= 0) CYCLE
+
+    ! Count each node once across partitions (the first neighbour owns it)
+    Owned = .TRUE.
+    IF (ParEnv % PEs > 1) Owned = &
+        Solver % Mesh % ParallelInfo % NeighbourList(i) % Neighbours(1) == ParEnv % MyPE
+
+    Tg   = TgasVals(ipT)
+    Pabs = PVals(ipP) + Pref
+    Bn = 0.0_dp
+    IF (BxPerm(i) > 0) Bn(1) = BxVals(BxPerm(i))
+    IF (ByPerm(i) > 0) Bn(2) = ByVals(ByPerm(i))
+    IF (BzPerm(i) > 0) Bn(3) = BzVals(BzPerm(i))
+    Bmag = SQRT(SUM(Bn**2))
+
+    ! Non-physical input (T <= 0, NaN, or negative absolute pressure):
+    ! non-conducting, no Hall effect
+    IF (.NOT. (Tg > 0.0_dp) .OR. .NOT. (Pabs > 0.0_dp)) THEN
+      Te = MAX(Tg, 0.0_dp)
+      ne = 0.0_dp
+      nHeavy = 1.0_dp
+      Tr % Mu0 = 0.0_dp; Tr % MuP = 0.0_dp; Tr % MuH = 0.0_dp
+      S0 = 0.0_dp; SP = 0.0_dp; SH = 0.0_dp
+    ELSE
+      nHeavy = Pabs / (kBoltz * Tg)
+      nSeed  = Pl % SeedFrac * nHeavy
+      Te = Tg
+
+      IF (TwoTemperature .AND. ElectronTransport) THEN
+        ! Solved and relaxed by SolveElectronEnergy (Tg until a current exists)
+        Te = ElecTemp(ipE)
+        IF (.NOT. (Te > 0.0_dp)) Te = Tg
+      ELSE IF (TwoTemperature) THEN
+        ! Field seen by the electrons, E' = -grad(phi) + U x B, from the
+        ! previous potential solution, split along and across B
+        Ep = 0.0_dp
+        ipJ = PotentialPerm(i)
+        IF (ipJ > 0) Ep(1:DIM) = EffField(DIM*(ipJ-1)+1 : DIM*(ipJ-1)+DIM)
+        Epar2 = 0.0_dp
+        IF (Bmag > 0.0_dp) Epar2 = (SUM(Ep*Bn) / Bmag)**2
+        Eperp2 = MAX(SUM(Ep**2) - Epar2, 0.0_dp)
+
+        Te = ElectronTemperature( Pl, Tg, nHeavy, nSeed, Epar2, Eperp2, Bmag, TeMax, AtMax )
+        IF (AtMax .AND. Owned) nTeClamped = nTeClamped + 1
+
+        ! Under-relax against the previous iterate (Tg on the first call).
+        ! A node whose step reverses direction is oscillating around its fixed
+        ! point (strong Te-sigma-current feedback); halve its relaxation so the
+        ! oscillation decays instead of stalling the whole nonlinear solve.
+        TeOld = ElecTemp(ipE)
+        IF (TeOld <= 0.0_dp) TeOld = Tg
+        TeStep = Te - TeOld
+        ! Only reversals larger than the convergence tolerance count: converged
+        ! nodes flip sign at noise level and must not be slowed down
+        IF (TeStep * TeLastStep(ipX) < 0.0_dp .AND. ABS(TeStep) > TeTol * TeOld) &
+            TeNodeRelax(ipX) = MAX(0.5_dp * TeNodeRelax(ipX), 0.1_dp * TeRelax)
+        TeLastStep(ipX) = TeStep
+        IF (TeNodeRelax(ipX) < TeRelax .AND. Owned) nDamped = nDamped + 1
+
+        ! Convergence is judged on the applied (relaxed) change; the damping
+        ! floor of 0.1 x the base relaxation bounds how much it can understate
+        ! the distance to the energy-balance solution
+        IF (Owned) THEN
+          RelChange = TeNodeRelax(ipX) * ABS(TeStep) / TeOld
+          SumW = SumW + TeNodeWeight(ipX)
+          SumWC2 = SumWC2 + TeNodeWeight(ipX) * RelChange**2
+          IF (RelChange > MaxRelChange) THEN
+            MaxRelChange = RelChange
+            IF (MaxRelChange > WorstChange) THEN
+              WorstChange = MaxRelChange
+              WorstPos = (/ Solver % Mesh % Nodes % x(i), Solver % Mesh % Nodes % y(i), &
+                            Solver % Mesh % Nodes % z(i) /)
+            END IF
+          END IF
+        END IF
+        Te = MAX(Tg, TeOld + TeNodeRelax(ipX) * TeStep)
+      END IF
+
+      ne = SahaDensity( Pl, Te, nSeed )
+      CALL PlasmaTransport( Pl, Te, nHeavy, ne, Bmag, Tr )
+      ! Electrons and ions (Hall senses opposite)
+      S0 = eCharge * ne * (Tr % Mu0 + Tr % MuI)
+      SP = eCharge * ne * (Tr % MuP + Tr % MuIP)
+      SH = eCharge * ne * (Tr % MuH - Tr % MuIH)
+      IF (Owned .AND. Tr % CollisionFrequency > 0.0_dp .AND. ne > 0.0_dp .AND. .NOT. Pl % Lorentz) THEN
+        NuEiShare = 2.91d-12 * ne * Tr % LnLambda * (Te / KelvinPerEV)**(-1.5_dp) / Tr % CollisionFrequency
+        NuEiShareMax = MAX(NuEiShareMax, NuEiShare)
+      END IF
+    END IF
+
+    ! Clamp the parallel conductivity, scaling the whole tensor with it so the
+    ! Hall parameter stays physical
+    IF (Owned) THEN
+      nOwned = nOwned + 1
+      IF (S0 < SigmaMin .OR. S0 > SigmaMax) nSigClamped = nSigClamped + 1
+    END IF
+    IF (S0 <= 0.0_dp) THEN
+      S0 = SigmaMin; SP = SigmaMin; SH = 0.0_dp
+    ELSE
+      Scale = MIN(MAX(S0, SigmaMin), SigmaMax) / S0
+      S0 = Scale * S0; SP = Scale * SP; SH = Scale * SH
+    END IF
+
+    SigVals(ipS)  = S0
+    SigPed(ipX)   = SP
+    SigHall(ipX)  = SH
+    IonFrac(ipX)  = ne / nHeavy
+    ElecTemp(ipE) = Te
+    ElecDens(ipX) = ne
+    ElecMob(ipX)  = Tr % Mu0
+    ElecMobP(ipX) = Tr % MuP
+    ElecMobH(ipX) = Tr % MuH
+    HallPar(ipX)  = 0.0_dp
+    IF (Tr % MuP > 0.0_dp) HallPar(ipX) = Tr % MuH / Tr % MuP
+    IF (Owned) BetaMax = MAX(BetaMax, HallPar(ipX))
+
+    IonMin = MIN(IonMin, IonFrac(ipX)); IonMax = MAX(IonMax, IonFrac(ipX))
+    SigMin = MIN(SigMin, S0);           SigMax = MAX(SigMax, S0)
+    TeMinSeen = MIN(TeMinSeen, Te);     TeMaxSeen = MAX(TeMaxSeen, Te)
+    DTeMax = MAX(DTeMax, Te - Tg)
+  END DO
+
+  IF (ParEnv % PEs > 1) THEN
+    IonMin = ParallelReduction(IonMin, 1)
+    IonMax = ParallelReduction(IonMax, 2)
+    SigMin = ParallelReduction(SigMin, 1)
+    SigMax = ParallelReduction(SigMax, 2)
+    TeMinSeen = ParallelReduction(TeMinSeen, 1)
+    TeMaxSeen = ParallelReduction(TeMaxSeen, 2)
+    DTeMax = ParallelReduction(DTeMax, 2)
+    BetaMax = ParallelReduction(BetaMax, 2)
+    NuEiShareMax = ParallelReduction(NuEiShareMax, 2)
+    MaxRelChange = ParallelReduction(MaxRelChange, 2)
+    SumW = ParallelReduction(SumW)
+    SumWC2 = ParallelReduction(SumWC2)
+    nOwned = NINT(ParallelReduction(REAL(nOwned, dp)))
+    nSigClamped = NINT(ParallelReduction(REAL(nSigClamped, dp)))
+    nTeClamped = NINT(ParallelReduction(REAL(nTeClamped, dp)))
+    nTeFloor = NINT(ParallelReduction(REAL(nTeFloor, dp)))
+    nDamped = NINT(ParallelReduction(REAL(nDamped, dp)))
+  END IF
+
+  IF (SumW > 0.0_dp) RmsRelChange = SQRT(SumWC2 / SumW)
+  ! No current yet (first call): the transport solve was skipped; iterate once more
+  IF (ElectronTransport .AND. .NOT. HaveCurrent) RmsRelChange = HUGE(1.0_dp)
+
+  WRITE(Message,'(A,ES10.3,A,ES10.3,A,ES10.3,A,ES10.3,A,I0,A,I0,A)') &
+      'Ionization fraction [', IonMin, ', ', IonMax, &
+      ']  sigma [', SigMin, ', ', SigMax, '] S/m, clamped at ', &
+      nSigClamped, ' of ', nOwned, ' nodes'
+  CALL Info('UpdateSeededPlasma', Message, Level=4)
+  WRITE(Message,'(A,F8.3,A)') 'Max electron Hall parameter ', BetaMax, '  (Pedersen/Hall mobility ratio)'
+  IF (.NOT. Pl % Lorentz) WRITE(Message,'(A,F8.3,A,F6.3)') 'Max electron Hall parameter ', BetaMax, &
+      '  max electron-ion share of collisions ', NuEiShareMax
+  CALL Info('UpdateSeededPlasma', Message, Level=4)
+  IF (TwoTemperature) THEN
+    WRITE(Message,'(A,ES10.3,A,ES10.3,A,ES10.3,A,ES10.3,A,I0,A,I0,A)') &
+        'Te [', TeMinSeen, ', ', TeMaxSeen, '] K  max(Te-Tg) ', DTeMax, &
+        ' K  max rel. change ', MaxRelChange, '  capped at Te max: ', nTeClamped, &
+        ' nodes  damped: ', nDamped, ' nodes'
+    CALL Info('UpdateSeededPlasma', Message, Level=4)
+    IF (ElectronTransport .AND. nTeFloor > 0) THEN
+      WRITE(Message,'(A,I0,A)') 'Te held at the floor of 0.5 Tg at ', nTeFloor, ' nodes'
+      CALL Info('UpdateSeededPlasma', Message, Level=4)
+    END IF
+    WRITE(Message,'(A,ES10.3,A,ES10.3,A)') &
+        'Te convergence: volume-weighted RMS change ', MIN(RmsRelChange, 1.0e30_dp), &
+        ' (tolerance ', TeTol, ')'
+    CALL Info('UpdateSeededPlasma', Message, Level=4)
+    IF (WorstChange > 0.0_dp .AND. MaxRelChange > 0.05_dp) THEN
+      WRITE(Message,'(A,ES10.3,A,3F8.2,A)') '  largest change on this rank ', WorstChange, &
+          ' at (', 1.0e3_dp * WorstPos, ') mm'
+      CALL Info('UpdateSeededPlasma', Message, Level=4)
+    END IF
+  END IF
+
+END SUBROUTINE UpdateSeededPlasma
+
+!------------------------------------------------------------------------------
+!> Electron energy equation for Te, assembled into and solved with the linear
+!> system of the Electron Energy solver. Steady state: the electron energy
+!> relaxation time (~1e-7 s) is far below the flow time scales, like the
+!> quasi-static current. Per unit volume,
+!>
+!>   (5/2) kB Gamma_e . grad(Te) + ((5/2) kB Te + chi) div(ne U)
+!>     - div(K_e grad(Te)) = J_e . E' - L_el - L_inel
+!>
+!> - Gamma_e = ne U - J_e/e is the electron flux; J_e = S_e E' with the
+!>   electron conductivity tensor S_e = e ne M_e (parallel, Pedersen, Hall
+!>   mobilities from PlasmaTransport), so J_e . E' is the electron Joule
+!>   heating. The ion current heats the gas directly.
+!> - K_e = (5/2) (kB^2 Te / e^2) S_e: electron heat conduction with the same
+!>   anisotropy as the mobility, strongly reduced across B.
+!> - chi is the seed ionization energy: with Saha equilibrium ne = ne(Te, n),
+!>   so ionizing the seed takes energy from the electrons as ne rises along the
+!>   flow (recombination returns it). Ionization kinetics would replace it.
+!> - L_el = (Cn + Cei)(Te - Tg): recoil to neutrals and ions; L_inel: net
+!>   K(4p) excitation loss when the excited states sit at the gas temperature.
+!> Heating, drift and conduction use the physical electron density (floored at
+!> a tiny fraction of the seed), not the conductivity clamped for the potential
+!> solve, so cold gas does not heat a vanishing electron population.
+!>
+!> Linearization (one Newton step per call, with the rest lagged):
+!>   ne(Te) ~ ne_k + g_k (Te - Te_k),  g = d(ne)/dTe at fixed N
+!> in div(ne U) and the elastic loss, and L_inel(Te) linearized in Te. The
+!> mobilities and the heating are lagged. Galerkin with SUPG on the convective
+!> terms and lumped reaction (monotone for reaction-dominated cells). Boundary
+!> conditions come from the SIF (the inlet sets Te = Tg); elsewhere they are
+!> natural (no conductive flux through walls, electrodes or the outlet). The
+!> solution change is limited to 100% of Te per iteration, under-relaxed like
+!> the local balance (including its per-node oscillation damping), and
+!> clamped to [0.5 Tg, TeMax].
+!>
+!> Adds each owned node's relaxed relative change to the convergence sums of
+!> UpdateSeededPlasma (counts are local; the caller reduces them).
+!------------------------------------------------------------------------------
+SUBROUTINE SolveElectronEnergy( Pl, Pref, TeRelax, TeMax, SumW, SumWC2, MaxRelChange, &
+    WorstChange, WorstPos, nTeClamped, nTeFloor, nDamped )
+  TYPE(SeedPlasma_t), INTENT(IN) :: Pl
+  REAL(KIND=dp), INTENT(IN) :: Pref, TeRelax, TeMax
+  REAL(KIND=dp), INTENT(INOUT) :: SumW, SumWC2, MaxRelChange, WorstChange, WorstPos(3)
+  INTEGER, INTENT(INOUT) :: nTeClamped, nTeFloor, nDamped
+
+  ! Electron density floor for the transport coefficients, relative to the
+  ! seed density. Every term scales with ne, so this only keeps the rows of
+  ! cold, un-ionized gas from vanishing.
+  REAL(KIND=dp), PARAMETER :: NeFloorFraction = 1.0e-8_dp
+  ! Largest change of Te per iteration, relative to the previous iterate: a
+  ! wild Newton step at an electrode edge otherwise reaches Te max and trips
+  ! the oscillation damping over much of the field. (Tighter limits, damping
+  ! recovery and linearizing the heating in Te all converged more slowly.)
+  REAL(KIND=dp), PARAMETER :: MaxStepFraction = 1.0_dp
+
+  TYPE(Element_t), POINTER :: Elem
+  TYPE(Nodes_t), SAVE :: EN
+  TYPE(GaussIntegrationPoints_t) :: IP
+  TYPE(PlasmaTransport_t) :: Tr
+  INTEGER :: nNodes, nMax, t, gp, a, j, k, nn, ipE, ipX
+  INTEGER, POINTER :: Ind(:)
+  LOGICAL :: stat, Owned
+  ! Nodal coefficients at Te_k: electron conductivity tensor components (S*),
+  ! conduction factor (5/2) kB^2 Te/e^2, density, dne/dTe, loss terms
+  REAL(KIND=dp), ALLOCATABLE, SAVE :: NdTe0(:), NdTg(:), NdNe(:), NdG(:), NdS0(:), NdSP(:), NdSH(:), &
+      NdKf(:), NdC(:), NdCp(:), NdL(:), NdLp(:), NdChiP(:), NdU(:,:), NdB(:,:)
+  LOGICAL, ALLOCATABLE, SAVE :: NdOK(:)
+  REAL(KIND=dp), ALLOCATABLE :: Kmat(:,:), Fvec(:), Basis(:), dBasisdx(:,:), Pot(:)
+  REAL(KIND=dp) :: DetJ, sw, Tg, Te0, Pabs, nH, nS, ne, neEff, g, Cn, Cei, dT, Lp, Lm
+  REAL(KIND=dp) :: Ugp(3), Bgp(3), UxB(3), Grad(3), Ep(3), Se(3,3), Ke(3,3), SeE(3), b(3), Bmag
+  REAL(KIND=dp) :: KdB(Model % MaxElementNodes, 3)
+  REAL(KIND=dp) :: S0G, SPG, SHG, KfG, neG, gG, CG, CpG, LG, LpG, chiPG, Te0G, TgG
+  REAL(KIND=dp) :: Dn, Dg, DgT, QJ, Adv(3), r, f, AdvMag, AdvGrad(Model % MaxElementNodes), KStream
+  REAL(KIND=dp) :: h, tau, SumAbs, Norm, TeSol, TeNew, TeStep, RelChange, TeLo
+  REAL(KIND=dp) :: PowerJoule, PowerLoss, PowerIon, PowerInel, PowerWall, tAsm, tSol
+  ! Sheath energy loss at walls: q = Gamma_h 0.61 ne kB Te sqrt(kB Te / M_ion)
+  TYPE(ValueList_t), POINTER :: BCList
+  REAL(KIND=dp) :: HeatTransmission, WallCoeff, qG, dqG, NdQ(Model % MaxElementNodes), NdDQ(Model % MaxElementNodes)
+  INTEGER :: bc
+  LOGICAL :: GotBC
+  REAL(KIND=dp), PARAMETER :: IonMassK = 39.0983_dp * 1.66053906660d-27
+  CHARACTER(LEN=256) :: Msg
+
+  nNodes = Solver % Mesh % NumberOfNodes
+  nMax = Model % MaxElementNodes
+
+  IF (.NOT. ALLOCATED(NdTe0)) THEN
+    ALLOCATE( NdTe0(nNodes), NdTg(nNodes), NdNe(nNodes), NdG(nNodes), NdS0(nNodes), &
+        NdSP(nNodes), NdSH(nNodes), NdKf(nNodes), NdC(nNodes), NdCp(nNodes), NdL(nNodes), &
+        NdLp(nNodes), NdChiP(nNodes), NdU(3,nNodes), NdB(3,nNodes), NdOK(nNodes) )
+    ALLOCATE( EN % x(nMax), EN % y(nMax), EN % z(nMax) )
+  ELSE IF (SIZE(NdTe0) /= nNodes) THEN
+    CALL Fatal('SolveElectronEnergy', 'Mesh size changed')
+  END IF
+
+  !------------------------------------------------------------------------------
+  ! Nodal plasma coefficients at the previous electron temperature Te_k
+  !------------------------------------------------------------------------------
+  NdOK = .FALSE.
+  DO j = 1, nNodes
+    NdU(:,j) = 0.0_dp; NdB(:,j) = 0.0_dp
+    IF (UxPerm(j) > 0) NdU(1,j) = UxVals(UxPerm(j))
+    IF (UyPerm(j) > 0) NdU(2,j) = UyVals(UyPerm(j))
+    IF (UzPerm(j) > 0) NdU(3,j) = UzVals(UzPerm(j))
+    IF (BxPerm(j) > 0) NdB(1,j) = BxVals(BxPerm(j))
+    IF (ByPerm(j) > 0) NdB(2,j) = ByVals(ByPerm(j))
+    IF (BzPerm(j) > 0) NdB(3,j) = BzVals(BzPerm(j))
+    NdTe0(j) = 0.0_dp; NdTg(j) = 0.0_dp; NdNe(j) = 0.0_dp; NdG(j) = 0.0_dp
+    NdS0(j) = 0.0_dp; NdSP(j) = 0.0_dp; NdSH(j) = 0.0_dp; NdKf(j) = 0.0_dp
+    NdC(j) = 0.0_dp; NdCp(j) = 0.0_dp; NdL(j) = 0.0_dp; NdLp(j) = 0.0_dp; NdChiP(j) = 0.0_dp
+
+    IF (TgasPerm(j) <= 0 .OR. PPerm(j) <= 0 .OR. TePerm(j) <= 0) CYCLE
+    Tg = TgasVals(TgasPerm(j))
+    Pabs = PVals(PPerm(j)) + Pref
+    IF (.NOT. (Tg > 0.0_dp) .OR. .NOT. (Pabs > 0.0_dp)) CYCLE
+    Te0 = ElecTemp(TePerm(j))
+    IF (.NOT. (Te0 > 0.0_dp)) Te0 = Tg
+
+    nH = Pabs / (kBoltz * Tg)
+    nS = Pl % SeedFrac * nH
+    ne = SahaDensity( Pl, Te0, nS )
+    neEff = MAX(ne, NeFloorFraction * nS)
+    g = SeedDensityDerivative( Pl, Te0, nS, ne )
+    Bmag = SQRT(SUM(NdB(:,j)**2))
+    CALL PlasmaTransport( Pl, Te0, nH, neEff, Bmag, Tr )
+    CALL ElasticLossCoefficients( Te0, nH, Tr, Cn, Cei )
+
+    NdOK(j)   = .TRUE.
+    NdTe0(j)  = Te0
+    NdTg(j)   = Tg
+    NdNe(j)   = neEff
+    NdG(j)    = g
+    NdS0(j)   = eCharge * neEff * Tr % Mu0
+    NdSP(j)   = eCharge * neEff * Tr % MuP
+    NdSH(j)   = eCharge * neEff * Tr % MuH
+    NdKf(j)   = 2.5_dp * kBoltz**2 * Te0 / eCharge**2
+    NdC(j)    = Cn + Cei
+    ! d(loss coefficient)/dTe through ne only (the neutral part is linear in
+    ! ne, the ion part quadratic)
+    IF (ne > NeFloorFraction * nS) NdCp(j) = (Cn + 2.0_dp * Cei) * g / neEff
+    IF (Pl % ExcitedAtGas) THEN
+      dT = 1.0d-3 * Te0
+      Lp = InelasticLoss( Pl, Te0 + dT, Tg, MAX(SahaDensity(Pl, Te0 + dT, nS), NeFloorFraction * nS), &
+          MAX(nS - SahaDensity(Pl, Te0 + dT, nS), 0.0_dp) )
+      Lm = InelasticLoss( Pl, Te0 - dT, Tg, MAX(SahaDensity(Pl, Te0 - dT, nS), NeFloorFraction * nS), &
+          MAX(nS - SahaDensity(Pl, Te0 - dT, nS), 0.0_dp) )
+      NdL(j)  = InelasticLoss( Pl, Te0, Tg, neEff, MAX(nS - ne, 0.0_dp) )
+      NdLp(j) = (Lp - Lm) / (2.0_dp * dT)
+    END IF
+    NdChiP(j) = Pl % ChiJ + 2.5_dp * kBoltz * Te0
+  END DO
+
+  IF (.NOT. HaveCurrent) THEN
+    ! No potential solution yet: electrons start in equilibrium with the gas
+    DO j = 1, nNodes
+      IF (NdOK(j)) ElecTemp(TePerm(j)) = NdTg(j)
+    END DO
+    RETURN
+  END IF
+
+  !------------------------------------------------------------------------------
+  ! Assembly
+  !------------------------------------------------------------------------------
+  ALLOCATE( Kmat(nMax,nMax), Fvec(nMax), Basis(nMax), dBasisdx(nMax,3), Pot(nMax) )
+  PowerJoule = 0.0_dp; PowerLoss = 0.0_dp; PowerIon = 0.0_dp; PowerInel = 0.0_dp
+  tAsm = CPUTime()
+
+  CALL DefaultInitialize( USolver=TeSolver )
+
+  DO t = 1, TeSolver % NumberOfActiveElements
+    Elem => TeSolver % Mesh % Elements( TeSolver % ActiveElements(t) )
+    Model % CurrentElement => Elem
+    nn = Elem % TYPE % NumberOfNodes
+    Ind => Elem % NodeIndexes
+    Kmat(1:nn,1:nn) = 0.0_dp
+    Fvec(1:nn) = 0.0_dp
+
+    IF ( Elem % PartIndex == ParEnv % MyPE .AND. ALL(NdOK(Ind(1:nn))) .AND. &
+         ALL(PotentialPerm(Ind(1:nn)) > 0) ) THEN
+      EN % x(1:nn) = Solver % Mesh % Nodes % x(Ind(1:nn))
+      EN % y(1:nn) = Solver % Mesh % Nodes % y(Ind(1:nn))
+      EN % z(1:nn) = Solver % Mesh % Nodes % z(Ind(1:nn))
+      Pot(1:nn) = Potential( PotentialPerm(Ind(1:nn)) )
+
+      IP = ElementGaussPoints( Elem )
+      DO gp = 1, IP % n
+        stat = ElementInfo( Elem, EN, IP % u(gp), IP % v(gp), IP % w(gp), DetJ, &
+            Basis, dBasisdx )
+        sw = DetJ * IP % s(gp)
+
+        DO j = 1, 3
+          Ugp(j) = SUM( Basis(1:nn) * NdU(j,Ind(1:nn)) )
+          Bgp(j) = SUM( Basis(1:nn) * NdB(j,Ind(1:nn)) )
+          Grad(j) = SUM( dBasisdx(1:nn,j) * Pot(1:nn) )
+        END DO
+        UxB(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
+        UxB(2) = Ugp(3)*Bgp(1) - Ugp(1)*Bgp(3)
+        UxB(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
+        Ep = -Grad + UxB
+
+        S0G   = SUM( Basis(1:nn) * NdS0(Ind(1:nn)) )
+        SPG   = SUM( Basis(1:nn) * NdSP(Ind(1:nn)) )
+        SHG   = SUM( Basis(1:nn) * NdSH(Ind(1:nn)) )
+        KfG   = SUM( Basis(1:nn) * NdKf(Ind(1:nn)) )
+        neG   = SUM( Basis(1:nn) * NdNe(Ind(1:nn)) )
+        gG    = SUM( Basis(1:nn) * NdG(Ind(1:nn)) )
+        CG    = SUM( Basis(1:nn) * NdC(Ind(1:nn)) )
+        CpG   = SUM( Basis(1:nn) * NdCp(Ind(1:nn)) )
+        LG    = SUM( Basis(1:nn) * NdL(Ind(1:nn)) )
+        LpG   = SUM( Basis(1:nn) * NdLp(Ind(1:nn)) )
+        chiPG = SUM( Basis(1:nn) * NdChiP(Ind(1:nn)) )
+        Te0G  = SUM( Basis(1:nn) * NdTe0(Ind(1:nn)) )
+        TgG   = SUM( Basis(1:nn) * NdTg(Ind(1:nn)) )
+
+        ! Electron conductivity tensor S_e and conduction tensor K_e = Kf S_e
+        Se = 0.0_dp
+        Bmag = SQRT(SUM(Bgp**2))
+        IF (Bmag > 0.0_dp) THEN
+          b = Bgp / Bmag
+          DO j = 1, 3
+            DO k = 1, 3
+              Se(j,k) = (S0G - SPG) * b(j) * b(k)
+            END DO
+            Se(j,j) = Se(j,j) + SPG
+          END DO
+          Se(1,2) = Se(1,2) - SHG * b(3); Se(1,3) = Se(1,3) + SHG * b(2)
+          Se(2,1) = Se(2,1) + SHG * b(3); Se(2,3) = Se(2,3) - SHG * b(1)
+          Se(3,1) = Se(3,1) - SHG * b(2); Se(3,2) = Se(3,2) + SHG * b(1)
+        ELSE
+          b = 0.0_dp
+          DO j = 1, 3
+            Se(j,j) = S0G
+          END DO
+        END IF
+        Ke = KfG * Se
+        SeE = MATMUL( Se, Ep )
+
+        ! div(ne U), div(g U), div(g U Te_k)
+        Dn = 0.0_dp; Dg = 0.0_dp; DgT = 0.0_dp
+        DO a = 1, nn
+          j = Ind(a)
+          Dn  = Dn  + SUM( dBasisdx(a,:) * NdU(:,j) ) * NdNe(j)
+          Dg  = Dg  + SUM( dBasisdx(a,:) * NdU(:,j) ) * NdG(j)
+          DgT = DgT + SUM( dBasisdx(a,:) * NdU(:,j) ) * NdG(j) * NdTe0(j)
+        END DO
+
+        ! Electron Joule heating J_e . E'
+        QJ = SUM( SeE * Ep )
+
+        ! Convective velocity of the linearized operator [W/(m^2 K)]: electron
+        ! enthalpy with the electron flux ne U - J_e/e, and ionization energy
+        ! with the change of ne along the gas flow
+        Adv = 2.5_dp * kBoltz * (neG * Ugp - SeE / eCharge) + chiPG * gG * Ugp
+        ! Reaction [W/(m^3 K)] and source [W/m^3]
+        r = 2.5_dp * kBoltz * Dn + chiPG * Dg + CG + CpG * (Te0G - TgG) + LpG
+        f = QJ - Pl % ChiJ * Dn + chiPG * DgT + CG * TgG + CpG * (Te0G - TgG) * Te0G &
+            - LG + LpG * Te0G
+        ! A negative reaction (recombining flow) is kept explicit
+        IF (r < 0.0_dp) THEN
+          f = f - r * Te0G
+          r = 0.0_dp
+        END IF
+
+        PowerJoule = PowerJoule + sw * QJ
+        PowerLoss  = PowerLoss  + sw * CG * (Te0G - TgG)
+        PowerInel  = PowerInel  + sw * LG
+        PowerIon   = PowerIon   + sw * chiPG * Dn
+
+        ! SUPG: streamline element size and the Shakib-type parameter with
+        ! convection, diffusion along the streamline and reaction
+        DO a = 1, nn
+          AdvGrad(a) = SUM( Adv * dBasisdx(a,:) )
+        END DO
+        AdvMag = SQRT( SUM(Adv**2) )
+        tau = 0.0_dp
+        SumAbs = SUM( ABS(AdvGrad(1:nn)) )
+        IF (AdvMag > 0.0_dp .AND. SumAbs > 0.0_dp) THEN
+          h = 2.0_dp * AdvMag / SumAbs
+          KStream = KfG * (SPG + (S0G - SPG) * (SUM(Adv * b) / AdvMag)**2)
+          tau = 1.0_dp / SQRT( (2.0_dp*AdvMag/h)**2 + 9.0_dp*(4.0_dp*KStream/h**2)**2 + r**2 )
+        END IF
+
+        ! K_e grad(phi_j), once per basis function
+        DO j = 1, nn
+          KdB(j,:) = MATMUL( Ke, dBasisdx(j,:) )
+        END DO
+        DO a = 1, nn
+          DO j = 1, nn
+            Kmat(a,j) = Kmat(a,j) + sw * ( Basis(a) * AdvGrad(j) &
+                + SUM( dBasisdx(a,:) * KdB(j,:) ) &
+                + tau * AdvGrad(a) * ( AdvGrad(j) + r * Basis(j) ) )
+          END DO
+          Kmat(a,a) = Kmat(a,a) + sw * r * Basis(a)
+          Fvec(a) = Fvec(a) + sw * ( Basis(a) + tau * AdvGrad(a) ) * f
+        END DO
+      END DO
+    END IF
+
+    CALL DefaultUpdateEquations( Kmat(1:nn,1:nn), Fvec(1:nn), UElement=Elem, USolver=TeSolver )
+  END DO
+
+  CALL DefaultFinishBulkAssembly( TeSolver )
+
+  !------------------------------------------------------------------------------
+  ! Sheath energy loss through walls with Electron Wall Heat Transmission > 0:
+  ! electrons reaching a floating wall at the Bohm flux 0.61 ne sqrt(kB Te/M)
+  ! each carry Gamma_h kB Te into it (Gamma_h ~ 2 + 0.5 ln(M/(2 pi me)), 6.7 for
+  ! K+). Linearized in Te through ne(Te) and Te^(3/2); lumped on the face.
+  !------------------------------------------------------------------------------
+  PowerWall = 0.0_dp
+  DO t = Solver % Mesh % NumberOfBulkElements + 1, &
+      Solver % Mesh % NumberOfBulkElements + Solver % Mesh % NumberOfBoundaryElements
+    Elem => Solver % Mesh % Elements(t)
+    IF (.NOT. ASSOCIATED(Elem % BoundaryInfo)) CYCLE
+    HeatTransmission = 0.0_dp
+    DO bc = 1, Model % NumberOfBCs
+      IF (Elem % BoundaryInfo % Constraint /= Model % BCs(bc) % Tag) CYCLE
+      BCList => Model % BCs(bc) % Values
+      HeatTransmission = ListGetCReal(BCList, 'Electron Wall Heat Transmission', GotBC)
+      EXIT
+    END DO
+    IF (HeatTransmission <= 0.0_dp) CYCLE
+    nn = Elem % TYPE % NumberOfNodes
+    Ind => Elem % NodeIndexes
+    IF (ANY(TePerm(Ind(1:nn)) <= 0) .OR. .NOT. ALL(NdOK(Ind(1:nn)))) CYCLE
+    Model % CurrentElement => Elem
+    WallCoeff = HeatTransmission * 0.61_dp * kBoltz * SQRT(kBoltz / IonMassK)
+    DO a = 1, nn
+      j = Ind(a)
+      ! q = W ne Te^1.5, dq/dTe = W (g Te^1.5 + 1.5 ne Te^0.5)
+      NdQ(a)  = WallCoeff * NdNe(j) * NdTe0(j)**1.5_dp
+      NdDQ(a) = WallCoeff * (NdG(j) * NdTe0(j)**1.5_dp + 1.5_dp * NdNe(j) * SQRT(NdTe0(j)))
+    END DO
+    EN % x(1:nn) = Solver % Mesh % Nodes % x(Ind(1:nn))
+    EN % y(1:nn) = Solver % Mesh % Nodes % y(Ind(1:nn))
+    EN % z(1:nn) = Solver % Mesh % Nodes % z(Ind(1:nn))
+    Kmat(1:nn,1:nn) = 0.0_dp
+    Fvec(1:nn) = 0.0_dp
+    IP = GaussPoints( Elem )
+    DO gp = 1, IP % n
+      stat = ElementInfo( Elem, EN, IP % u(gp), IP % v(gp), IP % w(gp), DetJ, Basis, dBasisdx )
+      sw = DetJ * IP % s(gp)
+      qG  = SUM( Basis(1:nn) * NdQ(1:nn) )
+      dqG = SUM( Basis(1:nn) * NdDQ(1:nn) )
+      Te0G = SUM( Basis(1:nn) * NdTe0(Ind(1:nn)) )
+      DO a = 1, nn
+        Kmat(a,a) = Kmat(a,a) + sw * dqG * Basis(a)
+        Fvec(a) = Fvec(a) + sw * (dqG * Te0G - qG) * Basis(a)
+      END DO
+      IF (Elem % PartIndex == ParEnv % MyPE .OR. ParEnv % PEs == 1) PowerWall = PowerWall + sw * qG
+    END DO
+    CALL DefaultUpdateEquations( Kmat(1:nn,1:nn), Fvec(1:nn), UElement=Elem, USolver=TeSolver )
+  END DO
+  CALL DefaultFinishAssembly( TeSolver )
+  CALL DefaultDirichletBCs( USolver=TeSolver )
+  tSol = CPUTime()
+  tAsm = tSol - tAsm
+  Norm = DefaultSolve( USolver=TeSolver )
+  tSol = CPUTime() - tSol
+  DEALLOCATE( Kmat, Fvec, Basis, dBasisdx, Pot )
+  ! Default routines without an explicit solver act on the potential solver
+  Model % Solver => Solver
+
+  IF (ParEnv % PEs > 1) THEN
+    PowerJoule = ParallelReduction(PowerJoule)
+    PowerLoss  = ParallelReduction(PowerLoss)
+    PowerInel  = ParallelReduction(PowerInel)
+    PowerIon   = ParallelReduction(PowerIon)
+    PowerWall  = ParallelReduction(PowerWall)
+  END IF
+  WRITE(Msg,'(A,ES11.3,A,ES11.3,A,ES11.3,A,ES11.3,A)') 'Electron energy: Joule ', PowerJoule, &
+      ' W  elastic loss ', PowerLoss, ' W  inelastic loss ', PowerInel, ' W  ionization ', PowerIon, &
+      ' W (previous Te)'
+  CALL Info('SolveElectronEnergy', Msg, Level=4)
+  IF (PowerWall > 0.0_dp) THEN
+    WRITE(Msg,'(A,ES11.3,A)') 'Electron energy: sheath loss to walls ', PowerWall, ' W (previous Te)'
+    CALL Info('SolveElectronEnergy', Msg, Level=4)
+  END IF
+  WRITE(Msg,'(A,F8.3,A,F8.3,A)') 'Electron energy: assembly ', tAsm, ' s  solve ', tSol, ' s (rank 0 CPU)'
+  CALL Info('SolveElectronEnergy', Msg, Level=5)
+
+  !------------------------------------------------------------------------------
+  ! Under-relaxed, clamped update with per-node oscillation damping (as for the
+  ! local balance in UpdateSeededPlasma)
+  !------------------------------------------------------------------------------
+  DO j = 1, nNodes
+    IF (.NOT. NdOK(j)) CYCLE
+    ipE = TePerm(j)
+    ipX = PlasmaPerm(j)
+    IF (ipX <= 0) CYCLE
+    Owned = .TRUE.
+    IF (ParEnv % PEs > 1) Owned = &
+        Solver % Mesh % ParallelInfo % NeighbourList(j) % Neighbours(1) == ParEnv % MyPE
+
+    Te0 = NdTe0(j)
+    TeSol = ElecTemp(ipE)
+    IF (.NOT. (TeSol == TeSol)) TeSol = Te0
+    TeStep = MAX(-MaxStepFraction * Te0, MIN(TeSol - Te0, MaxStepFraction * Te0))
+    IF (TeStep * TeLastStep(ipX) < 0.0_dp .AND. ABS(TeStep) > TeTol * Te0) &
+        TeNodeRelax(ipX) = MAX(0.5_dp * TeNodeRelax(ipX), 0.1_dp * TeRelax)
+    TeLastStep(ipX) = TeStep
+    IF (TeNodeRelax(ipX) < TeRelax .AND. Owned) nDamped = nDamped + 1
+
+    TeNew = Te0 + TeNodeRelax(ipX) * TeStep
+    TeLo = 0.5_dp * NdTg(j)
+    IF (TeNew > TeMax) THEN
+      TeNew = TeMax
+      IF (Owned) nTeClamped = nTeClamped + 1
+    ELSE IF (TeNew < TeLo) THEN
+      TeNew = TeLo
+      IF (Owned) nTeFloor = nTeFloor + 1
+    END IF
+    ElecTemp(ipE) = TeNew
+
+    IF (Owned) THEN
+      RelChange = ABS(TeNew - Te0) / Te0
+      SumW = SumW + TeNodeWeight(ipX)
+      SumWC2 = SumWC2 + TeNodeWeight(ipX) * RelChange**2
+      IF (RelChange > MaxRelChange) THEN
+        MaxRelChange = RelChange
+        IF (MaxRelChange > WorstChange) THEN
+          WorstChange = MaxRelChange
+          WorstPos = (/ Solver % Mesh % Nodes % x(j), Solver % Mesh % Nodes % y(j), &
+                        Solver % Mesh % Nodes % z(j) /)
+        END IF
+      END IF
+    END IF
+  END DO
+
+END SUBROUTINE SolveElectronEnergy
+
+!> Lumped nodal volumes, integral of each nodal basis function over the
+!> local active elements, stored with the plasma variable permutation
+SUBROUTINE ComputeNodeWeights()
+  TYPE(Element_t), POINTER :: Elem
+  TYPE(Nodes_t) :: EN
+  TYPE(GaussIntegrationPoints_t) :: GIP
+  REAL(KIND=dp) :: Basis(Model % MaxElementNodes), dBasisdx(Model % MaxElementNodes,3), DetJ
+  INTEGER :: t, g, k, nn, ipW
+  LOGICAL :: stat
+
+  ALLOCATE( TeNodeWeight(SIZE(ElecTemp)) )
+  TeNodeWeight = 0.0_dp
+  ALLOCATE( EN % x(Model % MaxElementNodes), EN % y(Model % MaxElementNodes), &
+            EN % z(Model % MaxElementNodes) )
+
+  DO t = 1, Solver % NumberOfActiveElements
+    Elem => Solver % Mesh % Elements( Solver % ActiveElements(t) )
+    nn = Elem % TYPE % NumberOfNodes
+    EN % x(1:nn) = Solver % Mesh % Nodes % x(Elem % NodeIndexes(1:nn))
+    EN % y(1:nn) = Solver % Mesh % Nodes % y(Elem % NodeIndexes(1:nn))
+    EN % z(1:nn) = Solver % Mesh % Nodes % z(Elem % NodeIndexes(1:nn))
+    GIP = GaussPoints( Elem )
+    DO g = 1, GIP % n
+      stat = ElementInfo( Elem, EN, GIP % u(g), GIP % v(g), GIP % w(g), DetJ, Basis, dBasisdx )
+      DO k = 1, nn
+        ipW = PlasmaPerm(Elem % NodeIndexes(k))
+        IF (ipW > 0) TeNodeWeight(ipW) = TeNodeWeight(ipW) + DetJ * GIP % s(g) * Basis(k)
+      END DO
+    END DO
+  END DO
+
+  DEALLOCATE( EN % x, EN % y, EN % z )
+END SUBROUTINE ComputeNodeWeights
+
+
+!------------------------------------------------------------------------------
+!> Conductivity tensor at an integration point from the nodal parallel,
+!> Pedersen and Hall conductivities (electrons and ions, clamped) that
+!> UpdateSeededPlasma fills, for the local field direction b = B/|B|:
+!>   J = sigma_0 (b.E') b + sigma_P E'_perp + sigma_H b x E'
+!> i.e. C = sigma_P I + (sigma_0 - sigma_P) b b^T + sigma_H [b x].
+!> For a single collision frequency this is the inverse of the generalized
+!> Ohm's law E' = J/sigma + J x B/(ne e).
+!------------------------------------------------------------------------------
+FUNCTION ConductivityTensor( Basis, NodeIndexes, n, Bgp ) RESULT(C)
+  REAL(KIND=dp) :: Basis(:), Bgp(3)
+  INTEGER :: NodeIndexes(:), n
+  REAL(KIND=dp) :: C(3,3), S0, SP, SH, Bmag, b(3)
+  INTEGER :: i, j, ipS, ipX
+
+  S0 = 0.0_dp; SP = 0.0_dp; SH = 0.0_dp
+  DO i = 1, n
+    ipS = SigPerm(NodeIndexes(i))
+    ipX = PlasmaPerm(NodeIndexes(i))
+    IF (ipS <= 0 .OR. ipX <= 0) CYCLE
+    S0 = S0 + Basis(i) * SigVals(ipS)
+    SP = SP + Basis(i) * SigPed(ipX)
+    SH = SH + Basis(i) * SigHall(ipX)
+  END DO
+  C = 0.0_dp
+  Bmag = SQRT(SUM(Bgp**2))
+  IF (Bmag <= 0.0_dp) THEN
+    DO i = 1, 3
+      C(i,i) = S0
+    END DO
+    RETURN
+  END IF
+  b = Bgp / Bmag
+  DO i = 1, 3
+    DO j = 1, 3
+      C(i,j) = (S0 - SP) * b(i) * b(j)
+    END DO
+    C(i,i) = C(i,i) + SP
+  END DO
+  C(1,2) = C(1,2) - SH * b(3); C(1,3) = C(1,3) + SH * b(2)
+  C(2,1) = C(2,1) + SH * b(3); C(2,3) = C(2,3) - SH * b(1)
+  C(3,1) = C(3,1) - SH * b(2); C(3,2) = C(3,2) + SH * b(1)
+END FUNCTION ConductivityTensor
+
+
+!------------------------------------------------------------------------------
+!> Integration points for the potential assembly and current evaluation:
+!> TetraPoints for linear tetrahedra, Elmer's default rule otherwise (a single
+!> point would admit hourglass modes on hexahedra).
+!------------------------------------------------------------------------------
+FUNCTION ElementGaussPoints( Elem ) RESULT( IP )
+  TYPE(Element_t) :: Elem
+  TYPE(GaussIntegrationPoints_t) :: IP
+
+  IF ( Elem % TYPE % ElementCode == 504 ) THEN
+    IP = GaussPoints( Elem, TetraPoints )
+  ELSE
+    IP = GaussPoints( Elem )
+  END IF
+END FUNCTION ElementGaussPoints
+
+
+FUNCTION RequiredMaterialReal(Mat, Name) RESULT(Val)
+  TYPE(ValueList_t), POINTER :: Mat
+  CHARACTER(LEN=*) :: Name
+  REAL(KIND=dp) :: Val
+  LOGICAL :: Found
+
+  Val = ListGetCReal(Mat, Name, Found)
+  IF (.NOT. Found) CALL Fatal('UpdateSeededPlasma', 'Missing Material keyword: '//TRIM(Name))
+END FUNCTION RequiredMaterialReal
+
+
+
+!------------------------------------------------------------------------------
 !> Compute the Current and Joule Heating at model nodes.
 !------------------------------------------------------------------------------
   SUBROUTINE GeneralCurrent( Model, Potential, Reorder )
@@ -794,12 +1812,11 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
     REAL(KIND=dp), POINTER :: U_Integ(:), V_Integ(:), W_Integ(:), S_Integ(:)
     REAL(KIND=dp), ALLOCATABLE :: SumOfWeights(:), tmp(:)
-    REAL(KIND=dp) :: Conductivity(3,3,Model % MaxElementNodes)
     REAL(KIND=dp) :: Basis(Model % MaxElementNodes)
     REAL(KIND=dp) :: dBasisdx(Model % MaxElementNodes,3)
     REAL(KIND=DP) :: SqrtElementMetric, ElemVol
     REAL(KIND=dp) :: ElementPot(Model % MaxElementNodes)
-    REAL(KIND=dp) :: Current(3)
+    REAL(KIND=dp) :: Current(3), EStar(3)
     REAL(KIND=dp) :: s, ug, vg, wg, Grad(3)
     REAL(KIND=dp) :: SqrtMetric, Metric(3,3), Symb(3,3,3), dSymb(3,3,3,3)
     REAL(KIND=dp) :: HeatingDensity, x, y, z
@@ -811,9 +1828,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     INTEGER :: ip
     REAL(KIND=dp) :: Cgp(3,3)
 
-    REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso, JouleGp
+    REAL(KIND=dp) :: JouleGp
     REAL(KIND=dp) :: RHS(3), Jgp(3)
-    REAL(KIND=dp) :: M(3,3), Minv(3,3)
 
     ALLOCATE( Nodes % x( Model % MaxElementNodes ) )
     ALLOCATE( Nodes % y( Model % MaxElementNodes ) )
@@ -824,13 +1840,15 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       SumOfWeights = 0.0d0
     END IF
 
-    HallCoeffAlpha = HallCoeffAlphaDefault
-
     HeatingTot = 0.0d0
+    PowerEmf = 0.0d0
+    UxAvg = 0.0d0
+    CurrYAvg = 0.0d0
     VolTot = 0.0d0
     IF ( CalculateHeating )  Heating = 0.0d0
     IF ( CalculateNodalHeating)  NodalHeating = 0.0d0
     IF ( CalculateCurrent )  VolCurrent = 0.0d0
+    IF ( CalculateCurrent )  EffField = 0.0d0
 
     IF (CalculateCurrent) THEN
       IF (.NOT. ASSOCIATED(VolCurrent)) THEN
@@ -842,10 +1860,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     END IF
 
 
-    IF( GetCondAtIp ) THEN
-      CALL ListInitElementKeyword( CondAtIp_h,'Material','Electric Conductivity')
-    END IF
-     
 !------------------------------------------------------------------------------
 !   Go through model elements, we will compute on average of elementwise
 !   fluxes to nodes of the model
@@ -874,7 +1888,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !------------------------------------------------------------------------------
 !    Gauss integration stuff
 !------------------------------------------------------------------------------
-       IntegStuff = GaussPoints( Element )
+       IntegStuff = ElementGaussPoints( Element )
        U_Integ => IntegStuff % u
        V_Integ => IntegStuff % v
        W_Integ => IntegStuff % w
@@ -883,37 +1897,13 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
 !------------------------------------------------------------------------------
 
-       IF( .NOT. GetCondAtIp ) THEN
-         k = ListGetInteger( Model % Bodies( Element % BodyId ) % &
-             Values, 'Material', minv=1, maxv=Model % NumberOfMaterials )
-
-         CALL ListGetRealArray( Model % Materials(k) % Values, &
-             'Electric Conductivity', Cwrk, n, NodeIndexes, gotIt )
-
-         Conductivity = 0.0d0
-         IF ( SIZE(Cwrk,1) == 1 ) THEN
-           DO i=1,3
-             Conductivity( i,i,1:n ) = Cwrk( 1,1,1:n )
-           END DO
-         ELSE IF ( SIZE(Cwrk,2) == 1 ) THEN
-           DO i=1,MIN(3,SIZE(Cwrk,1))
-             Conductivity(i,i,1:n) = Cwrk(i,1,1:n)
-           END DO
-         ELSE
-           DO i=1,MIN(3,SIZE(Cwrk,1))
-             DO j=1,MIN(3,SIZE(Cwrk,2))
-               Conductivity( i,j,1:n ) = Cwrk(i,j,1:n)
-             END DO
-           END DO
-         END IF
-       END IF
-         
 !------------------------------------------------------------------------------
 ! Loop over Gauss integration points
 !------------------------------------------------------------------------------
 
        HeatingDensity = 0.0d0
        Current = 0.0d0
+       EStar = 0.0d0
        ElemVol = 0.0d0
 
 
@@ -960,10 +1950,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             ip = UyPerm(NodeIndexes(i))
             IF (ip > 0) Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
 
-            IF (DIM == 3) THEN
-              ip = UzPerm(NodeIndexes(i))
-              IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
-            END IF
+            ip = UzPerm(NodeIndexes(i))
+            IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
 
             ! Magnetic field components
             ip = BxPerm(NodeIndexes(i))
@@ -972,12 +1960,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             ip = ByPerm(NodeIndexes(i))
             IF (ip > 0) Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
 
-            IF (DIM == 3) THEN
-              ip = BzPerm(NodeIndexes(i))
-              IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
-            END IF
+            ip = BzPerm(NodeIndexes(i))
+            IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
           END DO
-
 
           ! Cross product U x B
           UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
@@ -985,40 +1970,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           UxBgp(3) = Ugp(1)*Bgp(2) - Ugp(2)*Bgp(1)
 
 
-          Cgp = 0.0_dp
-          IF( GetCondAtIp ) THEN
-            CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = tg )
-            DO i = 1, dim
-              Cgp(i,i) = CondAtIp
-            END DO
-          ELSE
-            DO i = 1, dim
-              DO j = 1, dim
-                Cgp(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
-              END DO
-            END DO
-          END IF
-        
-          ! Caluclate resistivity from conductivity
-          SigmaIso = (Cgp(1,1) + Cgp(2,2) + Cgp(3,3)) / REAL(dim,dp)
-          IF (SigmaIso > 0.0_dp) THEN
-            EtaGP = 1.0_dp / SigmaIso
-          ELSE
-            EtaGP = 0.0_dp
-          END IF
-
-          ! Build the M matrix
-          M = 0.0_dp
-          DO i=1,dim
-            M(i,i) = EtaGP
-          END DO
-
-          M(1,2) = M(1,2) - HallCoeffAlpha * (-Bgp(3))
-          M(1,3) = M(1,3) - HallCoeffAlpha * ( Bgp(2))
-          M(2,1) = M(2,1) - HallCoeffAlpha * ( Bgp(3))
-          M(2,3) = M(2,3) - HallCoeffAlpha * (-Bgp(1))
-          M(3,1) = M(3,1) - HallCoeffAlpha * (-Bgp(2))
-          M(3,2) = M(3,2) - HallCoeffAlpha * ( Bgp(1))
+          Cgp = ConductivityTensor( Basis, NodeIndexes, n, Bgp )
 
           RHS = 0.0_dp
           DO j=1,dim
@@ -1029,30 +1981,20 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           VolTot = VolTot + s
 
           IF( Control .OR. CalculateHeating .OR. CalculateCurrent .OR. CalculateNodalHeating ) THEN
-            ! Invert the hall matrix
-            CALL Invert3x3(M, Minv, Stat)
-              
-            IF (.NOT. Stat) THEN
-              WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-              CALL Fatal( &
-                'GeneralCurrent / Hall MHD', &
-                'Hall conductivity matrix is singular or ill-conditioned at Gauss point.' )
-            END IF
-            Jgp = 0.0_dp
-            DO i=1,3
-              DO j=1,3
-                Jgp(i) = Jgp(i) + Minv(i,j) * RHS(j)
-              END DO
-            END DO
+            Jgp = MATMUL( Cgp, RHS )
 
-            ! Resistive Joule heating for generalized Ohm law:
-            ! J·(E + UxB) = eta*|J|^2 since Hall term is non-dissipative.
-            JouleGp = EtaGP * SUM( Jgp(1:DIM) * Jgp(1:DIM) )
+            ! Joule heating J.E' (E' = E + U x B); the Hall part of the
+            ! tensor is antisymmetric and does no work
+            JouleGp = SUM( Jgp(1:DIM) * RHS(1:DIM) )
             HeatingTot = HeatingTot + s * JouleGp
+            PowerEmf = PowerEmf + s * SUM( Jgp(1:DIM) * UxBgp(1:DIM) )
+            UxAvg = UxAvg + s * Ugp(1)
+            CurrYAvg = CurrYAvg + s * Jgp(2)
             HeatingDensity = HeatingDensity + s * JouleGp
 
             DO j=1,dim
               Current(j) = Current(j) + Jgp(j) * s
+              EStar(j) = EStar(j) + RHS(j) * s
             END DO
 
             ElemVol = ElemVol + s
@@ -1062,6 +2004,24 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
        END DO! of the Gauss integration points
 
 !------------------------------------------------------------------------------
+!   Element-wise values for OpenFOAM, before the nodal averaging below
+!------------------------------------------------------------------------------
+       IF ( ASSOCIATED(ElemPerm) .AND. ElemVol > 0.0d0 ) THEN
+         i = Solver % ActiveElements(t)
+         IF ( i <= SIZE(ElemPerm) ) THEN
+           ip = ElemPerm(i)
+           IF ( ip > 0 ) THEN
+             IF ( CalculateCurrent ) THEN
+               ElemCurr1(ip) = Current(1) / ElemVol
+               ElemCurr2(ip) = Current(2) / ElemVol
+               ElemCurr3(ip) = Current(3) / ElemVol
+             END IF
+             IF ( CalculateHeating ) ElemHeating(ip) = HeatingDensity / ElemVol
+           END IF
+         END IF
+       END IF
+
+!------------------------------------------------------------------------------
 !   Weight with element area if required
 !------------------------------------------------------------------------------
 
@@ -1069,6 +2029,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
          IF ( ConstantWeights ) THEN
            HeatingDensity = HeatingDensity / ElemVol
            Current(1:Dim) = Current(1:Dim) / ElemVol
+           EStar(1:Dim) = EStar(1:Dim) / ElemVol
            SumOfWeights( Reorder( NodeIndexes(1:n) ) ) = &
                SumOfWeights( Reorder( NodeIndexes(1:n) ) ) + 1
          ELSE
@@ -1092,6 +2053,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
            VolCurrent(DIM*(Reorder(NodeIndexes(1:n))-1)+j) = &
                VolCurrent(DIM*(Reorder(NodeIndexes(1:n))-1)+j) + &
                Current(j)
+           EffField(DIM*(Reorder(NodeIndexes(1:n))-1)+j) = &
+               EffField(DIM*(Reorder(NodeIndexes(1:n))-1)+j) + &
+               EStar(j)
          END DO
        END IF
 
@@ -1101,6 +2065,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       IF ( ParEnv % PEs > 1) THEN
         VolTot     = ParallelReduction(VolTot)
         HeatingTot = ParallelReduction(HeatingTot)
+        PowerEmf   = ParallelReduction(PowerEmf)
+        UxAvg      = ParallelReduction(UxAvg)
+        CurrYAvg   = ParallelReduction(CurrYAvg)
         
         IF ( CalculateCurrent) THEN
           ALLOCATE(tmp(SIZE(VolCurrent)/dim))
@@ -1108,6 +2075,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
             tmp = VolCurrent(i::dim)
             CALL ParallelSumVector(Solver % Matrix, tmp)
             Volcurrent(i::dim) = tmp
+            tmp = EffField(i::dim)
+            CALL ParallelSumVector(Solver % Matrix, tmp)
+            EffField(i::dim) = tmp
           END DO
         END IF
         IF (CalculateHeating ) CALL ParallelSumVector(Solver % Matrix, Heating)
@@ -1123,6 +2093,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           DO j = 1, DIM
             IF ( CalculateCurrent )  VolCurrent(DIM*(i-1)+j) = &
                 VolCurrent(DIM*(i-1)+j) /  SumOfWeights(i)
+            IF ( CalculateCurrent )  EffField(DIM*(i-1)+j) = &
+                EffField(DIM*(i-1)+j) /  SumOfWeights(i)
           END DO
         END IF
       END DO
@@ -1140,8 +2112,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     SUBROUTINE StatCurrentCompose( StiffMatrix,Force,Conductivity, &
                             Load,Element,n,Nodes )
 !------------------------------------------------------------------------------
-      USE MHDParams, ONLY: HallCoeffAlphaDefault
-
       REAL(KIND=dp) :: StiffMatrix(:,:),Force(:),Load(:), Conductivity(:,:,:)
       INTEGER :: n
       TYPE(Nodes_t) :: Nodes
@@ -1149,7 +2119,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !------------------------------------------------------------------------------
       REAL(KIND=dp) :: SqrtMetric,Metric(3,3),Symb(3,3,3),dSymb(3,3,3,3)
       REAL(KIND=dp) :: Basis(n),dBasisdx(n,3)
-      REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,C(3,3),x,y,z
+      REAL(KIND=dp) :: SqrtElementMetric,U,V,W,S,A,L,x,y,z
       LOGICAL :: Stat
 
       INTEGER :: i,j,p,q,t,DIM
@@ -1160,8 +2130,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
       INTEGER, POINTER :: NodeIndexes(:)
       INTEGER :: ip
 
-      REAL(KIND=dp) :: HallCoeffAlpha, EtaGP, SigmaIso
-      REAL(KIND=dp) :: M(3,3), Minv(3,3)
+      REAL(KIND=dp) :: Minv(3,3)
 
       ! Guard against element is not part of this rank
       IF ( Element % PartIndex /= ParEnv % MyPE ) THEN
@@ -1169,9 +2138,6 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
         StiffMatrix = 0.0_dp
         RETURN
       END IF
-
-      HallCoeffAlpha = HallCoeffAlphaDefault
-
 
 !------------------------------------------------------------------------------
       DIM = CoordinateSystemDimension()
@@ -1185,7 +2151,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 !------------------------------------------------------------------------------
 !      Numerical integration
 !------------------------------------------------------------------------------
-      IntegStuff = GaussPoints( Element )
+      IntegStuff = ElementGaussPoints( Element )
 
       DO t=1,IntegStuff % n
         U = IntegStuff % u(t)
@@ -1216,29 +2182,7 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
 
         L = SUM( Load(1:n) * Basis )
 
-        IF( GetCondAtIp ) THEN
-          CondAtIp = ListGetElementReal( CondAtIp_h, Basis, Element, Stat, GaussPoint = t )
-          C(1:dim,1:dim) = 0.0_dp
-          DO i=1,dim
-            C(i,i) = CondAtIp
-          END DO
-        ELSE
-          DO i=1,DIM
-            DO j=1,DIM
-              C(i,j) = SUM( Conductivity(i,j,1:n) * Basis(1:n) )
-            END DO
-          END DO
-        END IF
 
-        ! Caluclate resistivity from conductivity
-        SigmaIso = (C(1,1) + C(2,2) + C(3,3)) / REAL(dim,dp)
-        IF (SigmaIso > 0.0_dp) THEN
-          EtaGP = 1.0_dp / SigmaIso
-        ELSE
-          EtaGP = 0.0_dp
-        END IF
-
-        
         ! Reset Gauss-point velocity and magnetic field
         Ugp = 0.0_dp
         Bgp = 0.0_dp
@@ -1251,10 +2195,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           ip = UyPerm(NodeIndexes(i))
           IF (ip > 0) Ugp(2) = Ugp(2) + Basis(i) * UyVals(ip)
 
-          IF (DIM == 3) THEN
-            ip = UzPerm(NodeIndexes(i))
-            IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
-          END IF
+          ip = UzPerm(NodeIndexes(i))
+          IF (ip > 0) Ugp(3) = Ugp(3) + Basis(i) * UzVals(ip)
 
           ! Magnetic field components: use each variable's own perm
           ip = BxPerm(NodeIndexes(i))
@@ -1263,35 +2205,12 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
           ip = ByPerm(NodeIndexes(i))
           IF (ip > 0) Bgp(2) = Bgp(2) + Basis(i) * ByVals(ip)
 
-          IF (DIM == 3) THEN
-            ip = BzPerm(NodeIndexes(i))
-            IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
-          END IF
+          ip = BzPerm(NodeIndexes(i))
+          IF (ip > 0) Bgp(3) = Bgp(3) + Basis(i) * BzVals(ip)
         END DO
 
-
-        ! Build the M matrix
-        M = 0.0_dp
-        DO i=1,dim
-          M(i,i) = EtaGP
-        END DO
-
-        M(1,2) = M(1,2) - HallCoeffAlpha * (-Bgp(3))
-        M(1,3) = M(1,3) - HallCoeffAlpha * ( Bgp(2))
-        M(2,1) = M(2,1) - HallCoeffAlpha * ( Bgp(3))
-        M(2,3) = M(2,3) - HallCoeffAlpha * (-Bgp(1))
-        M(3,1) = M(3,1) - HallCoeffAlpha * (-Bgp(2))
-        M(3,2) = M(3,2) - HallCoeffAlpha * ( Bgp(1))
-
-        ! Invert the hall matrix
-        CALL Invert3x3(M, Minv, Stat)
-
-
-        IF (.NOT. Stat) THEN 
-          WRITE(*,*) 'Hall matrix inversion failed at Gauss point'
-          CALL Fatal('GeneralCurrent / Hall MHD', &
-                    'Hall conductivity matrix is singular or ill-conditioned at Gauss point.')
-        END IF
+        ! Conductivity tensor: stiffness grad(phi) . C . grad(v), EMF load C . (U x B)
+        Minv = ConductivityTensor( Basis, NodeIndexes, n, Bgp )
 
         ! Cross product UxB = U x B
         UxBgp(1) = Ugp(2)*Bgp(3) - Ugp(3)*Bgp(2)
@@ -1415,6 +2334,27 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   END SUBROUTINE StatCurrentBoundary
 !------------------------------------------------------------------------------
 
+  !------------------------------------------------------------------------------
+  !> Electrode circuits as extra unknowns added to the potential system. Pair ep
+  !> has electrode voltages Vp, Vm and the load current I through its resistor:
+  !>   rows NPhi+3(ep-1)+1 = Vp,  +2 = Vm,  +3 = I.
+  !> Each electrode surface is tied to its voltage V by a stiff contact
+  !> conductance (Robin condition J.n = Gc (phi - V)), assembled per boundary
+  !> element with lumped weights kappa = Gc int psi_p dS:
+  !>   phi rows:  + kappa (phi_p - V)                     current into the electrode
+  !>   V rows:    sum kappa (V - phi_p) + I = 0  (plus)   Kirchhoff at the electrode
+  !>              sum kappa (V - phi_p) - I = 0  (minus)
+  !>   I row:     R I - (Vp - Vm) = 0                     Ohm's law of the load
+  !> Gc = Electrode Penalty Factor * sigma_max / h, with sigma_max the largest
+  !> conductivity in the domain, so the contact is at least that factor stiffer
+  !> than any plasma element and each electrode is equipotential to roughly
+  !> 1/factor of one element's potential drop. (Scaling by the local wall
+  !> conductivity instead makes the contact a real resistor when the gas at the
+  !> wall is cold, dissipating power that belongs to the load.) Unlike per-node Lagrange
+  !> multipliers this keeps a positive diagonal in every row (no saddle point),
+  !> which ILU-preconditioned Krylov solvers handle well, and adds only three
+  !> rows per pair.
+  !------------------------------------------------------------------------------
   SUBROUTINE BuildElectrodeAddMatrix( Model, Solver, AuxMatrix, &
       PotentialPerm, ElectrodePairOfBC, ElectrodeSignOfBC, &
       ElectrodeResistance, NumElectrodePairs, NPhi )
@@ -1434,352 +2374,150 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
     INTEGER,        INTENT(IN)    :: NumElectrodePairs
     INTEGER,        INTENT(IN)    :: NPhi       ! Local Solver % Matrix % NumberOfRows
 
-    INTEGER :: NX, ep, sgn, be, i, n, inode, pRow, gidV, gidVp, gidVm, gidI, p, gPhi
-    INTEGER :: nSides, sideIdx, gidC, NumNodeConstraints, globalSideCount, globalNPhi
-    INTEGER :: gaugeRow
-    INTEGER :: extraIdxC, extraIdxV, extraIdxVp, extraIdxVm, extraIdxI
-    LOGICAL :: UseNodalConstraints
+    INTEGER :: NX, ep, be, i, k, n, inode, pRow, gp, gidV, gidVp, gidVm, gidI, sideIdx, maxN
     TYPE(Element_t), POINTER :: Elem
     INTEGER, POINTER :: NodeIndexes(:)
-    INTEGER :: maxN
-    INTEGER :: gp
-
     TYPE(Nodes_t) :: EN
     TYPE(GaussIntegrationPoints_t) :: Integ
-    REAL(dp) :: Basis(MAX_ELEMENT_NODES)
-    REAL(dp) :: dBasisdx(MAX_ELEMENT_NODES,3)
-    REAL(dp) :: SqrtElementMetric, s
-    LOGICAL :: stat
+    REAL(dp) :: Basis(MAX_ELEMENT_NODES), dBasisdx(MAX_ELEMENT_NODES,3)
+    REAL(dp) :: SqrtElementMetric, s, ElemArea, SigRef, Gc, kappa, PenaltyFactor
+    REAL(dp), ALLOCATABLE :: SideArea(:), SideKappa(:)
+    LOGICAL :: stat, Found
 
-    REAL(dp), ALLOCATABLE :: SideRowBuf(:)
-    INTEGER, ALLOCATABLE :: SideConstraintCount(:), SideIsElectrodeRow(:,:), RowMembershipCount(:)
-    
-    REAL(dp) :: AreaPlus, AreaMinus, areaCoeff
-
-    ! Defensive no-op path: no electrode circuit DOFs requested.
     IF (NumElectrodePairs <= 0) THEN
       AuxMatrix => NULL()
       RETURN
     END IF
 
-    maxN = Model % MaxElementNodes
-    ALLOCATE( EN % x(maxN), EN % y(maxN), EN % z(maxN) )
+    PenaltyFactor = ListGetCReal(Solver % Values, 'Electrode Penalty Factor', Found)
+    IF (.NOT. Found) PenaltyFactor = 1.0e3_dp
 
-    ! Keep legacy electrode circuit indices first:
-    !   Vp(ep) = NPhi + 3*(ep-1) + 1
-    !   Vm(ep) = NPhi + 3*(ep-1) + 2
-    !   I(ep)  = NPhi + 3*(ep-1) + 3
-    !
-    ! Append nodal equipotential constraints after these 3*NumElectrodePairs rows.
-    nSides = 2 * NumElectrodePairs
-    UseNodalConstraints = .TRUE.
-    NumNodeConstraints = 0
-    IF (UseNodalConstraints) THEN
-      ALLOCATE(SideConstraintCount(nSides))
-      SideConstraintCount = 0
-      ALLOCATE(SideIsElectrodeRow(nSides, NPhi))
-      SideIsElectrodeRow = 0
-      ALLOCATE(RowMembershipCount(NPhi))
-      RowMembershipCount = 0
-      ALLOCATE(SideRowBuf(NPhi))
+    SigRef = 0.0_dp
+    IF (SIZE(SigVals) > 0) SigRef = MAXVAL(SigVals)
+    IF (ParEnv % PEs > 1) SigRef = ParallelReduction(SigRef, 2)
+    IF (SigRef <= 0.0_dp) SigRef = 1.0_dp
 
-      DO ep = 1, NumElectrodePairs
-        DO sgn = -1, +1, 2
-          SideRowBuf = 0.0_dp
-
-          DO be = 1, Solver % Mesh % NumberOfBoundaryElements
-            Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
-            NodeIndexes => Elem % NodeIndexes
-
-            DO i = 1, Model % NumberOfBCs
-              IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
-              IF (ElectrodePairOfBC(i) /= ep) CYCLE
-              IF (ElectrodeSignOfBC(i) /= sgn) CYCLE
-
-              n = Elem % TYPE % NumberOfNodes
-              DO inode = 1, n
-                pRow = PotentialPerm(NodeIndexes(inode))
-              IF (pRow <= 0) CYCLE
-              IF (ParEnv % PEs > 1 .AND. ALLOCATED(Solver % Matrix % RowOwner)) THEN
-                IF (Solver % Matrix % RowOwner(pRow) /= ParEnv % MyPE) CYCLE
-              END IF
-              SideRowBuf(pRow) = 1.0_dp
-              END DO
-            END DO
-          END DO
-
-          IF (sgn == -1) THEN
-            sideIdx = 2*(ep-1) + 1
-          ELSE
-            sideIdx = 2*(ep-1) + 2
-          END IF
-
-          DO pRow = 1, NPhi
-            IF (SideRowBuf(pRow) > 0.5_dp) THEN
-              NumNodeConstraints = NumNodeConstraints + 1
-              SideConstraintCount(sideIdx) = SideConstraintCount(sideIdx) + 1
-              SideIsElectrodeRow(sideIdx, pRow) = 1
-            END IF
-          END DO
-        END DO
-      END DO
-
-      ! A potential DOF must belong to at most one electrode side.
-      ! Multiple memberships indicate broken BC tagging/meshing, not recoverable here.
-      DO pRow = 1, NPhi
-        RowMembershipCount(pRow) = SUM(SideIsElectrodeRow(:, pRow))
-        IF (RowMembershipCount(pRow) > 1) THEN
-          CALL Fatal('BuildElectrodeAddMatrix', &
-            'Potential DOF belongs to multiple electrode sides. Check BC tagging/mesh.')
-        END IF
-      END DO
-
-      ! Sanity check (GLOBAL in MPI): each electrode side must contribute
-      ! at least one constrained potential DOF across all ranks.
-      DO sideIdx = 1, nSides
-        IF (ParEnv % PEs > 1) THEN
-          globalSideCount = NINT(ParallelReduction(REAL(SideConstraintCount(sideIdx), dp)))
-        ELSE
-          globalSideCount = SideConstraintCount(sideIdx)
-        END IF
-
-        IF (ParEnv % MyPE == 0) THEN
-          WRITE(*,'(A,I4,A,I8)') ' [BuildElectrodeAddMatrix] side ', sideIdx, &
-            ' global constrained DOFs = ', globalSideCount
-        END IF
-
-        IF (globalSideCount <= 0) THEN
-          CALL Fatal('BuildElectrodeAddMatrix', 'Electrode side has zero constrained potential DOFs')
-        END IF
-      END DO
-    END IF
-
-
-    IF (ParEnv % PEs > 1 .AND. ASSOCIATED(Solver % Matrix % ParallelInfo) .AND. &
-        ASSOCIATED(Solver % Matrix % ParallelInfo % GlobalDOFs)) THEN
-      globalNPhi = MAXVAL(Solver % Matrix % ParallelInfo % GlobalDOFs(1:NPhi))
-      globalNPhi = NINT(ParallelReduction(REAL(globalNPhi, dp), 2))  ! MPI_MAX
-    ELSE
-      globalNPhi = NPhi
-    END IF
-
-    ! Append one nodal row per (sideIdx, global potential DOF).
-    IF (UseNodalConstraints) THEN
-      NX = 3 * NumElectrodePairs + nSides * globalNPhi
-    ELSE
-      NX = 3 * NumElectrodePairs
-    END IF
+    NX = 3 * NumElectrodePairs
 
     AuxMatrix => AllocateMatrix()
     AuxMatrix % FORMAT = MATRIX_LIST
     AuxMatrix % Symmetric = .FALSE.
     AuxMatrix % NumberOfRows = NPhi + NX
-
     ALLOCATE(AuxMatrix % RHS(AuxMatrix % NumberOfRows))
     AuxMatrix % RHS = 0.0_dp
 
-    ! Initialize parallel info for AddMatrix.
-    ! All extra DOFs owned by rank 0.  Elmer's ParallelInitMatrix builds
-    ! consistent NeighbourLists from RowOwner via the OwnersGiven path.
+    ! Extra (circuit) rows are owned by rank 0; ParallelInitMatrix builds the
+    ! neighbour lists from RowOwner.
     IF (ParEnv % PEs > 1) THEN
       ALLOCATE(AuxMatrix % RowOwner(NPhi + NX))
       AuxMatrix % RowOwner = 0
     END IF
 
+    maxN = Model % MaxElementNodes
+    ALLOCATE( EN % x(maxN), EN % y(maxN), EN % z(maxN) )
+    ALLOCATE( SideArea(2*NumElectrodePairs), SideKappa(2*NumElectrodePairs) )
+    SideArea = 0.0_dp
+    SideKappa = 0.0_dp
+
     !------------------------------------------------------------
-    ! Exact nodal equipotential constraints for each electrode boundary DOF:
-    !   phi(pRow) - Vside = 0
-    !
-    ! For each constraint row gidC:
-    !   A(gidC, pRow) = +1
-    !   A(gidC, gidV) = -1
-    !
-    ! And the transpose coupling for saddle-point symmetry:
-    !   A(pRow, gidC) = +1
+    ! Contact conductance between each electrode surface and its voltage
     !------------------------------------------------------------
-    IF (UseNodalConstraints) THEN
-      DO ep = 1, NumElectrodePairs
-        DO sgn = -1, +1, 2
+    DO be = 1, Solver % Mesh % NumberOfBoundaryElements
+      Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
+      NodeIndexes => Elem % NodeIndexes
+      n = Elem % TYPE % NumberOfNodes
 
-          IF (sgn == +1) THEN
-            extraIdxV = 3*(ep-1) + 1
-            gidV = NPhi + extraIdxV
-            sideIdx = 2*(ep-1) + 2
-          ELSE
-            extraIdxV = 3*(ep-1) + 2
-            gidV = NPhi + extraIdxV
-            sideIdx = 2*(ep-1) + 1
-          END IF
+      DO i = 1, Model % NumberOfBCs
+        IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
+        ep = ElectrodePairOfBC(i)
+        IF (ep <= 0) CYCLE
 
-          DO pRow = 1, NPhi
-            IF (ParEnv % PEs > 1 .AND. ASSOCIATED(Solver % Matrix % ParallelInfo) .AND. &
-                ASSOCIATED(Solver % Matrix % ParallelInfo % GlobalDOFs)) THEN
-              gPhi = Solver % Matrix % ParallelInfo % GlobalDOFs(pRow)
-            ELSE
-              gPhi = pRow
-            END IF
-            IF (gPhi < 1 .OR. gPhi > globalNPhi) CYCLE
-            extraIdxC = 3*NumElectrodePairs + (sideIdx-1)*globalNPhi + gPhi
-            gidC = NPhi + extraIdxC
-
-            IF (SideIsElectrodeRow(sideIdx, pRow) == 1) THEN
-              CALL AddToMatrixElement(AuxMatrix, pRow, gidC, 1.0_dp)
-              CALL AddToMatrixElement(AuxMatrix, gidC, pRow, 1.0_dp)
-              CALL AddToMatrixElement(AuxMatrix, gidC, gidV, -1.0_dp)
-              CALL AddToMatrixElement(AuxMatrix, gidV, gidC, -1.0_dp)
-            ELSE
-              ! Identity for inactive constraint rows: only the phi-DOF owner
-              ! sets it, preventing double-counting and avoiding clobbering
-              ! real constraints assembled by another rank for shared DOFs.
-              IF (ParEnv % PEs > 1 .AND. ALLOCATED(Solver % Matrix % RowOwner)) THEN
-                IF (Solver % Matrix % RowOwner(pRow) == ParEnv % MyPE) THEN
-                  CALL AddToMatrixElement(AuxMatrix, gidC, gidC, 1.0_dp)
-                END IF
-              ELSE
-                CALL AddToMatrixElement(AuxMatrix, gidC, gidC, 1.0_dp)
-              END IF
-            END IF
-          END DO
-        END DO
-      END DO
-    END IF
-
-    !    Ohm law per pair: (Vp - Vm) - R * I = 0   (row gidI)
-    !    Keep these rows on rank 0 (simple and stable).
-    DO ep = 1, NumElectrodePairs
-      extraIdxVp = 3*(ep-1) + 1
-      extraIdxVm = 3*(ep-1) + 2
-      extraIdxI  = 3*(ep-1) + 3
-      gidVp = NPhi + extraIdxVp
-      gidVm = NPhi + extraIdxVm
-      gidI  = NPhi + extraIdxI
-
-      IF (ParEnv % MyPE == 0) THEN
-        CALL AddToMatrixElement(AuxMatrix, gidI, gidVp,  1.0_dp)
-        CALL AddToMatrixElement(AuxMatrix, gidI, gidVm, -1.0_dp)
-        CALL AddToMatrixElement(AuxMatrix, gidI, gidI,  -ElectrodeResistance(ep))
-      END IF
-    END DO
-
-    ! Pin potential=0 at one mesh node on the first cathode surface.
-    ! One gauge point removes the 1D null space for any number of pairs.
-    gaugeRow = 0
-    IF (UseNodalConstraints) THEN
-      DO pRow = 1, NPhi
-        IF (SideIsElectrodeRow(1, pRow) == 1) THEN
-          gaugeRow = pRow
-          EXIT
+        IF (ElectrodeSignOfBC(i) == +1) THEN
+          gidV = NPhi + 3*(ep-1) + 1
+          sideIdx = 2*(ep-1) + 2
+        ELSE
+          gidV = NPhi + 3*(ep-1) + 2
+          sideIdx = 2*(ep-1) + 1
         END IF
+
+        EN % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes(1:n))
+        EN % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes(1:n))
+        EN % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes(1:n))
+
+        Integ = GaussPoints(Elem)
+        ElemArea = 0.0_dp
+        DO gp = 1, Integ % n
+          stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &
+                            SqrtElementMetric, Basis, dBasisdx)
+          ElemArea = ElemArea + SqrtElementMetric * Integ % s(gp)
+        END DO
+        IF (ElemArea <= 0.0_dp) CYCLE
+
+        Gc = PenaltyFactor * SigRef / SQRT(ElemArea)
+
+        DO gp = 1, Integ % n
+          stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &
+                            SqrtElementMetric, Basis, dBasisdx)
+          s = SqrtElementMetric * Integ % s(gp)
+          SideArea(sideIdx) = SideArea(sideIdx) + s
+
+          DO inode = 1, n
+            pRow = PotentialPerm(NodeIndexes(inode))
+            IF (pRow <= 0) CYCLE
+            kappa = Gc * s * Basis(inode)
+            CALL AddToMatrixElement(AuxMatrix, pRow, pRow,  kappa)
+            CALL AddToMatrixElement(AuxMatrix, pRow, gidV, -kappa)
+            CALL AddToMatrixElement(AuxMatrix, gidV, pRow, -kappa)
+            CALL AddToMatrixElement(AuxMatrix, gidV, gidV,  kappa)
+            SideKappa(sideIdx) = SideKappa(sideIdx) + kappa
+          END DO
+        END DO
+      END DO
+    END DO
+
+    IF (ParEnv % PEs > 1) THEN
+      DO sideIdx = 1, 2*NumElectrodePairs
+        SideArea(sideIdx)  = ParallelReduction(SideArea(sideIdx))
+        SideKappa(sideIdx) = ParallelReduction(SideKappa(sideIdx))
       END DO
     END IF
-    IF (gaugeRow > 0) THEN
-      CALL AddToMatrixElement(AuxMatrix, gaugeRow, gaugeRow, 1.0e8_dp)
-      WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Gauge: pinning Phi=0 at mesh DOF ', gaugeRow
-    ELSE
+    DO sideIdx = 1, 2*NumElectrodePairs
+      IF (SideArea(sideIdx) <= 0.0_dp) THEN
+        CALL Fatal('BuildElectrodeAddMatrix', 'Electrode side has zero area. Check BC tagging/mesh.')
+      END IF
+    END DO
+
+    !------------------------------------------------------------
+    ! Kirchhoff at the electrodes and Ohm's law of each load (rank 0)
+    !------------------------------------------------------------
+    IF (ParEnv % MyPE == 0) THEN
+      DO ep = 1, NumElectrodePairs
+        gidVp = NPhi + 3*(ep-1) + 1
+        gidVm = NPhi + 3*(ep-1) + 2
+        gidI  = NPhi + 3*(ep-1) + 3
+        CALL AddToMatrixElement(AuxMatrix, gidVp, gidI,  1.0_dp)
+        CALL AddToMatrixElement(AuxMatrix, gidVm, gidI, -1.0_dp)
+        CALL AddToMatrixElement(AuxMatrix, gidI, gidVp, -1.0_dp)
+        CALL AddToMatrixElement(AuxMatrix, gidI, gidVm,  1.0_dp)
+        CALL AddToMatrixElement(AuxMatrix, gidI, gidI,  ElectrodeResistance(ep))
+      END DO
+
+      ! Gauge: ground the minus electrode of pair 1 through a conductance of
+      ! the same size as its contact. The total current into the plasma is
+      ! zero, so no current flows to ground and Vm(1) = 0 exactly.
       gidVm = NPhi + 2
-      IF (ParEnv % MyPE == 0) THEN
-        CALL AddToMatrixElement(AuxMatrix, gidVm, gidVm, 1.0e8_dp)
-        WRITE(*,'(A,I6)') ' [BuildElectrodeAddMatrix] Gauge: fallback pinning Vm=0 at row ', gidVm
-      END IF
+      CALL AddToMatrixElement(AuxMatrix, gidVm, gidVm, SideKappa(1))
     END IF
 
-    ! Zero diagonals on all ranks to keep row structures alive through
-    ! LIST->CRS conversion. Real entries are added on top by the owning rank.
-    DO p = NPhi + 1, NPhi + NX
-      CALL AddToMatrixElement(AuxMatrix, p, p, 0.0_dp)
+    ! Zero diagonals on all ranks keep the extra row structures alive through
+    ! the LIST -> CRS conversion; real entries are added on top.
+    DO k = NPhi + 1, NPhi + NX
+      CALL AddToMatrixElement(AuxMatrix, k, k, 0.0_dp)
     END DO
 
-    DO ep = 1, NumElectrodePairs
-      extraIdxI = 3*(ep-1) + 3
-      gidI = NPhi + extraIdxI
-
-      AreaPlus = 0.0_dp
-      AreaMinus = 0.0_dp
-
-      DO be = 1, Solver % Mesh % NumberOfBoundaryElements
-        Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
-        NodeIndexes => Elem % NodeIndexes
-
-        DO i = 1, Model % NumberOfBCs
-          IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
-          IF (ElectrodePairOfBC(i) /= ep) CYCLE
-
-          n = Elem % TYPE % NumberOfNodes
-          EN % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes(1:n))
-          EN % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes(1:n))
-          EN % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes(1:n))
-
-          Integ = GaussPoints(Elem)
-          DO gp = 1, Integ % n
-            stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &
-                              SqrtElementMetric, Basis, dBasisdx)
-            s = SqrtElementMetric * Integ % s(gp)
-            IF (ElectrodeSignOfBC(i) == +1) THEN
-              AreaPlus = AreaPlus + s
-            ELSE
-              AreaMinus = AreaMinus + s
-            END IF
-          END DO
-        END DO
-      END DO
-      
-      ! Parallel reduction for areas
-      IF (ParEnv % PEs > 1) THEN
-        AreaPlus = ParallelReduction(AreaPlus)
-        AreaMinus = ParallelReduction(AreaMinus)
-      END IF
-
-      DO be = 1, Solver % Mesh % NumberOfBoundaryElements
-        Elem => Solver % Mesh % Elements( Solver % Mesh % NumberOfBulkElements + be )
-        NodeIndexes => Elem % NodeIndexes
-
-        DO i = 1, Model % NumberOfBCs
-          IF (Elem % BoundaryInfo % Constraint /= Model % BCs(i) % Tag) CYCLE
-          IF (ElectrodePairOfBC(i) /= ep) CYCLE
-          
-          n = Elem % TYPE % NumberOfNodes
-          EN % x(1:n) = Solver % Mesh % Nodes % x(NodeIndexes(1:n))
-          EN % y(1:n) = Solver % Mesh % Nodes % y(NodeIndexes(1:n))
-          EN % z(1:n) = Solver % Mesh % Nodes % z(NodeIndexes(1:n))
-
-          ! Determine area coefficient
-          IF (ElectrodeSignOfBC(i) == +1 .AND. AreaPlus > 1.0e-20) THEN
-            areaCoeff = 1.0_dp / AreaPlus  ! Positive: I/A
-          ELSE IF (ElectrodeSignOfBC(i) == -1 .AND. AreaMinus > 1.0e-20) THEN
-            areaCoeff = -1.0_dp / AreaMinus  ! Negative: -I/A
-          ELSE
-            CYCLE
-          END IF
-
-          Integ = GaussPoints(Elem)
-          DO gp = 1, Integ % n
-            stat = ElementInfo(Elem, EN, Integ % u(gp), Integ % v(gp), Integ % w(gp), &
-                              SqrtElementMetric, Basis, dBasisdx)
-            s = SqrtElementMetric * Integ % s(gp)
-            
-            DO inode = 1, n
-              pRow = PotentialPerm(NodeIndexes(inode))
-              IF (pRow <= 0) CYCLE
-              
-              ! FORWARD coupling: phi equation gets I contribution
-              ! Weak form: K·φ = ∫(I/A)ψ dS  -->  K·φ - B·I = 0
-              ! So: A(pRow, gidI) = -∫ψ/A dS  (NEGATIVE!)
-              CALL AddToMatrixElement(AuxMatrix, pRow, gidI, -s * Basis(inode) * areaCoeff)
-            END DO
-          END DO
-        END DO
-      END DO
-    END DO
-
-    ! Convert AddMatrix to CRS like Circuits does
     CALL List_ToCRSMatrix(AuxMatrix)
 
-    IF (UseNodalConstraints) THEN
-      DEALLOCATE(RowMembershipCount)
-      DEALLOCATE(SideIsElectrodeRow)
-      DEALLOCATE(SideConstraintCount)
-      DEALLOCATE(SideRowBuf)
-    END IF
+    DEALLOCATE( SideArea, SideKappa )
     DEALLOCATE( EN % x, EN % y, EN % z )
   END SUBROUTINE BuildElectrodeAddMatrix
 
@@ -1799,3 +2537,21 @@ SUBROUTINE StatCurrentSolver_post( Model, Solver, dt, Transient )
   RETURN
 END SUBROUTINE StatCurrentSolver_post
 
+
+!------------------------------------------------------------------------------
+!> Electron Energy solver: owns the Electron Temperature variable and its
+!> linear system. StatCurrentSolver assembles and solves that system inside
+!> its own nonlinear iteration, where the electron temperature is coupled to
+!> the potential (see SolveElectronEnergy); executing this solver does nothing.
+!> It must run before StatCurrentSolver so its parallel matrix is initialized.
+!------------------------------------------------------------------------------
+SUBROUTINE ElectronEnergySolver( Model, Solver, dt, TransientSimulation )
+!------------------------------------------------------------------------------
+  USE DefUtils
+  IMPLICIT NONE
+  TYPE(Model_t) :: Model
+  TYPE(Solver_t), TARGET :: Solver
+  REAL(KIND=dp) :: dt
+  LOGICAL :: TransientSimulation
+!------------------------------------------------------------------------------
+END SUBROUTINE ElectronEnergySolver

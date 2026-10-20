@@ -11,7 +11,8 @@ from .preparer import PreparationError
 from .runtime import MhdRuntime
 
 
-BASE_CASE_DIRECTORY = Path("/home/openfoam/EOF-Library/tests/linearHall")
+# The case template (constant/, system/, electrodes.yaml) sits next to this package
+BASE_CASE_DIRECTORY = Path(__file__).resolve().parents[1]
 EXPERIMENTS_DIRECTORY = Path("/experiments")
 RUNS_DIRECTORY = Path("/runs")
 
@@ -61,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--list",
         action="store_true",
         help="List valid prepared cases available beneath /runs.",
+    )
+    run.add_argument(
+        "--cores",
+        type=int,
+        default=None,
+        help="Confine the run to this many CPU cores. OpenFOAM and Elmer share them, "
+        "since they take turns computing (default: all visible cores).",
     )
     run.add_argument(
         "--no-postprocess",
@@ -135,6 +143,7 @@ def main(
         destination = runtime.run(
             args.name,
             postprocess=not args.no_postprocess,
+            cores=args.cores,
             dry_run=args.dry_run,
         )
         action = "Validated" if args.dry_run else "Completed"

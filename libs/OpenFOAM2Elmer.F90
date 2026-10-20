@@ -93,7 +93,7 @@ SUBROUTINE MPI_TEST_SLEEP( req, ierr )
   DO WHILE ( .TRUE. )
     CALL MPI_TEST( req, Flag, MPI_STATUS_IGNORE, ierr )
     IF (Flag) EXIT
-    CALL usleep(1000_c_int32_t)
+    CALL usleep(100_c_int32_t)   ! 0.1 ms: polling latency adds up over many exchanges
   END DO
 
 END SUBROUTINE MPI_TEST_SLEEP
