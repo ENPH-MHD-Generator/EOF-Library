@@ -1,0 +1,87 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  dev                                   |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      Te;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Electron temperature [K]
+dimensions [0 0 0 1 0 0 0];
+
+internalField   uniform 2500;
+
+
+boundaryField
+{
+    InletX
+    {
+        type    zeroGradient;
+    }
+
+    OutletX
+    {
+        type    zeroGradient;
+    }
+
+    InsulatorSurface
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_1
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_1
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_2
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_3
+    {
+        type    zeroGradient;
+    }
+
+    CathodeSurface_4
+    {
+        type    zeroGradient;
+    }
+
+    AnodeSurface_4
+    {
+        type    zeroGradient;
+    }
+
+    defaultFaces
+    {
+        type    zeroGradient;
+    }
+}
+
+// ************************************************************************* //

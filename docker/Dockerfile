@@ -20,7 +20,7 @@ COPY docker/mk/openfoam.mk /build/mk/
 COPY libs/coupleElmer/ libs/coupleElmer/
 COPY libs/commSplit/ libs/commSplit/
 RUN make -f /build/mk/openfoam.mk coupler
-COPY solvers/mdhLinearHall/ solvers/mdhLinearHall/
+COPY solvers/mhdLinearHall/ solvers/mhdLinearHall/
 RUN make -f /build/mk/openfoam.mk solvers
 
 
@@ -41,7 +41,7 @@ RUN make -f /build/mk/extensions.mk elmer-extensions
 # branch built. Both branches start FROM base, so OpenFOAM itself, MPI and the
 # system libraries are already identical here; the OpenFOAM branch's only new
 # outputs are under /home/openfoam/platforms ($FOAM_USER_LIBBIN: libElmer.so,
-# $FOAM_USER_APPBIN: mdhLinearHall). Anything openfoam.mk installs elsewhere
+# $FOAM_USER_APPBIN: mhdLinearHall). Anything openfoam.mk installs elsewhere
 # would be lost, so add a COPY for it (or build it in base). The merge starts
 # from Elmer because its outputs are spread over /usr/local, /opt/mumps,
 # /opt/hypre and /opt/eof/lib, while OpenFOAM's sit in one directory.
@@ -55,3 +55,9 @@ COPY --from=openfoam /home/openfoam/EOF-Library/solvers/ /home/openfoam/EOF-Libr
 ENV LD_LIBRARY_PATH=/opt/eof/lib \
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1
+# The base image's entrypoint starts a login shell (su -), which drops ENV;
+# login shells read the same settings from here.
+RUN printf '%s\n' \
+      'export LD_LIBRARY_PATH=/opt/eof/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' \
+      'export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1' \
+      > /etc/profile.d/eof-mhd.sh

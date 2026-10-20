@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Forwards to the linear Hall application launcher, building the solver image
-# from this checkout and keeping experiments/ and out/ at the repository root.
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MHD_WORKSPACE="$ROOT" MHD_SOLVER_SOURCE="$ROOT" exec "$ROOT/tests/linearHall/mhd" "$@"

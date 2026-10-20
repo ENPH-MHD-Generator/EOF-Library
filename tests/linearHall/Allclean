@@ -1,0 +1,5 @@
+#!/bin/bash
+# Remove everything Allrun creates, leaving the committed case.
+cd "${0%/*}" || exit 1
+rm -rf constant/polyMesh meshElmer processor* VTK [1-9]* 0.[0-9]* [0-9]e-* \
+  ELMERSOLVER_STARTINFO log.run O2E-*.out E2O-*.out

@@ -14,6 +14,6 @@ coupler:
 
 solvers:
 	$(OPENFOAM_ENV)
-	wclean $(EOF_HOME)/solvers/mdhLinearHall
-	wmake -j $(JOBS) $(EOF_HOME)/solvers/mdhLinearHall
-	test -x "$$FOAM_USER_APPBIN/mdhLinearHall"
+	wclean $(EOF_HOME)/solvers/mhdLinearHall
+	wmake -j $(JOBS) $(EOF_HOME)/solvers/mhdLinearHall
+	test -x "$$FOAM_USER_APPBIN/mhdLinearHall"

@@ -125,7 +125,7 @@ CONTAINS
 
     OPEN(NEWUNIT=Unit, FILE=TRIM(FileName), STATUS='OLD', ACTION='READ', IOSTAT=ios)
     IF (ios /= 0) THEN
-      ErrorMessage = 'Cannot open electron collision data '//TRIM(FileName)//'; rerun mhd prepare'
+      ErrorMessage = 'Cannot open electron collision data '//TRIM(FileName)
       RETURN
     END IF
     DO

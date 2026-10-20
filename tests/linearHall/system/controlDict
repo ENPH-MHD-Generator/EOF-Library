@@ -15,27 +15,19 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-application     mdhLinearHall;
-
-startFrom       startTime;
-startTime       0;
-
-stopAt          endTime;
-endTime         1e-4;      // flow-through time is ~5e-4 s
-
-deltaT          0.1;
-
-writeControl    adjustableRunTime;
-writeInterval   1e-5;
-
-adjustTimeStep  yes; 
-
-purgeWrite      0;
-
-maxCo           0.8;       // 0.5 gave the same results (within ~1%) with 1.6x the steps
-maxDeltaT       1;
-
-functions { }
-
-
+application          mhdLinearHall;
+startFrom            startTime;
+startTime            0;
+stopAt               endTime;
+endTime              1e-4;
+deltaT               0.1;
+writeControl         adjustableRunTime;
+writeInterval        1e-5;
+adjustTimeStep       yes;
+purgeWrite           0;
+maxCo                0.8;
+maxDeltaT            1;
+functions
+{
+}
 // ************************************************************************* //

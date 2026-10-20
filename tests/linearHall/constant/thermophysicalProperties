@@ -1,7 +1,7 @@
 /*--------------------------------*- C++ -*----------------------------------*\
 | =========                 |                                                 |
 | \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\    /   O peration     | Version:  6                                     |
+|  \\    /   O peration     | Version:  dev                                   |
 |   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
 |    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
@@ -15,40 +15,31 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Argon as a calorically perfect ideal gas. The seed (1% K) and the electrons
-// are neglected in the gas properties; the plasma state comes from Elmer.
 thermoType
 {
-    type            hePsiThermo;
-    mixture         pureMixture;
-    transport       sutherland;
-    thermo          hConst;
-    equationOfState perfectGas;
-    specie          specie;
-    energy          sensibleEnthalpy;
+    type                 hePsiThermo;
+    mixture              pureMixture;
+    transport            sutherland;
+    thermo               hConst;
+    equationOfState      perfectGas;
+    specie               specie;
+    energy               sensibleEnthalpy;
 }
-
 mixture
 {
     specie
     {
-        molWeight   39.948;     // g/mol
+        molWeight            39.948;
     }
     thermodynamics
     {
-        Cp          520.3;      // J/(kg K), monatomic 5/2 R
-        Hf          0;
+        Cp                   520.3;
+        Hf                   0;
     }
     transport
     {
-        // Viscosity mu = As sqrt(T)/(1 + Ts/T), fitted to argon at 300 K
-        // (2.27e-5 Pa s) and 1500 K (6.79e-5 Pa s); 9.1e-5 Pa s at 2500 K.
-        // Thermal conductivity follows from the modified Eucken relation,
-        // which for a monatomic gas gives Pr = 2/3.
-        As          1.915e-06;  // Pa s / K^0.5
-        Ts          138.3;      // K
+        As                   1.915e-06;
+        Ts                   138.3;
     }
 }
-
-
 // ************************************************************************* //

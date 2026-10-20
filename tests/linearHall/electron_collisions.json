@@ -1,0 +1,24 @@
+{
+  "generator": "channelsim.collisions via plasma_collisions",
+  "plasma_collisions_version": "1.0.0",
+  "eedf": "maxwellian",
+  "electron_transport_model": "drifting",
+  "potassium_elastic_scale": 1.0,
+  "seed_mole_fraction": 0.01,
+  "sources": {
+    "Ar": [
+      "EFFECTIVE: EFFECTIVE MOMENTUM-TRANSFER CROSS SECTION",
+      "EXCITATION: All excitation is grouped into this one level.",
+      "IONIZATION: RAPP-SCHRAM"
+    ],
+    "K": [
+      "EXCITATION: S T Chen and A C Gallagher, Phys. Rev. A 17, 551 (1978), Table I, K 4^2P column; optical excitation function, 2P_1/2 + 2P_3/2 combined, CASCADE INCLUDED; converted from pi a0^2 to m^2; zero added at t",
+      "ELASTIC: L S Frost, J. Appl. Phys. 32, 2029 (1961), Table I row 'K, Cs': 10^9 nu_c/N = 160 s^-1 cm^3, energy-independent; converted by sigma_m = (nu_c/N)/v. CAVEATS: value shared with Cs and traced by Frost's ",
+      "IONIZATION: R I Golyatina and S A Maiorov, Atoms 9, 90 (2021), Eq. (4) with Table 1 row '19, K': alpha=6.54 A^2, beta=0.362, gamma=1.57, I=4.339 eV. Fitted to the six McFarland & Kinney absolute points over 50-50"
+    ]
+  },
+  "saha": {
+    "ionization_energy": 4.341,
+    "weight_ratio": 0.5
+  }
+}

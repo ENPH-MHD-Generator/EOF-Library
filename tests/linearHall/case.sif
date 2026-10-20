@@ -28,7 +28,7 @@ End
 
 Equation 1
   Name = "EOF_HallChannel"
-  Active Solvers(12) = 1 2 3 4 5 6 7 8 9 10 11 12
+  Active Solvers(13) = 1 2 3 4 5 6 7 8 9 10 11 12 13
 End
 
 
@@ -130,9 +130,33 @@ End
 
 
 ! --------------------------------------------------
-! 3 Custom Elmer MHD Solver
+! 3 Custom Elmer MHD Solvers
 ! --------------------------------------------------
+
+! Electron temperature. Its linear system is assembled and solved by the
+! Static Current Solver inside its nonlinear iteration (Electron Energy
+! Transport in the material); running this solver itself does nothing. It
+! must come before the Static Current Solver.
 Solver 11
+  Exec Solver = Always
+  Equation = "Electron Energy"
+  Procedure = "MHDSolve" "ElectronEnergySolver"
+  Variable = String "Electron Temperature"
+  Variable DOFs = 1
+
+  Linear System Solver = Iterative
+  Linear System Iterative Method = BiCGStabl
+  BiCGStabl Polynomial Degree = 4
+  Linear System Preconditioning = ILU1
+  Linear System Max Iterations = 2000
+  Linear System Convergence Tolerance = 1.0e-8
+  Linear System Abort Not Converged = False
+  ! Rows span the electron density (~1e6 between core and cold gas)
+  Linear System Scaling = True
+  Linear System Residual Output = 0
+End
+
+Solver 12
   Exec Solver = Always
   Equation = "Static Current Solver"
   Procedure = "MHDSolve" "StatCurrentSolver"
@@ -169,7 +193,7 @@ End
 ! --------------------------------------------------
 ! 4 Elmer -> OpenFOAM: export computed results
 ! --------------------------------------------------
-Solver 12
+Solver 13
   Exec Solver = Always
   Equation = "Elmer2OpenFOAM"
   Procedure = "Elmer2OpenFOAM" "Elmer2OpenFOAMSolver"
@@ -184,6 +208,8 @@ Solver 12
   Target Variable 6 = String "Electric Conductivity"
   Target Variable 7 = String "Ionization Fraction"
   Target Variable 8 = String "Electron Temperature"
+  Target Variable 9 = String "Hall Parameter"
+  Target Variable 10 = String "Pedersen Conductivity"
 End
 
 
@@ -198,22 +224,27 @@ Material 1
   Electric Conductivity = Variable "Electric Conductivity"
     Real MATC "tx"
 
+  ! Potassium in argon. Saha data and electron collision tables come from
+  ! plasma_collisions (electron_collisions.dat, written by mhd prepare).
   Seed Mole Fraction = Real 0.01
-  Seed Ionization Energy = Real 4.3407  ! eV
+  Seed Ionization Energy = Real 4.341  ! eV
   Seed Statistical Weight Ratio = Real 0.5  ! g_ion / g_neutral
-  Seed Electron Neutral Cross Section = Real 4e-18  ! m^2
-  Carrier Electron Neutral Cross Section = Real 1e-19  ! m^2
-  Reference Pressure = Real 101325  ! Pa, added to OpenFOAM gauge p
+  Electron Collision Data = String "electron_collisions.dat"
+  ! drifting (collision frequencies add) or lorentz (added inside the velocity average)
+  Electron Transport Model = String "drifting"
+  ! electron: no net inelastic loss; gas: K(4p) quenched to the gas temperature
+  Excited State Temperature = String "electron"
+  ! Ion slip: ions carry current with this mobility x N / N0 (N0 = 2.6868e25 m^-3)
+  Ion Reduced Mobility = Real 0.000243  ! m^2/(V s)
 
   Sigma Min = Real 0.01
   Sigma Max = Real 1e+06
 
-  ! Electron temperature: Joule heating vs. elastic losses (Kerrebrock),
-  ! otherwise Te = Tgas
+  ! Electron temperature: Joule heating vs. elastic losses, otherwise Te = Tgas.
+  ! With Electron Energy Transport the electron energy equation is solved
+  ! (Solver 11); without it the local balance (Kerrebrock) is used.
   Two Temperature = Logical True
-  Carrier Molar Mass = Real 39.948  ! g/mol
-  Seed Molar Mass = Real 39.098  ! g/mol
-  Electron Energy Loss Factor = Real 1
+  Electron Energy Transport = Logical True
   Electron Temperature Max = Real 20000  ! K
   Electron Temperature Relaxation = Real 0.5
 End
@@ -306,6 +337,8 @@ End
 Boundary Condition 10
   ! InletX
   Target Boundaries(1) = 1
+  Electron Temperature = Variable "Gas Temperature"
+    Real MATC "tx"
 End
 
 Boundary Condition 11

@@ -1,6 +1,0 @@
-# Public dependencies for schema, mesh, and orchestration tests (Python 3.11).
-# The full application environment is locked in tests/linearHall/uv.lock.
-gmsh==4.11.1
-pydantic==2.11.7
-PyYAML==6.0.2
-numpy==2.2.6

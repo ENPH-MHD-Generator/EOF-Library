@@ -1,0 +1,25 @@
+#!/bin/bash
+# Prepare and run the coupled linear Hall example on 2 OpenFOAM + 2 Elmer ranks.
+# Run inside the solver image (make solver-image) from this directory.
+cd "${0%/*}" || exit 1
+# Non-interactive shells in the image do not source OpenFOAM's environment
+command -v gmshToFoam > /dev/null || source /opt/openfoam6/etc/bashrc
+set -euo pipefail
+
+gmshToFoam channel.msh
+# Initial velocity from potential flow. -pName points at a field that does not
+# exist so the pressure BCs are inferred from U (p is absolute, not kinematic)
+potentialFoam -pName pPotential
+# potentialFoam's volumetric flux would be read as the mass flux
+rm -f 0/phi
+decomposePar
+ElmerGrid 14 2 channel.msh -out meshElmer -autoclean -merge 1e-8 -removeunused
+ElmerGrid 2 2 meshElmer -metis 2
+echo case.sif > ELMERSOLVER_STARTINFO
+
+# OpenFOAM and Elmer take turns computing, so they can share cores
+mpirun --oversubscribe --bind-to none --mca mpi_yield_when_idle 1 \
+  -n 2 mhdLinearHall -parallel : -n 2 ElmerSolver_mpi case.sif 2>&1 | tee log.run
+
+reconstructPar
+foamToVTK

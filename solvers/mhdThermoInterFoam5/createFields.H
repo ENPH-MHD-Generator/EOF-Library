@@ -115,7 +115,7 @@ volScalarField JH_recv
 );
 
 Info<< "Initializing field alpha_old\n" << endl;
-volScalarField 
+volScalarField alpha_old
 (
     IOobject
     (

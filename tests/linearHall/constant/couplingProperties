@@ -1,0 +1,27 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  dev                                   |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      couplingProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Elmer is re-solved when U, T or p has changed by more than these relative
+// tolerances since the last update, or after maxStepsBetweenUpdates steps
+// (0 = no limit). Zero tolerances update every time step. U and p use the
+// largest cell change; T uses the RMS change weighted by Joule heating power.
+velocityTolerance       0.05;
+temperatureTolerance    0.005;
+pressureTolerance       0.05;
+maxStepsBetweenUpdates  250;
+
+// ************************************************************************* //
