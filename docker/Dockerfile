@@ -2,6 +2,7 @@
 # Elmer 8.4 (gcc 9, MUMPS, Hypre) with the EOF modules and MHDSolve.
 #
 #   base ─┬─ openfoam: coupler library → OpenFOAM solvers ─────┐
+#         ├─ plasma:   Rust toolchain → mhd_plasma (static) ───┐  │
 #         └─ elmer:    ScaLAPACK/MUMPS/Hypre → Elmer → extensions ┴─ solvers (final)
 #
 # The two branches share no build inputs, so editing one never rebuilds the
@@ -24,6 +25,13 @@ COPY solvers/mhdLinearHall/ solvers/mhdLinearHall/
 RUN make -f /build/mk/openfoam.mk solvers
 
 
+FROM base AS plasma
+COPY docker/mk/plasma.mk /build/mk/
+RUN make -f /build/mk/plasma.mk toolchain
+COPY libs/solvers/MHDSolve/plasma/ libs/solvers/MHDSolve/plasma/
+RUN make -f /build/mk/plasma.mk plasma
+
+
 FROM base AS elmer
 COPY docker/mk/deps.mk /build/mk/
 RUN make -f /build/mk/deps.mk deps
@@ -33,8 +41,11 @@ RUN --mount=type=cache,id=mhd-elmer-build-gcc9,target=/opt/elmerfem/build,sharin
     make -f /build/mk/elmer.mk elmer ELMER_DEBUG=${ELMER_DEBUG}
 COPY docker/mk/extensions.mk /build/mk/
 COPY libs/Elmer2OpenFOAM.F90 libs/OpenFOAM2Elmer.F90 libs/
-COPY libs/solvers/MHDSolve/ libs/solvers/MHDSolve/
-RUN make -f /build/mk/extensions.mk elmer-extensions
+COPY libs/solvers/MHDSolve/*.F90 libs/solvers/MHDSolve/
+# The plasma library is linked into MHDSolve.so; mounted rather than copied so
+# the archive does not ship in the image
+RUN --mount=type=bind,from=plasma,source=/opt/plasma/libmhd_plasma.a,target=/opt/plasma/libmhd_plasma.a \
+    make -f /build/mk/extensions.mk elmer-extensions
 
 
 # Merge the branches: start from the Elmer stage and copy in what the OpenFOAM

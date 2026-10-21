@@ -1,0 +1,21 @@
+[package]
+name = "mhd_plasma"
+version = "0.1.0"
+edition = "2021"
+description = "Seeded-plasma physics for EOF-Library's MHD solvers, behind a C ABI"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+# A static library linked into MHDSolve.so (and, later, OpenFOAM solvers);
+# rlib so `cargo test` can exercise it directly.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+
+[profile.release]
+# A panic must never unwind into Fortran or C++
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

@@ -16,6 +16,8 @@ ELMER_SOURCE    := /opt/elmerfem
 MUMPS_PREFIX    := /opt/mumps
 HYPRE_PREFIX    := /opt/hypre
 EOF_LIB         := /opt/eof/lib
+# The plasma library's static archive, built by plasma.mk and linked by extensions.mk
+PLASMA_LIB      := /opt/plasma/libmhd_plasma.a
 
 # Elmer and its Fortran dependencies use gcc/gfortran 9 (Ubuntu 16.04 ships 5.4);
 # OpenFOAM, its coupler and Open MPI keep the system gcc 5. Elmer only uses

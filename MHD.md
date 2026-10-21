@@ -13,6 +13,37 @@ compressible, potassium-seeded argon flow through a linear Hall channel:
 `tests/linearHall/` is a complete prepared example that runs both, coupled
 through EOF-Library.
 
+## Where the plasma physics lives
+
+The local plasma physics is a Rust library, `libs/solvers/MHDSolve/plasma/`
+(`mhd_plasma`). It covers Saha ionization, the collision-table reader and
+interpolation, transport, losses and the local electron temperature. It's
+built as a static library with a C ABI:
+
+- **MHDSolve links it into `MHDSolve.so`.** `MHDPlasma.F90` is the Fortran
+  side: declarations of the library's types and functions, under the names
+  MHDSolve calls, and no physics of its own.
+- **A C or C++ caller, such as an OpenFOAM solver**, includes
+  `plasma/include/mhd_plasma.h`.
+
+The Fortran keeps everything that touches Elmer: assembly, boundary
+conditions, the electrode circuits and the coupling. New local physics goes in
+the library:
+
+1. Add the function in `plasma/src`, with tests, and export it from
+   `src/lib.rs` as `#[no_mangle] extern "C"`.
+2. Declare it in `MHDPlasma.F90` (a `BIND(C)` interface) and in
+   `include/mhd_plasma.h`.
+3. Call it from the solver.
+
+The library never computes data it could read. Tables, coefficients and
+reference values come from the case directory (today `electron_collisions.dat`),
+written by case preparation.
+
+Run its tests on any machine with Rust: `cargo test` in
+`libs/solvers/MHDSolve/plasma`. The solver image builds it with a pinned
+toolchain (`docker/mk/plasma.mk`).
+
 ## Physics in MHDSolve
 
 - **Ionization.** Only the seed ionizes. The Saha equation is solved at the

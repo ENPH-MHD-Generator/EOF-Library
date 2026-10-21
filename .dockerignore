@@ -8,6 +8,7 @@ runs/
 **/lnInclude
 **/Make/darwin*
 **/Make/linux*
+**/target/
 
 # Cases are not part of the solver image
 tests/
