@@ -32,8 +32,9 @@ the library:
 
 1. Add the function in `plasma/src`, with tests, and export it from
    `src/lib.rs` as `#[no_mangle] extern "C"`.
-2. Declare it in `MHDPlasma.F90` (a `BIND(C)` interface) and in
-   `include/mhd_plasma.h`.
+2. Declare it in `MHDPlasma.F90` (a `BIND(C)` interface), and regenerate the
+   C header with `UPDATE_HEADER=1 cargo test`. `include/mhd_plasma.h` is
+   cbindgen's output, and `cargo test` fails while it is stale.
 3. Call it from the solver.
 
 The library never computes data it could read. Tables, coefficients and

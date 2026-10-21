@@ -19,3 +19,6 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+[dev-dependencies]
+cbindgen = "0.29.4"

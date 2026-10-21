@@ -1,0 +1,23 @@
+# Configuration for the generated C header, include/mhd_plasma.h.
+# tests/header.rs regenerates it and fails when the committed copy is stale;
+# UPDATE_HEADER=1 cargo test rewrites it.
+language = "C"
+include_guard = "MHD_PLASMA_H"
+cpp_compat = true
+documentation = true
+documentation_style = "c"
+autogen_warning = """/* Generated from src/lib.rs by cbindgen (tests/header.rs). Do not edit;
+ * run `UPDATE_HEADER=1 cargo test` after changing the C ABI. The Fortran
+ * declarations of the same functions are in ../MHDPlasma.F90. Link
+ * libmhd_plasma.a with -lpthread -ldl -lm. */"""
+usize_is_size_t = true
+no_includes = true
+sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
+
+[export]
+prefix = "Mhd"
+# The physical constants are the library's own business
+exclude = ["K_BOLTZ", "E_MASS", "E_CHARGE", "H_PLANCK", "PI", "KELVIN_PER_EV", "LOSCHMIDT", "NRL_COEFFICIENT"]
+
+[parse]
+parse_deps = false
