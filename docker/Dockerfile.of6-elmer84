@@ -1,0 +1,23 @@
+# The foundation of the solver image, built from source: what docker/Dockerfile
+# uses from eoflibrary/eof_elmer84_of6 (Ubuntu 16.04, OpenFOAM 6 with the
+# system Open MPI 1.10.2, the Elmer source tree), for architectures that image
+# was never published for, such as linux/arm64 on Apple silicon.
+# Recipes are in docker/mk/of6-elmer84.mk. Build with
+# `make foundation-image` from the repository root.
+
+FROM ubuntu:16.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends make \
+ && rm -rf /var/lib/apt/lists/*
+COPY docker/mk/common.mk docker/mk/of6-elmer84.mk /build/mk/
+RUN make -f /build/mk/of6-elmer84.mk packages user
+RUN make -f /build/mk/of6-elmer84.mk openfoam
+RUN make -f /build/mk/of6-elmer84.mk elmer-source
+COPY docker/user-mapping.sh /user-mapping.sh
+RUN chmod 0755 /user-mapping.sh
+
+# As in eoflibrary/eof_elmer84_of6: start as root, and user-mapping.sh gives
+# the openfoam user the host's IDs before opening its login shell
+ENV user=openfoam USER=openfoam HOME=/home/openfoam \
+    uid=98765 USER_ID=98765 USER_GID=98765
+ENTRYPOINT ["/user-mapping.sh"]

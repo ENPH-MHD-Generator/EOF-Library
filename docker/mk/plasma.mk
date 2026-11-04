@@ -12,7 +12,7 @@ CARGO := $(CARGO_HOME)/bin/cargo
 .PHONY: toolchain plasma
 
 toolchain:
-	wget -qO /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
+	wget -qO /tmp/rustup-init https://static.rust-lang.org/rustup/dist/$(shell uname -m)-unknown-linux-gnu/rustup-init
 	chmod +x /tmp/rustup-init
 	# The base image sets HOME=/home/openfoam for a root build; rustup warns otherwise
 	HOME=/root /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain $(RUST_TOOLCHAIN)

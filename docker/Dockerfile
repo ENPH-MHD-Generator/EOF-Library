@@ -8,8 +8,12 @@
 # The two branches share no build inputs, so editing one never rebuilds the
 # other. Recipes live in docker/mk; each stage copies only the files it needs.
 # Build with `make solver-image` from the repository root.
+#
+# BASE_IMAGE is the published x86-64 image, or on other architectures its
+# from-source equivalent (docker/Dockerfile.of6-elmer84, `make foundation-image`).
+ARG BASE_IMAGE=eoflibrary/eof_elmer84_of6:latest
 
-FROM eoflibrary/eof_elmer84_of6:latest AS base
+FROM ${BASE_IMAGE} AS base
 USER root
 COPY docker/mk/common.mk docker/mk/base.mk /build/mk/
 RUN make -f /build/mk/base.mk system
@@ -36,8 +40,10 @@ FROM base AS elmer
 COPY docker/mk/deps.mk /build/mk/
 RUN make -f /build/mk/deps.mk deps
 ARG ELMER_DEBUG=0
+# One build cache per architecture: CMake's cache holds architecture paths
+ARG TARGETARCH
 COPY docker/mk/elmer.mk /build/mk/
-RUN --mount=type=cache,id=mhd-elmer-build-gcc9,target=/opt/elmerfem/build,sharing=locked \
+RUN --mount=type=cache,id=mhd-elmer-build-gcc9-${TARGETARCH},target=/opt/elmerfem/build,sharing=locked \
     make -f /build/mk/elmer.mk elmer ELMER_DEBUG=${ELMER_DEBUG}
 COPY docker/mk/extensions.mk /build/mk/
 COPY libs/Elmer2OpenFOAM.F90 libs/OpenFOAM2Elmer.F90 libs/
