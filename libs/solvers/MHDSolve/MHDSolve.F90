@@ -256,6 +256,9 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   TYPE(Matrix_t), POINTER, SAVE :: AuxMatrix => NULL()
   INTEGER :: NPhi, PermMax, GlobalNPhi
 
+  ! Coupling updates so far, for 'Linear System Direct Updates'
+  INTEGER, SAVE :: CouplingUpdate = 0
+
   ! Diagnostics for solution change (variables declared below in main declarations)
   REAL(dp), ALLOCATABLE :: OldPotential(:)
 
@@ -600,6 +603,18 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   CALL Info( 'StatCurrentSolve', '-------------------------------------',Level=4 )
 
   CALL DefaultStart()
+
+  ! 'Linear System Direct Updates = N' in this solver's or the electron
+  ! energy solver's section: solve the first N coupling updates with the
+  ! direct method and the rest with the iterative settings. The first update
+  ! starts cold (electron temperature at the gas temperature), where
+  ! ILU-preconditioned Krylov solvers can fail outright on large structured
+  ! meshes (2000 iterations, 160 s, for the electron energy at 230k nodes);
+  ! later updates start from the previous solution, where they are faster
+  ! than a factorization.
+  CouplingUpdate = CouplingUpdate + 1
+  CALL SetDirectUpdates( Params )
+  IF ( ASSOCIATED(TeSolver) ) CALL SetDirectUpdates( TeSolver % Values )
 
   ! The electron temperature depends on the current, so the plasma state is
   ! re-evaluated every nonlinear iteration from the previous iteration's
@@ -2355,6 +2370,24 @@ END FUNCTION RequiredMaterialReal
   !> which ILU-preconditioned Krylov solvers handle well, and adds only three
   !> rows per pair.
   !------------------------------------------------------------------------------
+  !------------------------------------------------------------------------------
+  !> Pick the direct or the iterative method for this coupling update from the
+  !> section's 'Linear System Direct Updates' (absent: leave it unchanged).
+  !------------------------------------------------------------------------------
+  SUBROUTINE SetDirectUpdates( SolverParams )
+    TYPE(ValueList_t), POINTER :: SolverParams
+    INTEGER :: N
+    LOGICAL :: Found
+
+    N = ListGetInteger( SolverParams, 'Linear System Direct Updates', Found )
+    IF ( .NOT. Found ) RETURN
+    IF ( CouplingUpdate <= N ) THEN
+      CALL ListAddString( SolverParams, 'Linear System Solver', 'direct' )
+    ELSE
+      CALL ListAddString( SolverParams, 'Linear System Solver', 'iterative' )
+    END IF
+  END SUBROUTINE SetDirectUpdates
+
   SUBROUTINE BuildElectrodeAddMatrix( Model, Solver, AuxMatrix, &
       PotentialPerm, ElectrodePairOfBC, ElectrodeSignOfBC, &
       ElectrodeResistance, NumElectrodePairs, NPhi )
