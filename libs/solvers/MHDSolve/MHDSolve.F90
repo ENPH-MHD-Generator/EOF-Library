@@ -613,8 +613,8 @@ SUBROUTINE StatCurrentSolver( Model,Solver,dt,TransientSimulation )
   ! later updates start from the previous solution, where they are faster
   ! than a factorization.
   CouplingUpdate = CouplingUpdate + 1
-  CALL SetDirectUpdates( Params )
-  IF ( ASSOCIATED(TeSolver) ) CALL SetDirectUpdates( TeSolver % Values )
+  CALL SetDirectUpdates( Solver )
+  IF ( ASSOCIATED(TeSolver) ) CALL SetDirectUpdates( TeSolver )
 
   ! The electron temperature depends on the current, so the plasma state is
   ! re-evaluated every nonlinear iteration from the previous iteration's
@@ -2373,18 +2373,30 @@ END FUNCTION RequiredMaterialReal
   !------------------------------------------------------------------------------
   !> Pick the direct or the iterative method for this coupling update from the
   !> section's 'Linear System Direct Updates' (absent: leave it unchanged).
+  !> With 'Mumps Keep Analysis' (EOF-Library's Elmer patch) the direct updates
+  !> keep the matrix structure and MUMPS analysis between solves, which needs
+  !> 'Linear System Refactorize = False'; the iterative updates need it True
+  !> (ILU is recomputed only then), and the MUMPS factors are freed.
   !------------------------------------------------------------------------------
-  SUBROUTINE SetDirectUpdates( SolverParams )
-    TYPE(ValueList_t), POINTER :: SolverParams
+  SUBROUTINE SetDirectUpdates( S )
+    TYPE(Solver_t) :: S
     INTEGER :: N
-    LOGICAL :: Found
+    LOGICAL :: Found, KeepAnalysis
 
-    N = ListGetInteger( SolverParams, 'Linear System Direct Updates', Found )
+    N = ListGetInteger( S % Values, 'Linear System Direct Updates', Found )
     IF ( .NOT. Found ) RETURN
+    KeepAnalysis = ListGetLogical( S % Values, 'Mumps Keep Analysis', Found )
     IF ( CouplingUpdate <= N ) THEN
-      CALL ListAddString( SolverParams, 'Linear System Solver', 'direct' )
+      CALL ListAddString( S % Values, 'Linear System Solver', 'direct' )
+      IF ( KeepAnalysis ) CALL ListAddLogical( S % Values, 'Linear System Refactorize', .FALSE. )
     ELSE
-      CALL ListAddString( SolverParams, 'Linear System Solver', 'iterative' )
+      CALL ListAddString( S % Values, 'Linear System Solver', 'iterative' )
+      IF ( KeepAnalysis ) THEN
+        CALL ListAddLogical( S % Values, 'Linear System Refactorize', .TRUE. )
+        IF ( CouplingUpdate == N + 1 .AND. ASSOCIATED(S % Matrix) ) &
+            CALL DirectSolver( S % Matrix, S % Variable % Values, S % Matrix % RHS, &
+                S, Free_Fact = .TRUE. )
+      END IF
     END IF
   END SUBROUTINE SetDirectUpdates
 
