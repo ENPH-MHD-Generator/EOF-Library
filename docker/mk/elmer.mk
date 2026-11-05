@@ -27,8 +27,13 @@ ELMER_SOLVER_LIB := /usr/local/lib/elmersolver/libelmersolver.so
 
 .PHONY: elmer
 
+# Patches to the Elmer source (docker/patches), applied to the base image's
+# pristine tree on every build
+ELMER_PATCHES := $(wildcard /build/patches/elmer-*.patch)
+
 elmer:
 	export $(GCC9_ENV)
+	for p in $(ELMER_PATCHES); do patch -d $(ELMER_SOURCE) -p1 --forward < $$p; done
 	mkdir -p $(ELMER_SOURCE)/build && cd $(ELMER_SOURCE)/build
 	cmake .. $(ELMER_FLAGS)
 	# `make install`, not install/fast: the latter installs existing targets

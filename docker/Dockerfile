@@ -43,6 +43,7 @@ ARG ELMER_DEBUG=0
 # One build cache per architecture: CMake's cache holds architecture paths
 ARG TARGETARCH
 COPY docker/mk/elmer.mk /build/mk/
+COPY docker/patches/ /build/patches/
 RUN --mount=type=cache,id=mhd-elmer-build-gcc9-${TARGETARCH},target=/opt/elmerfem/build,sharing=locked \
     make -f /build/mk/elmer.mk elmer ELMER_DEBUG=${ELMER_DEBUG}
 COPY docker/mk/extensions.mk /build/mk/
